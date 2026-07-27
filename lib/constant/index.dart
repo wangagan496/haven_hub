@@ -1,6 +1,9 @@
 class GlobalVariable {
   const GlobalVariable._();
 
+  static const String tokenKey = 'flutter_enjoy_plus';
+  static const String refreshTokenKey = 'flutter_enjoy_plus_refresh';
+
   // 可通过 --dart-define=API_BASE_URL=... 切换正式、测试或本地 Mock 接口。
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
@@ -14,6 +17,8 @@ class HttpPath {
   const HttpPath._();
 
   static const String announcement = 'announcement';
+  static const String sendCode = 'code';
+  static const String login = 'login';
 
   static String announcementDetail(String id) {
     return '$announcement/${Uri.encodeComponent(id)}';

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import 'api/home.dart';
-import 'pages/notice_detail/index.dart';
-import 'pages/tabs_page/index.dart';
+import 'router/index.dart';
+import 'utils/token_manager.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await tokenManager.init();
   runApp(const HavenHubApp());
 }
 
@@ -29,13 +31,17 @@ class HavenHubApp extends StatelessWidget {
         useMaterial3: true,
       ),
       initialRoute: '/',
-      routes: <String, WidgetBuilder>{
-        '/': (BuildContext context) {
-          return TabsPage(announcementLoader: announcementLoader);
-        },
-        NoticeDetail.routeName: (BuildContext context) {
-          return NoticeDetail(detailLoader: announcementDetailLoader);
-        },
+      onGenerateRoute: (RouteSettings settings) {
+        return MaterialPageRoute<void>(
+          settings: settings,
+          builder: (BuildContext context) {
+            return getRouteWidget(
+              settings.name,
+              announcementLoader: announcementLoader,
+              announcementDetailLoader: announcementDetailLoader,
+            );
+          },
+        );
       },
     );
   }

@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../constant/index.dart';
+import 'token_manager.dart';
 
 class RequestDio {
   RequestDio({Dio? dio}) : _dio = dio ?? Dio() {
@@ -19,6 +20,10 @@ class RequestDio {
           RequestOptions options,
           RequestInterceptorHandler handler,
         ) {
+          final String token = tokenManager.getToken();
+          if (token.isNotEmpty) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
           handler.next(options);
         },
         // 响应拦截器：只有 HTTP 2xx 状态码才作为成功响应继续传递。

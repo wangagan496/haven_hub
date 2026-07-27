@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../profile/index.dart';
+
 class MinePage extends StatelessWidget {
   const MinePage({super.key});
 
@@ -73,7 +75,9 @@ class MinePage extends StatelessWidget {
                   ),
                   InkWell(
                     borderRadius: BorderRadius.circular(20),
-                    onTap: () => _showMessage(context, '去完善个人信息'),
+                    onTap: () {
+                      Navigator.pushNamed(context, ProfilePage.routeName);
+                    },
                     child: const Padding(
                       padding: EdgeInsets.symmetric(vertical: 10),
                       child: Row(

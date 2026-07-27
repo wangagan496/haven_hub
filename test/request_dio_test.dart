@@ -5,12 +5,15 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:haven_hub/constant/index.dart';
 import 'package:haven_hub/utils/request_dio.dart';
+import 'package:haven_hub/utils/token_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _FakeAdapter implements HttpClientAdapter {
   _FakeAdapter(this.body, {this.statusCode = 200});
 
   final Map<String, dynamic> body;
   final int statusCode;
+  RequestOptions? lastOptions;
 
   @override
   Future<ResponseBody> fetch(
@@ -18,6 +21,7 @@ class _FakeAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    lastOptions = options;
     return ResponseBody.fromString(
       jsonEncode(body),
       statusCode,
@@ -99,6 +103,29 @@ void main() {
           500,
         ),
       ),
+    );
+  });
+
+  test('请求时自动注入 Bearer token', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await tokenManager.init();
+    await tokenManager.setToken('access-token');
+
+    final _FakeAdapter adapter = _FakeAdapter(
+      <String, dynamic>{
+        'code': GlobalVariable.successCode,
+        'message': '查询成功',
+        'data': <String, dynamic>{},
+      },
+    );
+    final Dio dio = Dio()..httpClientAdapter = adapter;
+    final RequestDio client = RequestDio(dio: dio);
+
+    await client.get(HttpPath.announcement);
+
+    expect(
+      adapter.lastOptions?.headers['Authorization'],
+      'Bearer access-token',
     );
   });
 }
