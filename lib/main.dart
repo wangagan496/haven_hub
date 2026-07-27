@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api/home.dart';
+import 'pages/notice_detail/index.dart';
 import 'pages/tabs_page/index.dart';
 
 void main() {
@@ -10,10 +11,12 @@ void main() {
 class HavenHubApp extends StatelessWidget {
   const HavenHubApp({
     this.announcementLoader = getAnnouncementListApi,
+    this.announcementDetailLoader = getAnnouncementDetailApi,
     super.key,
   });
 
   final AnnouncementLoader announcementLoader;
+  final AnnouncementDetailLoader announcementDetailLoader;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +28,15 @@ class HavenHubApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFFFFF8FF),
         useMaterial3: true,
       ),
-      home: TabsPage(announcementLoader: announcementLoader),
+      initialRoute: '/',
+      routes: <String, WidgetBuilder>{
+        '/': (BuildContext context) {
+          return TabsPage(announcementLoader: announcementLoader);
+        },
+        NoticeDetail.routeName: (BuildContext context) {
+          return NoticeDetail(detailLoader: announcementDetailLoader);
+        },
+      },
     );
   }
 }

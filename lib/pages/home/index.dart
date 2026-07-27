@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:fluttertoast/fluttertoast.dart';
 
 import '../../api/home.dart';
+import '../../utils/toast.dart';
+import 'components/home_list.dart';
 import 'components/home_nav.dart';
 import 'components/notify_item.dart';
 
@@ -56,56 +57,10 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _dataList = result.map(NoticeData.fromJson).toList(growable: false);
       });
-      Fluttertoast.showToast(msg: '数据获取成功');
+      await PromptAction.showSuccess('数据获取成功');
     } on Object {
       // 网络不可用时保留本地公告，避免首页出现空白。
     }
-  }
-
-  Widget getNoticeWidget() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: <Widget>[
-          Image.asset(
-            'assets/images/notice@2x.png',
-            width: 30,
-            height: 30,
-          ),
-          const SizedBox(width: 6),
-          const Text(
-            '社区',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const Text(
-            '公告',
-            style: TextStyle(
-              color: Colors.amber,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget getHomeList() {
-    return ListView.separated(
-      physics: const NeverScrollableScrollPhysics(),
-      shrinkWrap: true,
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: _dataList.length,
-      itemBuilder: (BuildContext context, int index) {
-        return NotifyItem(item: _dataList[index]);
-      },
-      separatorBuilder: (BuildContext context, int index) {
-        return const SizedBox(height: 12);
-      },
-    );
   }
 
   @override
@@ -139,8 +94,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-            getNoticeWidget(),
-            getHomeList(),
+            HomeList(list: _dataList),
           ],
         ),
       ),

@@ -35,6 +35,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   dio: ^5.10.0
+  flutter_html: ^3.0.0-alpha.4
   fluttertoast:
     git:
       url: https://gitcode.com/CPF-Flutter/flutter_fluttertoast.git

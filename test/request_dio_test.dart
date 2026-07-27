@@ -32,6 +32,13 @@ class _FakeAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  test('公告详情路径使用 id 拼接', () {
+    expect(
+      HttpPath.announcementDetail('notice/1'),
+      'announcement/notice%2F1',
+    );
+  });
+
   test('业务状态码为 10000 时返回 data', () async {
     final Dio dio = Dio()
       ..httpClientAdapter = _FakeAdapter(
