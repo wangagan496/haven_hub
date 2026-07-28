@@ -26,61 +26,59 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  static final RegExp _mobilePattern = RegExp(r'^1[3-9]\d{9}$');
+  // 匹配中国大陆手机号，支持“13800138000”和“+8613800138000”。
+  static final RegExp _mobilePattern = RegExp(r'^(?:\+86)?1[3-9]\d{9}$');
   static final RegExp _codePattern = RegExp(r'^\d{6}$');
 
+  // 分别控制手机号和验证码输入框。
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _codeController = TextEditingController();
 
   int _remainingSeconds = 60;
   Timer? _timer;
-  bool _isRequestingCode = false;
+  bool isSend = false;
   bool _isLoggingIn = false;
 
   Future<void> _sendCode() async {
-    if (_timer != null) {
-      await PromptAction.showWarning('请等到60s结束再发送');
+    if (isSend) {
       return;
     }
 
-    final String mobile = _phoneController.text.trim();
-    if (mobile.isEmpty) {
+    final String mobileInput = _phoneController.text.trim();
+    if (mobileInput.isEmpty) {
       await PromptAction.showWarning('请输入手机号');
       return;
     }
-    if (!_mobilePattern.hasMatch(mobile)) {
-      await PromptAction.showWarning('请输入正确的手机号');
+    if (!_mobilePattern.hasMatch(mobileInput)) {
+      await PromptAction.showWarning('请输入正确的手机号（支持 +86）');
       return;
     }
+    final String mobile = _normalizeMobile(mobileInput);
 
     setState(() {
-      _isRequestingCode = true;
+      isSend = true;
     });
     try {
-      final Map<String, dynamic> result = await widget.sendCodeLoader(mobile);
+      final Map<String, dynamic> res = await widget.sendCodeLoader(mobile);
       if (!mounted) {
         return;
       }
 
-      final String code = result['code']?.toString() ?? '';
-      if (_codePattern.hasMatch(code)) {
-        unawaited(
-          Future<void>.delayed(const Duration(seconds: 2), () {
-            if (mounted) {
-              _codeController.text = code;
-            }
-          }),
-        );
-      }
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          if (mounted && res['code'] != null) {
+            _codeController.text = res['code'].toString();
+          }
+        }),
+      );
       _startCountdown();
     } on Object catch (error) {
-      await PromptAction.showError(_getErrorMessage(error, '验证码发送失败'));
-    } finally {
       if (mounted) {
         setState(() {
-          _isRequestingCode = false;
+          isSend = false;
         });
       }
+      await PromptAction.showError(_getErrorMessage(error, '验证码发送失败'));
     }
   }
 
@@ -100,6 +98,7 @@ class _LoginPageState extends State<LoginPage> {
         _timer = null;
         setState(() {
           _remainingSeconds = 60;
+          isSend = false;
         });
         return;
       }
@@ -115,16 +114,17 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final String mobile = _phoneController.text.trim();
+    final String mobileInput = _phoneController.text.trim();
     final String code = _codeController.text.trim();
-    if (mobile.isEmpty || code.isEmpty) {
+    if (mobileInput.isEmpty || code.isEmpty) {
       await PromptAction.showWarning('手机号和验证码不能为空');
       return;
     }
-    if (!_mobilePattern.hasMatch(mobile) || !_codePattern.hasMatch(code)) {
+    if (!_mobilePattern.hasMatch(mobileInput) || !_codePattern.hasMatch(code)) {
       await PromptAction.showWarning('手机号或验证码格式不正确');
       return;
     }
+    final String mobile = _normalizeMobile(mobileInput);
 
     setState(() {
       _isLoggingIn = true;
@@ -181,8 +181,12 @@ class _LoginPageState extends State<LoginPage> {
     return fallback;
   }
 
+  String _normalizeMobile(String mobile) {
+    return mobile.replaceFirst(RegExp(r'^\+86'), '');
+  }
+
   Widget _getCodeButtonText() {
-    if (_isRequestingCode) {
+    if (isSend && _timer == null) {
       return const Text('发送中...');
     }
     if (_timer != null) {
@@ -247,7 +251,7 @@ class _LoginPageState extends State<LoginPage> {
                     textInputAction: TextInputAction.next,
                     decoration: InputDecoration(
                       labelText: '手机号',
-                      hintText: '请输入手机号',
+                      hintText: '请输入手机号（可带 +86）',
                     ),
                   ),
                 ),
@@ -258,7 +262,7 @@ class _LoginPageState extends State<LoginPage> {
                     foregroundColor: const Color.fromARGB(255, 85, 145, 175),
                     minimumSize: const Size(100, 50),
                   ),
-                  onPressed: _isRequestingCode ? null : _sendCode,
+                  onPressed: isSend ? null : _sendCode,
                   child: _getCodeButtonText(),
                 ),
               ],
