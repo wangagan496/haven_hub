@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../utils/toast.dart';
 import 'home_nav_item.dart';
 
 class HomeNav extends StatelessWidget {
@@ -37,9 +38,7 @@ class HomeNav extends StatelessWidget {
             label: item.label,
             icon: item.icon,
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('点击了${item.label}')),
-              );
+              PromptAction.showToast('点击了${item.label}');
             },
           );
         }).toList(growable: false),

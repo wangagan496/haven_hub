@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'api/home.dart';
+import 'constant/index.dart';
 import 'router/index.dart';
-import 'utils/token_manager.dart';
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await tokenManager.init();
   runApp(const HavenHubApp());
 }
 
@@ -23,6 +22,7 @@ class HavenHubApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: GlobalVariable.navigatorKey,
       title: 'Haven Hub',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

@@ -1,9 +1,10 @@
 import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/user.dart';
+import '../../utils/app_exception.dart';
+import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
 
@@ -59,18 +60,11 @@ class _LoginPageState extends State<LoginPage> {
       isSend = true;
     });
     try {
-      final Map<String, dynamic> res = await widget.sendCodeLoader(mobile);
+      await widget.sendCodeLoader(mobile);
       if (!mounted) {
         return;
       }
 
-      unawaited(
-        Future<void>.delayed(const Duration(seconds: 2), () {
-          if (mounted && res['code'] != null) {
-            _codeController.text = res['code'].toString();
-          }
-        }),
-      );
       _startCountdown();
     } on Object catch (error) {
       if (mounted) {
@@ -78,7 +72,7 @@ class _LoginPageState extends State<LoginPage> {
           isSend = false;
         });
       }
-      await PromptAction.showError(_getErrorMessage(error, '验证码发送失败'));
+      await PromptAction.showError(_getErrorMessage(error));
     }
   }
 
@@ -149,6 +143,7 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
+      eventBus.fire(const LoginSuccessEvent());
       await PromptAction.showSuccess('登录成功');
       if (!mounted) {
         return;
@@ -161,7 +156,7 @@ class _LoginPageState extends State<LoginPage> {
       }
       Navigator.maybePop(context);
     } on Object catch (error) {
-      await PromptAction.showError(_getErrorMessage(error, '登录失败'));
+      await PromptAction.showError(_getErrorMessage(error));
     } finally {
       if (mounted) {
         setState(() {
@@ -171,14 +166,13 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  String _getErrorMessage(Object error, String fallback) {
-    if (error is DioException) {
-      return error.message ?? fallback;
-    }
-    if (error is FormatException) {
-      return error.message;
-    }
-    return fallback;
+  String _getErrorMessage(Object error) {
+    return switch (error) {
+      BusinessException() => error.message,
+      NetworkException() => error.message,
+      FormatException() => error.message,
+      _ => '操作失败，请重试',
+    };
   }
 
   String _normalizeMobile(String mobile) {

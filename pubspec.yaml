@@ -36,12 +36,17 @@ dependencies:
   cupertino_icons: ^1.0.8
   dio: ^5.10.0
   flutter_html: ^3.0.0-alpha.4
+  # HarmonyOS adaptation: the pub.dev package does not declare the OHOS implementation.
   shared_preferences:
-    path: C:/flutter_windows_3.44.6-stable/flutter/packages/flutter_packages/packages/shared_preferences/shared_preferences
+    git:
+      url: https://gitcode.com/CPF-Flutter/flutter_packages.git
+      ref: 5c69f5f65ac32631846a6a3ae682f1f91c710cc3
+      path: packages/shared_preferences/shared_preferences
   fluttertoast:
     git:
       url: https://gitcode.com/CPF-Flutter/flutter_fluttertoast.git
       ref: 8.2.8-ohos-1.0.0-beta.1
+  event_bus: ^2.0.1
 
 dev_dependencies:
   flutter_test:

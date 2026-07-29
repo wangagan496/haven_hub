@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../api/home.dart';
-import '../../utils/toast.dart';
+import '../../models/notice_data.dart';
 import 'components/home_list.dart';
 import 'components/home_nav.dart';
-import 'components/notify_item.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -57,7 +56,6 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _dataList = result.map(NoticeData.fromJson).toList(growable: false);
       });
-      await PromptAction.showSuccess('数据获取成功');
     } on Object {
       // 网络不可用时保留本地公告，避免首页出现空白。
     }

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../../models/notice_data.dart';
 import '../../notice_detail/index.dart';
 import 'notify_item.dart';
 
-class HomeList extends StatefulWidget {
+class HomeList extends StatelessWidget {
   const HomeList({
     required this.list,
     super.key,
@@ -11,11 +12,6 @@ class HomeList extends StatefulWidget {
 
   final List<NoticeData> list;
 
-  @override
-  State<HomeList> createState() => _HomeListState();
-}
-
-class _HomeListState extends State<HomeList> {
   Widget _getTitleWidget() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -52,9 +48,9 @@ class _HomeListState extends State<HomeList> {
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: widget.list.length,
+      itemCount: list.length,
       itemBuilder: (BuildContext context, int index) {
-        final NoticeData item = widget.list[index];
+        final NoticeData item = list[index];
         return GestureDetector(
           onTap: item.id.isEmpty
               ? null

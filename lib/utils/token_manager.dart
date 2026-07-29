@@ -2,13 +2,41 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constant/index.dart';
 
+typedef SharedPreferencesLoader = Future<SharedPreferences> Function();
+
 class TokenManager {
+  TokenManager({SharedPreferencesLoader? preferencesLoader})
+      : _preferencesLoader = preferencesLoader ?? SharedPreferences.getInstance;
+
+  final SharedPreferencesLoader _preferencesLoader;
+
   SharedPreferences? _preferences;
+  Future<void>? _initialization;
   String _token = '';
   String _refreshToken = '';
 
-  Future<void> init() async {
-    final SharedPreferences preferences = await SharedPreferences.getInstance();
+  Future<void> init() {
+    final Future<void>? initialization = _initialization;
+    if (initialization != null) {
+      return initialization;
+    }
+
+    late final Future<void> newInitialization;
+    newInitialization = Future<void>.sync(_loadPreferences).then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        if (identical(_initialization, newInitialization)) {
+          _initialization = null;
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      },
+    );
+    _initialization = newInitialization;
+    return newInitialization;
+  }
+
+  Future<void> _loadPreferences() async {
+    final SharedPreferences preferences = await _preferencesLoader();
     _preferences = preferences;
     _token = preferences.getString(GlobalVariable.tokenKey) ?? '';
     _refreshToken = preferences.getString(GlobalVariable.refreshTokenKey) ?? '';
@@ -34,6 +62,7 @@ class TokenManager {
         refreshToken,
       ),
     ]);
+
     final bool didSave = saved.every((bool result) => result);
     if (didSave) {
       _token = token;

@@ -73,6 +73,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.2.0"
+  event_bus:
+    dependency: "direct main"
+    description:
+      name: event_bus
+      sha256: "1a55e97923769c286d295240048fc180e7b0768902c3c2e869fe059aafa15304"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.0.1"
   fake_async:
     dependency: transitive
     description:
@@ -276,9 +284,11 @@ packages:
   shared_preferences:
     dependency: "direct main"
     description:
-      path: "C:/flutter_windows_3.44.6-stable/flutter/packages/flutter_packages/packages/shared_preferences/shared_preferences"
-      relative: false
-    source: path
+      path: "packages/shared_preferences/shared_preferences"
+      ref: "5c69f5f65ac32631846a6a3ae682f1f91c710cc3"
+      resolved-ref: "5c69f5f65ac32631846a6a3ae682f1f91c710cc3"
+      url: "https://gitcode.com/CPF-Flutter/flutter_packages.git"
+    source: git
     version: "2.2.0"
   shared_preferences_android:
     dependency: transitive
@@ -307,9 +317,11 @@ packages:
   shared_preferences_ohos:
     dependency: transitive
     description:
-      path: "C:\\/flutter_windows_3.44.6-stable/flutter/packages/flutter_packages/packages/shared_preferences/shared_preferences_ohos"
-      relative: true
-    source: path
+      path: "packages/shared_preferences/shared_preferences_ohos"
+      ref: HEAD
+      resolved-ref: "5c69f5f65ac32631846a6a3ae682f1f91c710cc3"
+      url: "https://gitcode.com/openharmony-tpc/flutter_packages.git"
+    source: git
     version: "2.2.0"
   shared_preferences_platform_interface:
     dependency: transitive

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 
 import '../../api/home.dart';
-import '../home/components/notify_item.dart';
+import '../../models/notice_data.dart';
 
 class NoticeDetail extends StatefulWidget {
   const NoticeDetail({

@@ -1,6 +1,10 @@
+import 'package:flutter/material.dart';
+
 class GlobalVariable {
   const GlobalVariable._();
 
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
   static const String tokenKey = 'flutter_enjoy_plus';
   static const String refreshTokenKey = 'flutter_enjoy_plus_refresh';
 
@@ -19,6 +23,8 @@ class HttpPath {
   static const String announcement = 'announcement';
   static const String sendCode = 'code';
   static const String login = 'login';
+  static const String userInfo = 'userInfo';
+  static const String refreshToken = 'refreshToken';
 
   static String announcementDetail(String id) {
     return '$announcement/${Uri.encodeComponent(id)}';

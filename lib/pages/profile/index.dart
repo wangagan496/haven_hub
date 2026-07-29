@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../utils/toast.dart';
+
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
 
@@ -10,6 +12,52 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  final TextEditingController _nicknameController = TextEditingController();
+  bool _isSaving = false;
+
+  Future<void> _saveProfile() async {
+    if (_isSaving) {
+      return;
+    }
+
+    final String nickname = _nicknameController.text.trim();
+    if (nickname.isEmpty) {
+      await PromptAction.showWarning('请输入昵称');
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+    });
+    try {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (!mounted) {
+        return;
+      }
+
+      await PromptAction.showSuccess('保存成功');
+      if (!mounted) {
+        return;
+      }
+
+      Navigator.maybePop(context);
+    } on Object {
+      await PromptAction.showError('保存失败，请重试');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _nicknameController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -47,20 +95,21 @@ class _ProfilePageState extends State<ProfilePage> {
               ],
             ),
           ),
-          const Row(
+          Row(
             children: <Widget>[
-              Text('昵称'),
-              Spacer(),
+              const Text('昵称'),
+              const Spacer(),
               Expanded(
                 child: TextField(
-                  decoration: InputDecoration(
+                  controller: _nicknameController,
+                  decoration: const InputDecoration(
                     hintText: '请输入昵称',
                     border: InputBorder.none,
                   ),
                   textAlign: TextAlign.right,
                 ),
               ),
-              Icon(Icons.arrow_forward_ios, size: 12),
+              const Icon(Icons.arrow_forward_ios, size: 12),
             ],
           ),
           const SizedBox(height: 20),
@@ -72,14 +121,23 @@ class _ProfilePageState extends State<ProfilePage> {
                     backgroundColor: const Color.fromARGB(255, 85, 145, 175),
                     minimumSize: const Size(100, 50),
                   ),
-                  onPressed: () {},
-                  child: const Text(
-                    '保存',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                    ),
-                  ),
+                  onPressed: _isSaving ? null : _saveProfile,
+                  child: _isSaving
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          '保存',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                          ),
+                        ),
                 ),
               ),
             ],
