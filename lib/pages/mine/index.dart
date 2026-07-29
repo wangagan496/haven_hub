@@ -1,9 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:get/get.dart';
 
 import '../../api/user.dart';
-import '../../models/user_info.dart';
+import '../../controller/user_info_controller.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
@@ -47,18 +48,23 @@ class _MinePageState extends State<MinePage> {
   bool _isLoggedIn = false;
   bool _isLoggingOut = false;
   bool _isLoadingUserInfo = false;
-  UserInfo _userInfo = const UserInfo.empty();
+  late final UserInfoController _userInfoController;
   late final StreamSubscription<LoginSuccessEvent> _loginSubscription;
   late final StreamSubscription<RefreshEvent> _refreshSubscription;
 
   @override
   void initState() {
     super.initState();
+    _userInfoController = Get.isRegistered<UserInfoController>()
+        ? Get.find<UserInfoController>()
+        : Get.put(UserInfoController(), permanent: true);
     _loginSubscription =
         eventBus.on<LoginSuccessEvent>().listen(_onLoginSuccess);
     _refreshSubscription = eventBus.on<RefreshEvent>().listen(_onRefresh);
     _isLoggedIn = tokenManager.getToken().isNotEmpty;
-    if (_isLoggedIn && widget.activeIndex == 1) {
+    if (!_isLoggedIn) {
+      _userInfoController.clearUserInfo();
+    } else if (widget.activeIndex == 1) {
       unawaited(_loadUserInfo());
     }
   }
@@ -106,7 +112,7 @@ class _MinePageState extends State<MinePage> {
 
     _isLoggedIn = isLoggedIn;
     if (!isLoggedIn) {
-      _userInfo = const UserInfo.empty();
+      _userInfoController.clearUserInfo();
     }
   }
 
@@ -117,12 +123,14 @@ class _MinePageState extends State<MinePage> {
 
     _isLoadingUserInfo = true;
     try {
-      final UserInfo userInfo = await widget.userInfoLoader();
+      final userInfo = await widget.userInfoLoader();
       if (!mounted || !_isLoggedIn || tokenManager.getToken().isEmpty) {
         return;
       }
-      setState(() {
-        _userInfo = userInfo;
+      _userInfoController.updateUserInfo(<String, dynamic>{
+        'nickName': userInfo.nickName,
+        'avatar': userInfo.avatarUrl,
+        'id': userInfo.id,
       });
     } on Object catch (error) {
       if (!mounted || widget.activeIndex != 1 || !_isLoggedIn) {
@@ -150,9 +158,11 @@ class _MinePageState extends State<MinePage> {
   }
 
   Widget _buildUserAvatar() {
-    if (_isLoggedIn && _userInfo.avatarUrl.isNotEmpty) {
+    final String avatar =
+        _userInfoController.userInfo['avatar']?.toString() ?? '';
+    if (_isLoggedIn && avatar.isNotEmpty) {
       return Image.network(
-        _userInfo.avatarUrl,
+        avatar,
         width: 72,
         height: 72,
         fit: BoxFit.cover,
@@ -166,14 +176,17 @@ class _MinePageState extends State<MinePage> {
   }
 
   String _getUserNickName() {
-    if (_userInfo.nickName.isNotEmpty) {
-      return _userInfo.nickName;
+    final String nickName =
+        _userInfoController.userInfo['nickName']?.toString() ?? '';
+    if (nickName.isNotEmpty) {
+      return nickName;
     }
     return '微信用户';
   }
 
   bool _hasLoggedInUser() {
-    return _userInfo.id.isNotEmpty;
+    final String id = _userInfoController.userInfo['id']?.toString() ?? '';
+    return id.isNotEmpty;
   }
 
   void _refreshLoginState() {
@@ -184,10 +197,10 @@ class _MinePageState extends State<MinePage> {
 
     setState(() {
       _isLoggedIn = isLoggedIn;
-      if (!isLoggedIn) {
-        _userInfo = const UserInfo.empty();
-      }
     });
+    if (!isLoggedIn) {
+      _userInfoController.clearUserInfo();
+    }
   }
 
   Future<void> _openLogin() async {
@@ -259,8 +272,8 @@ class _MinePageState extends State<MinePage> {
     setState(() {
       _isLoggingOut = true;
       _isLoggedIn = false;
-      _userInfo = const UserInfo.empty();
     });
+    _userInfoController.clearUserInfo();
     try {
       final bool deleted = await tokenManager.deleteToken();
       if (!deleted) {
@@ -302,183 +315,189 @@ class _MinePageState extends State<MinePage> {
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
-      color: _backgroundColor,
-      child: SafeArea(
-        bottom: false,
-        child: Column(
-          children: <Widget>[
-            const SizedBox(
-              height: 64,
-              child: Center(
-                child: Text(
-                  '我的',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w600,
+    return GetBuilder<UserInfoController>(
+      builder: (_) {
+        return ColoredBox(
+          color: _backgroundColor,
+          child: SafeArea(
+            bottom: false,
+            child: Column(
+              children: <Widget>[
+                const SizedBox(
+                  height: 64,
+                  child: Center(
+                    child: Text(
+                      '我的',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: _isLoggedIn ? null : _openLogin,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          children: <Widget>[
-                            Container(
-                              width: 72,
-                              height: 72,
-                              decoration: const BoxDecoration(
-                                color: Color(0x33FFFFFF),
-                                shape: BoxShape.circle,
-                              ),
-                              child: ClipOval(
-                                child: _buildUserAvatar(),
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Text(
-                                _isLoggedIn ? _getUserNickName() : '点击登录',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 23,
-                                  fontWeight: FontWeight.w500,
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: _isLoggedIn ? null : _openLogin,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: <Widget>[
+                                Container(
+                                  width: 72,
+                                  height: 72,
+                                  decoration: const BoxDecoration(
+                                    color: Color(0x33FFFFFF),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: ClipOval(
+                                    child: _buildUserAvatar(),
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Text(
+                                    _isLoggedIn ? _getUserNickName() : '点击登录',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 23,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(20),
-                    onTap: _openProfile,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 10),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: <Widget>[
-                          Text(
-                            '去完善信息',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                            ),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: _openProfile,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 10),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: <Widget>[
+                              Text(
+                                '去完善信息',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                ),
+                              ),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                color: Colors.white,
+                                size: 28,
+                              ),
+                            ],
                           ),
-                          Icon(
-                            Icons.chevron_right_rounded,
-                            color: Colors.white,
-                            size: 28,
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
-              ),
-            ),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                children: _menuItems
-                    .map<Widget>(
-                      (({String label, String icon}) item) {
-                        return InkWell(
-                          onTap: () {
-                            unawaited(_showMessage(item.label));
-                          },
-                          child: SizedBox(
-                            height: 72,
-                            child: Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 20),
-                              child: Row(
-                                children: <Widget>[
-                                  Image.asset(
-                                    item.icon,
-                                    width: 48,
-                                    height: 48,
-                                    fit: BoxFit.contain,
+                ),
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    children: _menuItems
+                        .map<Widget>(
+                          (({String label, String icon}) item) {
+                            return InkWell(
+                              onTap: () {
+                                unawaited(_showMessage(item.label));
+                              },
+                              child: SizedBox(
+                                height: 72,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 20),
+                                  child: Row(
+                                    children: <Widget>[
+                                      Image.asset(
+                                        item.icon,
+                                        width: 48,
+                                        height: 48,
+                                        fit: BoxFit.contain,
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: Text(
+                                          item.label,
+                                          style: const TextStyle(
+                                            color: Color(0xFF262626),
+                                            fontSize: 20,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
+                                      ),
+                                      const Icon(
+                                        Icons.chevron_right_rounded,
+                                        color: Color(0xFFA7A7A7),
+                                        size: 32,
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Text(
-                                      item.label,
-                                      style: const TextStyle(
-                                        color: Color(0xFF262626),
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.w400,
+                                ),
+                              ),
+                            );
+                          },
+                        )
+                        .followedBy(
+                          _hasLoggedInUser()
+                              ? <Widget>[
+                                  const Divider(
+                                    height: 1,
+                                    indent: 20,
+                                    endIndent: 20,
+                                  ),
+                                  InkWell(
+                                    onTap:
+                                        _isLoggingOut ? null : _confirmLogout,
+                                    child: SizedBox(
+                                      height: 64,
+                                      child: Center(
+                                        child: _isLoggingOut
+                                            ? const SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                ),
+                                              )
+                                            : const Text(
+                                                '退出登录',
+                                                style: TextStyle(
+                                                  color: Colors.red,
+                                                  fontSize: 18,
+                                                ),
+                                              ),
                                       ),
                                     ),
                                   ),
-                                  const Icon(
-                                    Icons.chevron_right_rounded,
-                                    color: Color(0xFFA7A7A7),
-                                    size: 32,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    )
-                    .followedBy(
-                      _hasLoggedInUser()
-                          ? <Widget>[
-                              const Divider(
-                                height: 1,
-                                indent: 20,
-                                endIndent: 20,
-                              ),
-                              InkWell(
-                                onTap: _isLoggingOut ? null : _confirmLogout,
-                                child: SizedBox(
-                                  height: 64,
-                                  child: Center(
-                                    child: _isLoggingOut
-                                        ? const SizedBox(
-                                            width: 24,
-                                            height: 24,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
-                                          )
-                                        : const Text(
-                                            '退出登录',
-                                            style: TextStyle(
-                                              color: Colors.red,
-                                              fontSize: 18,
-                                            ),
-                                          ),
-                                  ),
-                                ),
-                              ),
-                            ]
-                          : const <Widget>[],
-                    )
-                    .toList(growable: false),
-              ),
+                                ]
+                              : const <Widget>[],
+                        )
+                        .toList(growable: false),
+                  ),
+                ),
+                const Spacer(),
+              ],
             ),
-            const Spacer(),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

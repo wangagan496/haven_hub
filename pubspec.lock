@@ -145,6 +145,14 @@ packages:
       url: "https://gitcode.com/CPF-Flutter/flutter_fluttertoast.git"
     source: git
     version: "8.2.8"
+  get:
+    dependency: "direct main"
+    description:
+      name: get
+      sha256: "5ed34a7925b85336e15d472cc4cfe7d9ebf4ab8e8b9f688585bf6b50f4c3d79a"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "4.7.3"
   html:
     dependency: transitive
     description:
