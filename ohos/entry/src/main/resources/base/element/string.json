@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "haven_hub"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "Used to take a profile photo"
     }
   ]
 }

@@ -48,6 +48,12 @@ dependencies:
       ref: 8.2.8-ohos-1.0.0-beta.1
   event_bus: ^2.0.1
   get: ^4.7.3
+  # HarmonyOS adaptation of Flutter's official image_picker plugin.
+  image_picker:
+    git:
+      url: https://gitcode.com/CPF-Flutter/flutter_packages.git
+      ref: image_picker-v1.2.1-ohos-1.0.0
+      path: packages/image_picker/image_picker
 
 dev_dependencies:
   flutter_test:

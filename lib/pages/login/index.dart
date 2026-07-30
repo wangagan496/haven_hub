@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/user.dart';
@@ -13,6 +14,7 @@ class LoginPage extends StatefulWidget {
     this.toName,
     this.sendCodeLoader = sendCodeApi,
     this.loginLoader = loginApi,
+    this.enableDevelopmentCodeAutofill = kDebugMode,
     super.key,
   });
 
@@ -21,6 +23,7 @@ class LoginPage extends StatefulWidget {
   final String? toName;
   final SendCodeLoader sendCodeLoader;
   final LoginLoader loginLoader;
+  final bool enableDevelopmentCodeAutofill;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -60,7 +63,21 @@ class _LoginPageState extends State<LoginPage> {
       isSend = true;
     });
     try {
-      await widget.sendCodeLoader(mobile);
+      final Map<String, dynamic> result = await widget.sendCodeLoader(mobile);
+      if (!mounted) {
+        return;
+      }
+
+      final String? developmentCode =
+          kDebugMode && widget.enableDevelopmentCodeAutofill
+              ? _extractVerificationCode(result)
+              : null;
+      if (developmentCode != null) {
+        _codeController.text = developmentCode;
+        await PromptAction.showSuccess('验证码已获取并自动填入');
+      } else {
+        await PromptAction.showSuccess('验证码已发送，请查收短信');
+      }
       if (!mounted) {
         return;
       }
@@ -177,6 +194,20 @@ class _LoginPageState extends State<LoginPage> {
 
   String _normalizeMobile(String mobile) {
     return mobile.replaceFirst(RegExp(r'^\+86'), '');
+  }
+
+  String? _extractVerificationCode(Map<String, dynamic> result) {
+    for (final String key in const <String>[
+      'code',
+      'smsCode',
+      'verificationCode',
+    ]) {
+      final String value = result[key]?.toString().trim() ?? '';
+      if (_codePattern.hasMatch(value)) {
+        return value;
+      }
+    }
+    return null;
   }
 
   Widget _getCodeButtonText() {

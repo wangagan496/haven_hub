@@ -8,6 +8,13 @@ typedef LoginLoader = Future<Map<String, dynamic>> Function(
   String code,
 );
 typedef UserInfoLoader = Future<UserInfo> Function();
+typedef UpdateUserInfoLoader = Future<Map<String, dynamic>> Function(
+  String nickName,
+);
+typedef UploadPhotoLoader = Future<String> Function({
+  required List<int> fileBytes,
+  required String fileName,
+});
 
 Future<Map<String, dynamic>> sendCodeApi(String mobile) async {
   final dynamic data = await requestDio.get(
@@ -31,6 +38,36 @@ Future<Map<String, dynamic>> loginApi(String mobile, String code) async {
 Future<UserInfo> getUserInfoApi() async {
   final dynamic data = await requestDio.get(HttpPath.userInfo);
   return UserInfo.fromJson(_toMap(data, '获取用户信息'));
+}
+
+Future<Map<String, dynamic>> updateUserInfoApi(String nickName) async {
+  final dynamic data = await requestDio.put(
+    HttpPath.userInfo,
+    data: <String, dynamic>{'nickName': nickName},
+  );
+  final Map<String, dynamic> result = _toMap(data, '修改用户信息');
+  if (result['id']?.toString().trim().isEmpty ?? true) {
+    throw const FormatException('修改用户信息接口未返回用户 ID');
+  }
+  return result;
+}
+
+Future<String> uploadPhotoApi({
+  required List<int> fileBytes,
+  required String fileName,
+}) async {
+  final dynamic data = await requestDio.upload(
+    HttpPath.upload,
+    fileBytes: fileBytes,
+    fileName: fileName,
+    data: <String, dynamic>{'type': 'avatar'},
+  );
+  final Map<String, dynamic> result = _toMap(data, '上传头像');
+  final String url = result['url']?.toString().trim() ?? '';
+  if (url.isEmpty) {
+    throw const FormatException('上传头像接口未返回图片地址');
+  }
+  return url;
 }
 
 Map<String, dynamic> _toMap(dynamic data, String operation) {

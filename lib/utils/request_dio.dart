@@ -296,7 +296,8 @@ class RequestDio {
 
   Future<dynamic> upload(
     String url, {
-    required String filePath,
+    String? filePath,
+    List<int>? fileBytes,
     String fileKey = 'file',
     String? fileName,
     Map<String, dynamic>? data,
@@ -305,12 +306,20 @@ class RequestDio {
     ProgressCallback? onSendProgress,
     CancelToken? cancelToken,
   }) async {
+    if ((filePath == null) == (fileBytes == null)) {
+      throw ArgumentError(
+        'filePath 和 fileBytes 必须且只能提供一个',
+      );
+    }
+    final MultipartFile file = fileBytes != null
+        ? MultipartFile.fromBytes(fileBytes, filename: fileName)
+        : await MultipartFile.fromFile(
+            filePath!,
+            filename: fileName,
+          );
     final Map<String, dynamic> formData = <String, dynamic>{
       ...?data,
-      fileKey: await MultipartFile.fromFile(
-        filePath,
-        filename: fileName,
-      ),
+      fileKey: file,
     };
 
     return _handleResponse(
