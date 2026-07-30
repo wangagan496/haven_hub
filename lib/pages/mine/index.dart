@@ -9,6 +9,7 @@ import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
+import '../House/HouseList.dart';
 import '../login/index.dart';
 import '../profile/index.dart';
 
@@ -29,19 +30,22 @@ class MinePage extends StatefulWidget {
 class _MinePageState extends State<MinePage> {
   static const Color _backgroundColor = Color(0xFF5B9AB8);
 
-  static const List<({String label, String icon})> _menuItems =
-      <({String label, String icon})>[
+  static const List<({String label, String icon, String? routeName})>
+      _menuItems = <({String label, String icon, String? routeName})>[
     (
       label: '我的房屋',
       icon: 'assets/images/house_profile_icon@2x.png',
+      routeName: HouseList.routeName,
     ),
     (
       label: '我的报修',
       icon: 'assets/images/repair_profile_icon@2x.png',
+      routeName: null,
     ),
     (
       label: '访客记录',
       icon: 'assets/images/visitor_profile_icon@2x.png',
+      routeName: null,
     ),
   ];
 
@@ -309,8 +313,15 @@ class _MinePageState extends State<MinePage> {
     }
   }
 
-  Future<void> _showMessage(String message) async {
-    await PromptAction.showToast(message);
+  Future<void> _openMenuItem(
+    ({String label, String icon, String? routeName}) item,
+  ) async {
+    final String? routeName = item.routeName;
+    if (routeName != null) {
+      await Navigator.pushNamed<void>(context, routeName);
+      return;
+    }
+    await PromptAction.showToast('${item.label}功能暂未开放');
   }
 
   @override
@@ -412,10 +423,14 @@ class _MinePageState extends State<MinePage> {
                   child: Column(
                     children: _menuItems
                         .map<Widget>(
-                          (({String label, String icon}) item) {
+                          (({
+                                String label,
+                                String icon,
+                                String? routeName
+                              }) item) {
                             return InkWell(
                               onTap: () {
-                                unawaited(_showMessage(item.label));
+                                unawaited(_openMenuItem(item));
                               },
                               child: SizedBox(
                                 height: 72,

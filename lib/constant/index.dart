@@ -25,6 +25,7 @@ class HttpPath {
   static const String login = 'login';
   static const String userInfo = 'userInfo';
   static const String upload = 'upload';
+  static const String houseList = 'room';
   static const String refreshToken = 'refreshToken';
 
   static String announcementDetail(String id) {

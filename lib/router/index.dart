@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/home.dart';
+import '../pages/House/HouseList.dart';
 import '../pages/login/index.dart';
 import '../pages/notice_detail/index.dart';
 import '../pages/profile/index.dart';
@@ -23,6 +24,12 @@ Widget getRouteWidget(
         return const LoginPage(toName: ProfilePage.routeName);
       }
       return const ProfilePage();
+    },
+    HouseList.routeName: () {
+      if (tokenManager.getToken().isEmpty) {
+        return const LoginPage(toName: HouseList.routeName);
+      }
+      return const HouseList();
     },
   };
 
