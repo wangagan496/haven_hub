@@ -42,10 +42,6 @@ dependencies:
       url: https://gitcode.com/CPF-Flutter/flutter_packages.git
       ref: 5c69f5f65ac32631846a6a3ae682f1f91c710cc3
       path: packages/shared_preferences/shared_preferences
-  fluttertoast:
-    git:
-      url: https://gitcode.com/CPF-Flutter/flutter_fluttertoast.git
-      ref: 8.2.8-ohos-1.0.0-beta.1
   event_bus: ^2.0.1
   get: ^4.7.3
   # HarmonyOS adaptation of Flutter's official image_picker plugin.
@@ -54,6 +50,15 @@ dependencies:
       url: https://gitcode.com/CPF-Flutter/flutter_packages.git
       ref: image_picker-v1.2.1-ohos-1.0.0
       path: packages/image_picker/image_picker
+  permission_handler:
+    git:
+      url: https://gitcode.com/openharmony-sig/flutter_permission_handler
+      path: permission_handler
+  # HarmonyOS adaptation of the geolocator plugin used by the course material.
+  geolocator:
+    git:
+      url: https://gitcode.com/openharmony-sig/fluttertpc_geolocator.git
+      path: geolocator
 
 dev_dependencies:
   flutter_test:

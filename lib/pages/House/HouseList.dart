@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../api/house.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
+import '../Location/LocationList.dart';
 import 'components/HouseItem.dart';
 
 class HouseList extends StatefulWidget {
@@ -96,7 +97,10 @@ class _HouseListState extends State<HouseList> {
                 height: 48,
                 child: OutlinedButton.icon(
                   onPressed: () {
-                    PromptAction.showToast('添加房屋功能暂未开放');
+                    Navigator.pushNamed<void>(
+                      context,
+                      LocationList.routeName,
+                    );
                   },
                   icon: const Icon(Icons.add, size: 20),
                   label: const Text('添加房屋'),

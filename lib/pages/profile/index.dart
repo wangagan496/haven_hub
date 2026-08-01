@@ -1,37 +1,66 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:get/get.dart' hide FormData, MultipartFile;
 
 import '../../api/user.dart';
 import '../../controller/user_info_controller.dart';
+import '../../platform/avatar_picker.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
+
+typedef _AvatarOption = ({
+  IconData icon,
+  String label,
+  AvatarSource? source,
+});
+
+class _PendingAvatar {
+  const _PendingAvatar({
+    required this.bytes,
+    required this.fileName,
+    this.uploadedUrl,
+  });
+
+  final Uint8List bytes;
+  final String fileName;
+  final String? uploadedUrl;
+
+  _PendingAvatar withUploadedUrl(String url) {
+    return _PendingAvatar(
+      bytes: bytes,
+      fileName: fileName,
+      uploadedUrl: url,
+    );
+  }
+}
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
     this.updateUserInfoLoader = updateUserInfoApi,
-    this.uploadPhotoLoader = uploadPhotoApi,
+    this.uploadAvatarLoader = uploadAvatarApi,
+    this.avatarPicker = pickAvatar,
+    this.cameraSupported,
     super.key,
   });
 
   static const String routeName = '/profile';
 
   final UpdateUserInfoLoader updateUserInfoLoader;
-  final UploadPhotoLoader uploadPhotoLoader;
+  final UploadAvatarLoader uploadAvatarLoader;
+  final AvatarPicker avatarPicker;
+  final bool? cameraSupported;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  static final RegExp _nicknamePattern = RegExp(r'^.{2,10}$', unicode: true);
+
   final TextEditingController _nicknameController = TextEditingController();
-  final ImagePicker _imagePicker = ImagePicker();
 
   late final UserInfoController _userInfoController;
-  XFile? _selectedAvatar;
-  Uint8List? _selectedAvatarBytes;
+  _PendingAvatar? _pendingAvatar;
   bool _isSaving = false;
   bool _isPickingAvatar = false;
 
@@ -39,18 +68,43 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     _userInfoController = Get.find<UserInfoController>();
-    _nicknameController.text = getUserNickName();
+    _nicknameController.text = _getUserNickname();
   }
 
-  String getUserNickName() {
+  bool get _isBusy => _isSaving || _isPickingAvatar;
+
+  bool get _supportsCamera => widget.cameraSupported ?? supportsAvatarCamera;
+
+  List<_AvatarOption> get _avatarOptions {
+    return <_AvatarOption>[
+      if (_supportsCamera)
+        (
+          label: '拍照',
+          icon: Icons.camera_alt,
+          source: AvatarSource.camera,
+        ),
+      (
+        label: _supportsCamera ? '相册' : '选择图片',
+        icon: Icons.photo_library,
+        source: AvatarSource.gallery,
+      ),
+      (
+        label: '取消',
+        icon: Icons.cancel,
+        source: null,
+      ),
+    ];
+  }
+
+  String _getUserNickname() {
     return _userInfoController.userInfo['nickName']?.toString().trim() ?? '';
   }
 
-  Widget getUserAvatar(UserInfoController controller) {
-    final Uint8List? selectedAvatarBytes = _selectedAvatarBytes;
-    if (selectedAvatarBytes != null) {
+  Widget _buildUserAvatar(UserInfoController controller) {
+    final _PendingAvatar? pendingAvatar = _pendingAvatar;
+    if (pendingAvatar != null) {
       return Image.memory(
-        selectedAvatarBytes,
+        pendingAvatar.bytes,
         width: 40,
         height: 40,
         fit: BoxFit.cover,
@@ -91,29 +145,13 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // 显示选择头像弹窗
   Future<void> _showAvatarOptions() async {
-    if (_isPickingAvatar || _isSaving) {
+    if (_isBusy) {
       return;
     }
 
-    final List<Map<String, Object?>> getAvatarList = <Map<String, Object?>>[
-      <String, Object?>{
-        'name': '拍照',
-        'icon': const Icon(Icons.camera_alt),
-        'source': ImageSource.camera,
-      },
-      <String, Object?>{
-        'name': '相册',
-        'icon': const Icon(Icons.photo_library),
-        'source': ImageSource.gallery,
-      },
-      <String, Object?>{
-        'name': '取消',
-        'icon': const Icon(Icons.cancel),
-        'source': null,
-      },
-    ];
-
-    final ImageSource? selectedSource = await showModalBottomSheet<ImageSource>(
+    final List<_AvatarOption> avatarOptions = _avatarOptions;
+    final AvatarSource? selectedSource =
+        await showModalBottomSheet<AvatarSource>(
       context: context,
       builder: (BuildContext sheetContext) {
         return SafeArea(
@@ -121,20 +159,19 @@ class _ProfilePageState extends State<ProfilePage> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemBuilder: (BuildContext context, int index) {
-              final Map<String, Object?> item = getAvatarList[index];
-              final ImageSource? source = item['source'] as ImageSource?;
+              final _AvatarOption option = avatarOptions[index];
               return InkWell(
                 onTap: () {
-                  Navigator.pop<ImageSource>(sheetContext, source);
+                  Navigator.pop<AvatarSource>(sheetContext, option.source);
                 },
                 child: SizedBox(
                   height: 56,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: <Widget>[
-                      item['icon'] as Widget,
+                      Icon(option.icon),
                       const SizedBox(width: 8),
-                      Text(item['name'] as String),
+                      Text(option.label),
                     ],
                   ),
                 ),
@@ -143,7 +180,7 @@ class _ProfilePageState extends State<ProfilePage> {
             separatorBuilder: (BuildContext context, int index) {
               return const Divider(height: 1);
             },
-            itemCount: getAvatarList.length,
+            itemCount: avatarOptions.length,
           ),
         );
       },
@@ -155,8 +192,8 @@ class _ProfilePageState extends State<ProfilePage> {
     await _pickAvatar(selectedSource);
   }
 
-  Future<void> _pickAvatar(ImageSource source) async {
-    if (_isPickingAvatar || _isSaving) {
+  Future<void> _pickAvatar(AvatarSource source) async {
+    if (_isBusy) {
       return;
     }
 
@@ -164,35 +201,28 @@ class _ProfilePageState extends State<ProfilePage> {
       _isPickingAvatar = true;
     });
     try {
-      final XFile? file = await _imagePicker.pickImage(
-        source: source,
-        maxWidth: 1600,
-        imageQuality: 85,
-      );
-      if (file == null) {
+      final PickedAvatar? avatar = await widget.avatarPicker(source);
+      if (avatar == null) {
         return;
       }
 
-      final Uint8List bytes = await file.readAsBytes();
       if (!mounted) {
         return;
       }
-      if (bytes.isEmpty) {
+      if (avatar.bytes.isEmpty) {
         throw const FormatException('所选图片内容为空');
       }
 
       setState(() {
-        _selectedAvatar = file;
-        _selectedAvatarBytes = bytes;
+        _pendingAvatar = _PendingAvatar(
+          bytes: avatar.bytes,
+          fileName: avatar.fileName,
+        );
       });
     } on Object catch (error) {
-      final String msg = switch (error) {
-        BusinessException() => error.message,
-        NetworkException() => error.message,
-        FormatException() => error.message,
-        _ => '选择头像失败，请重试',
-      };
-      await PromptAction.showError(msg);
+      await PromptAction.showError(
+        _getErrorMessage(error, fallback: '选择头像失败，请重试'),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -203,7 +233,7 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _saveUserInfo() async {
-    if (_isSaving) {
+    if (_isBusy) {
       return;
     }
 
@@ -213,8 +243,7 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     }
 
-    final RegExp nickNameRegExp = RegExp(r'^.{2,10}$', unicode: true);
-    if (!nickNameRegExp.hasMatch(nickName)) {
+    if (!_nicknamePattern.hasMatch(nickName)) {
       await PromptAction.showWarning('昵称须为2-10位字符');
       return;
     }
@@ -225,23 +254,23 @@ class _ProfilePageState extends State<ProfilePage> {
     try {
       String avatar =
           _userInfoController.userInfo['avatar']?.toString().trim() ?? '';
-      final XFile? selectedAvatar = _selectedAvatar;
-      final Uint8List? selectedAvatarBytes = _selectedAvatarBytes;
-      if (selectedAvatar != null && selectedAvatarBytes != null) {
-        avatar = await widget.uploadPhotoLoader(
-          fileBytes: selectedAvatarBytes,
-          fileName: selectedAvatar.name,
-        );
+      final _PendingAvatar? pendingAvatar = _pendingAvatar;
+      if (pendingAvatar != null) {
+        avatar = pendingAvatar.uploadedUrl ??
+            await widget.uploadAvatarLoader(
+              fileBytes: pendingAvatar.bytes,
+              fileName: pendingAvatar.fileName,
+            );
         if (!mounted) {
           return;
         }
-
-        _selectedAvatar = null;
-        _selectedAvatarBytes = null;
+        _pendingAvatar = pendingAvatar.withUploadedUrl(avatar);
       }
 
-      final Map<String, dynamic> result =
-          await widget.updateUserInfoLoader(nickName);
+      final Map<String, dynamic> result = await widget.updateUserInfoLoader(
+        nickName: nickName,
+        avatar: avatar,
+      );
       if (!mounted) {
         return;
       }
@@ -253,6 +282,7 @@ class _ProfilePageState extends State<ProfilePage> {
         'avatar': avatar,
         if (id.isNotEmpty) 'id': id,
       });
+      _pendingAvatar = null;
 
       await PromptAction.showSuccess('修改成功');
       if (!mounted) {
@@ -260,13 +290,9 @@ class _ProfilePageState extends State<ProfilePage> {
       }
       Navigator.maybePop(context);
     } on Object catch (error) {
-      final String msg = switch (error) {
-        BusinessException() => error.message,
-        NetworkException() => error.message,
-        FormatException() => error.message,
-        _ => '修改失败，请重试',
-      };
-      await PromptAction.showError(msg);
+      await PromptAction.showError(
+        _getErrorMessage(error, fallback: '修改失败，请重试'),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -274,6 +300,15 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       }
     }
+  }
+
+  String _getErrorMessage(Object error, {required String fallback}) {
+    return switch (error) {
+      BusinessException() => error.message,
+      NetworkException() => error.message,
+      FormatException() => error.message,
+      _ => fallback,
+    };
   }
 
   @override
@@ -300,7 +335,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 button: true,
                 label: '修改头像',
                 child: InkWell(
-                  onTap: _isSaving ? null : _showAvatarOptions,
+                  onTap: _isBusy ? null : _showAvatarOptions,
                   borderRadius: BorderRadius.circular(8),
                   child: SizedBox(
                     height: 56,
@@ -311,7 +346,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           style: TextStyle(fontSize: 16),
                         ),
                         const Spacer(),
-                        ClipOval(child: getUserAvatar(controller)),
+                        ClipOval(child: _buildUserAvatar(controller)),
                         const SizedBox(width: 8),
                         const Icon(Icons.arrow_forward_ios, size: 12),
                       ],
@@ -329,7 +364,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     Expanded(
                       child: TextField(
                         controller: _nicknameController,
-                        enabled: !_isSaving,
+                        enabled: !_isBusy,
                         decoration: const InputDecoration(
                           hintText: '请输入昵称',
                           border: InputBorder.none,
@@ -352,7 +387,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   backgroundColor: const Color.fromARGB(255, 85, 145, 175),
                   minimumSize: const Size.fromHeight(50),
                 ),
-                onPressed: _isSaving ? null : _saveUserInfo,
+                onPressed: _isBusy ? null : _saveUserInfo,
                 child: _isSaving
                     ? const SizedBox(
                         width: 24,

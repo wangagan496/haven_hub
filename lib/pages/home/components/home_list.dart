@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../models/notice_data.dart';
-import '../../notice_detail/index.dart';
 import 'notify_item.dart';
 
 class HomeList extends StatelessWidget {
@@ -57,7 +56,7 @@ class HomeList extends StatelessWidget {
               : () {
                   Navigator.pushNamed(
                     context,
-                    NoticeDetail.routeName,
+                    '/notice-detail-404-test',
                     arguments: item.id,
                   );
                 },

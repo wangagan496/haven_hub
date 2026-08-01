@@ -1,46 +1,48 @@
-import 'package:dio/dio.dart';
+import 'package:dio/dio.dart' as dio;
 
 import '../constant/index.dart';
 import 'app_exception.dart';
 import 'emitter.dart';
 import 'token_manager.dart';
 
-typedef RefreshDioFactory = Dio Function();
+typedef RefreshDioFactory = dio.Dio Function();
 
 class RequestDio {
   RequestDio({
-    Dio? dio,
+    dio.Dio? client,
     RefreshDioFactory? refreshDioFactory,
-  })  : _dio = dio ?? Dio(),
-        _refreshDioFactory = refreshDioFactory ?? Dio.new {
+  })  : _dio = client ?? dio.Dio(),
+        _refreshDioFactory = refreshDioFactory ?? dio.Dio.new {
     // 配置请求基地址和超时时间，使用级联（链式）调用。
     _configureDio(_dio);
 
     _dio.interceptors.add(
-      InterceptorsWrapper(
+      dio.InterceptorsWrapper(
         // 请求拦截器：统一注入 Bearer Token。
         onRequest: (
-          RequestOptions options,
-          RequestInterceptorHandler handler,
+          dio.RequestOptions options,
+          dio.RequestInterceptorHandler handler,
         ) {
           final String token = tokenManager.getToken();
-          if (token.isNotEmpty) {
+          final bool skipAuthorization =
+              options.extra['skipAuthorization'] == true;
+          if (token.isNotEmpty && !skipAuthorization) {
             options.headers['Authorization'] = 'Bearer $token';
           }
           handler.next(options);
         },
         // 响应拦截器：直接透传，业务错误由 _handleResponse 处理。
         onResponse: (
-          Response<dynamic> response,
-          ResponseInterceptorHandler handler,
+          dio.Response<dynamic> response,
+          dio.ResponseInterceptorHandler handler,
         ) {
           handler.next(response);
         },
         // 错误拦截器：将所有网络/HTTP 错误统一转换为 NetworkException，
         // 并附带对用户友好的中文提示。
         onError: (
-          DioException error,
-          ErrorInterceptorHandler handler,
+          dio.DioException error,
+          dio.ErrorInterceptorHandler handler,
         ) async {
           final bool isRetry = error.requestOptions.extra['isRetry'] == true;
 
@@ -53,12 +55,12 @@ class RequestDio {
               if (refreshSuccess) {
                 try {
                   // 重发原始请求，标记为重试防止无限循环
-                  final RequestOptions requestOptions =
+                  final dio.RequestOptions requestOptions =
                       _createRetryRequest(error.requestOptions);
-                  final Response<dynamic> retryResponse =
+                  final dio.Response<dynamic> retryResponse =
                       await _dio.fetch(requestOptions);
                   return handler.resolve(retryResponse);
-                } on DioException catch (e) {
+                } on dio.DioException catch (e) {
                   error = e;
                   shouldLogout = e.response?.statusCode == 401;
                 }
@@ -74,7 +76,7 @@ class RequestDio {
 
           final NetworkException appError = _mapDioError(error);
           handler.reject(
-            DioException(
+            dio.DioException(
               requestOptions: error.requestOptions,
               response: error.response,
               type: error.type,
@@ -88,23 +90,25 @@ class RequestDio {
     );
   }
 
-  final Dio _dio;
+  final dio.Dio _dio;
   final RefreshDioFactory _refreshDioFactory;
   Future<bool>? _refreshTokenFuture;
 
-  static void _configureDio(Dio dio) {
-    dio.options
+  static void _configureDio(dio.Dio client) {
+    client.options
       ..baseUrl = GlobalVariable.baseUrl
       ..connectTimeout = GlobalVariable.networkTimeout
       ..receiveTimeout = GlobalVariable.networkTimeout
       ..sendTimeout = GlobalVariable.networkTimeout
-      ..responseType = ResponseType.json;
+      ..responseType = dio.ResponseType.json;
   }
 
-  RequestOptions _createRetryRequest(RequestOptions requestOptions) {
+  dio.RequestOptions _createRetryRequest(
+    dio.RequestOptions requestOptions,
+  ) {
     final dynamic requestData = requestOptions.data;
     final dynamic retryData =
-        requestData is FormData ? requestData.clone() : requestData;
+        requestData is dio.FormData ? requestData.clone() : requestData;
     return requestOptions.copyWith(
       data: retryData,
       headers: <String, dynamic>{
@@ -134,11 +138,11 @@ class RequestDio {
 
     _refreshTokenFuture = () async {
       try {
-        final Dio tokenDio = _refreshDioFactory();
+        final dio.Dio tokenDio = _refreshDioFactory();
         _configureDio(tokenDio);
-        final Response<dynamic> response = await tokenDio.post<dynamic>(
+        final dio.Response<dynamic> response = await tokenDio.post<dynamic>(
           HttpPath.refreshToken,
-          options: Options(
+          options: dio.Options(
             headers: <String, dynamic>{
               'Authorization': 'Bearer $refreshToken',
             },
@@ -180,25 +184,25 @@ class RequestDio {
   }
 
   /// 将 Dio 底层异常映射为 [NetworkException]，提供友好中文错误文案。
-  static NetworkException _mapDioError(DioException error) {
+  static NetworkException _mapDioError(dio.DioException error) {
     switch (error.type) {
-      case DioExceptionType.connectionTimeout:
+      case dio.DioExceptionType.connectionTimeout:
         return const NetworkException('连接服务器超时，请检查网络');
-      case DioExceptionType.sendTimeout:
+      case dio.DioExceptionType.sendTimeout:
         return const NetworkException('数据发送超时，请检查网络');
-      case DioExceptionType.receiveTimeout:
+      case dio.DioExceptionType.receiveTimeout:
         return const NetworkException('数据接收超时，请检查网络');
-      case DioExceptionType.transformTimeout:
+      case dio.DioExceptionType.transformTimeout:
         return const NetworkException('响应数据解析超时，请稍后重试');
-      case DioExceptionType.connectionError:
+      case dio.DioExceptionType.connectionError:
         return const NetworkException('网络连接失败，请检查网络设置');
-      case DioExceptionType.badCertificate:
+      case dio.DioExceptionType.badCertificate:
         return const NetworkException('SSL 证书验证失败，连接不安全');
-      case DioExceptionType.cancel:
+      case dio.DioExceptionType.cancel:
         return const NetworkException('请求已取消');
-      case DioExceptionType.badResponse:
+      case dio.DioExceptionType.badResponse:
         return _mapHttpStatus(error.response?.statusCode);
-      case DioExceptionType.unknown:
+      case dio.DioExceptionType.unknown:
         return NetworkException('未知网络错误：${error.message ?? ''}');
     }
   }
@@ -227,8 +231,8 @@ class RequestDio {
   Future<dynamic> get(
     String url, {
     Map<String, dynamic>? params,
-    Options? options,
-    CancelToken? cancelToken,
+    dio.Options? options,
+    dio.CancelToken? cancelToken,
   }) {
     return _handleResponse(
       _dio.get<dynamic>(
@@ -240,12 +244,35 @@ class RequestDio {
     );
   }
 
+  /// 请求第三方公开接口，不注入登录 Token，也不按本项目业务 code 解析。
+  Future<dynamic> getExternal(
+    String url, {
+    Map<String, dynamic>? params,
+    dio.Options? options,
+    dio.CancelToken? cancelToken,
+  }) {
+    final dio.Options requestOptions = (options ?? dio.Options()).copyWith(
+      extra: <String, dynamic>{
+        ...?options?.extra,
+        'skipAuthorization': true,
+      },
+    );
+    return _handleRawResponse(
+      _dio.get<dynamic>(
+        url,
+        queryParameters: params,
+        options: requestOptions,
+        cancelToken: cancelToken,
+      ),
+    );
+  }
+
   Future<dynamic> post(
     String url, {
     Object? data,
     Map<String, dynamic>? params,
-    Options? options,
-    CancelToken? cancelToken,
+    dio.Options? options,
+    dio.CancelToken? cancelToken,
   }) {
     return _handleResponse(
       _dio.post<dynamic>(
@@ -262,8 +289,8 @@ class RequestDio {
     String url, {
     Object? data,
     Map<String, dynamic>? params,
-    Options? options,
-    CancelToken? cancelToken,
+    dio.Options? options,
+    dio.CancelToken? cancelToken,
   }) {
     return _handleResponse(
       _dio.put<dynamic>(
@@ -280,8 +307,8 @@ class RequestDio {
     String url, {
     Object? data,
     Map<String, dynamic>? params,
-    Options? options,
-    CancelToken? cancelToken,
+    dio.Options? options,
+    dio.CancelToken? cancelToken,
   }) {
     return _handleResponse(
       _dio.delete<dynamic>(
@@ -302,18 +329,18 @@ class RequestDio {
     String? fileName,
     Map<String, dynamic>? data,
     Map<String, dynamic>? params,
-    Options? options,
-    ProgressCallback? onSendProgress,
-    CancelToken? cancelToken,
+    dio.Options? options,
+    dio.ProgressCallback? onSendProgress,
+    dio.CancelToken? cancelToken,
   }) async {
     if ((filePath == null) == (fileBytes == null)) {
       throw ArgumentError(
         'filePath 和 fileBytes 必须且只能提供一个',
       );
     }
-    final MultipartFile file = fileBytes != null
-        ? MultipartFile.fromBytes(fileBytes, filename: fileName)
-        : await MultipartFile.fromFile(
+    final dio.MultipartFile file = fileBytes != null
+        ? dio.MultipartFile.fromBytes(fileBytes, filename: fileName)
+        : await dio.MultipartFile.fromFile(
             filePath!,
             filename: fileName,
           );
@@ -325,10 +352,10 @@ class RequestDio {
     return _handleResponse(
       _dio.post<dynamic>(
         url,
-        data: FormData.fromMap(formData),
+        data: dio.FormData.fromMap(formData),
         queryParameters: params,
-        options: (options ?? Options()).copyWith(
-          contentType: Headers.multipartFormDataContentType,
+        options: (options ?? dio.Options()).copyWith(
+          contentType: dio.Headers.multipartFormDataContentType,
         ),
         onSendProgress: onSendProgress,
         cancelToken: cancelToken,
@@ -338,12 +365,12 @@ class RequestDio {
 
   /// 解析响应体，成功返回 data 字段，业务失败抛出 [BusinessException]。
   Future<dynamic> _handleResponse(
-    Future<Response<dynamic>> task,
+    Future<dio.Response<dynamic>> task,
   ) async {
-    final Response<dynamic> response;
+    final dio.Response<dynamic> response;
     try {
       response = await task;
-    } on DioException catch (error, stackTrace) {
+    } on dio.DioException catch (error, stackTrace) {
       final Object? appError = error.error;
       if (appError is NetworkException) {
         Error.throwWithStackTrace(appError, stackTrace);
@@ -365,6 +392,21 @@ class RequestDio {
     final String message = body['message']?.toString() ?? '业务请求失败';
 
     throw BusinessException(message, code: businessCode);
+  }
+
+  Future<dynamic> _handleRawResponse(
+    Future<dio.Response<dynamic>> task,
+  ) async {
+    try {
+      final dio.Response<dynamic> response = await task;
+      return response.data;
+    } on dio.DioException catch (error, stackTrace) {
+      final Object? appError = error.error;
+      if (appError is NetworkException) {
+        Error.throwWithStackTrace(appError, stackTrace);
+      }
+      rethrow;
+    }
   }
 
   static int? _parseBusinessCode(Object? value) {

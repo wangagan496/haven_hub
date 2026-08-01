@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../api/home.dart';
 import '../pages/House/HouseList.dart';
+import '../pages/Location/LocationList.dart';
 import '../pages/login/index.dart';
 import '../pages/notice_detail/index.dart';
 import '../pages/profile/index.dart';
 import '../pages/tabs_page/index.dart';
 import '../utils/token_manager.dart';
 
-Widget getRouteWidget(
+Widget? getRouteWidget(
   String? routeName, {
   required AnnouncementLoader announcementLoader,
   required AnnouncementDetailLoader announcementDetailLoader,
@@ -31,6 +32,12 @@ Widget getRouteWidget(
       }
       return const HouseList();
     },
+    LocationList.routeName: () {
+      if (tokenManager.getToken().isEmpty) {
+        return const LoginPage(toName: LocationList.routeName);
+      }
+      return const LocationList();
+    },
   };
 
   final Widget Function()? pageBuilder = routes[routeName];
@@ -38,7 +45,5 @@ Widget getRouteWidget(
     return pageBuilder();
   }
 
-  return const Scaffold(
-    body: Center(child: Text('页面不存在')),
-  );
+  return null;
 }

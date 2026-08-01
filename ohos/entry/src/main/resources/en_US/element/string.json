@@ -15,6 +15,10 @@
     {
       "name": "camera_permission_reason",
       "value": "Used to take a profile photo"
+    },
+    {
+      "name": "location_permission_reason",
+      "value": "Used to find your current address and nearby communities"
     }
   ]
 }

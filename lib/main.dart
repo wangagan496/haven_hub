@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'api/home.dart';
 import 'constant/index.dart';
+import 'pages/NotFound/NotFound.dart';
 import 'router/index.dart';
 
 void main() {
@@ -32,15 +33,24 @@ class HavenHubApp extends StatelessWidget {
       ),
       initialRoute: '/',
       onGenerateRoute: (RouteSettings settings) {
+        final Widget? page = getRouteWidget(
+          settings.name,
+          announcementLoader: announcementLoader,
+          announcementDetailLoader: announcementDetailLoader,
+        );
+        if (page == null) return null;
+
         return MaterialPageRoute<void>(
           settings: settings,
-          builder: (BuildContext context) {
-            return getRouteWidget(
-              settings.name,
-              announcementLoader: announcementLoader,
-              announcementDetailLoader: announcementDetailLoader,
-            );
-          },
+          builder: (BuildContext context) => page,
+        );
+      },
+      onUnknownRoute: (RouteSettings settings) {
+        return MaterialPageRoute<void>(
+          settings: settings,
+          builder: (BuildContext context) => NotFoundPage(
+            routeName: settings.name,
+          ),
         );
       },
     );

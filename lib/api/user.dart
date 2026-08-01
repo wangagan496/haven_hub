@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../constant/index.dart';
 import '../models/user_info.dart';
 import '../utils/request_dio.dart';
@@ -8,11 +10,12 @@ typedef LoginLoader = Future<Map<String, dynamic>> Function(
   String code,
 );
 typedef UserInfoLoader = Future<UserInfo> Function();
-typedef UpdateUserInfoLoader = Future<Map<String, dynamic>> Function(
-  String nickName,
-);
-typedef UploadPhotoLoader = Future<String> Function({
-  required List<int> fileBytes,
+typedef UpdateUserInfoLoader = Future<Map<String, dynamic>> Function({
+  required String nickName,
+  required String avatar,
+});
+typedef UploadAvatarLoader = Future<String> Function({
+  required Uint8List fileBytes,
   required String fileName,
 });
 
@@ -40,10 +43,16 @@ Future<UserInfo> getUserInfoApi() async {
   return UserInfo.fromJson(_toMap(data, '获取用户信息'));
 }
 
-Future<Map<String, dynamic>> updateUserInfoApi(String nickName) async {
+Future<Map<String, dynamic>> updateUserInfoApi({
+  required String nickName,
+  required String avatar,
+}) async {
   final dynamic data = await requestDio.put(
     HttpPath.userInfo,
-    data: <String, dynamic>{'nickName': nickName},
+    data: <String, dynamic>{
+      'nickName': nickName,
+      'avatar': avatar,
+    },
   );
   final Map<String, dynamic> result = _toMap(data, '修改用户信息');
   if (result['id']?.toString().trim().isEmpty ?? true) {
@@ -52,8 +61,8 @@ Future<Map<String, dynamic>> updateUserInfoApi(String nickName) async {
   return result;
 }
 
-Future<String> uploadPhotoApi({
-  required List<int> fileBytes,
+Future<String> uploadAvatarApi({
+  required Uint8List fileBytes,
   required String fileName,
 }) async {
   final dynamic data = await requestDio.upload(

@@ -15,6 +15,13 @@ class GlobalVariable {
   );
   static const Duration networkTimeout = Duration(seconds: 10);
   static const int successCode = 10000;
+  static const String tencentMapKey = String.fromEnvironment(
+    'TENCENT_MAP_KEY',
+  );
+  static const String locationCoordinateSystem = String.fromEnvironment(
+    'LOCATION_COORDINATE_SYSTEM',
+    defaultValue: 'auto',
+  );
 }
 
 class HttpPath {
@@ -27,6 +34,10 @@ class HttpPath {
   static const String upload = 'upload';
   static const String houseList = 'room';
   static const String refreshToken = 'refreshToken';
+  static const String tencentCoordinateTranslate =
+      'https://apis.map.qq.com/ws/coord/v1/translate';
+  static const String tencentReverseGeocode =
+      'https://apis.map.qq.com/ws/geocoder/v1/';
 
   static String announcementDetail(String id) {
     return '$announcement/${Uri.encodeComponent(id)}';

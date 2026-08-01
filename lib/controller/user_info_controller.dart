@@ -1,4 +1,4 @@
-import 'package:get/get.dart';
+import 'package:get/get.dart' show GetxController;
 
 class UserInfoController extends GetxController {
   static const Map<String, dynamic> _emptyUserInfo = <String, dynamic>{
