@@ -4,12 +4,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../api/location.dart';
+import '../../controller/build_controller.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/location.dart';
 import '../../utils/toast.dart';
+import '../Building/BuildingList.dart';
 
 typedef LocationPermissionRequester = Future<PermissionStatus> Function();
 
@@ -36,6 +39,7 @@ class LocationList extends StatefulWidget {
 }
 
 class _LocationListState extends State<LocationList> {
+  late final BuildController _buildController;
   bool _isLoading = false;
   String _currentAddress = '正在获取当前位置';
   String _keyword = '';
@@ -44,6 +48,9 @@ class _LocationListState extends State<LocationList> {
   @override
   void initState() {
     super.initState();
+    _buildController = Get.isRegistered<BuildController>()
+        ? Get.find<BuildController>()
+        : Get.put(BuildController());
     unawaited(_getAccess());
   }
 
@@ -101,6 +108,17 @@ class _LocationListState extends State<LocationList> {
     });
   }
 
+  Future<void> _selectCommunity(NearbyCommunity community) async {
+    _buildController.updateBuildingInfo(<String, dynamic>{
+      'name': community.name,
+      'address': community.address,
+    });
+    await Navigator.pushNamed<void>(
+      context,
+      BuildingList.routeName,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final String keyword = _keyword.trim().toLowerCase();
@@ -120,111 +138,196 @@ class _LocationListState extends State<LocationList> {
       ),
       body: SafeArea(
         top: false,
+        child: _isLoading
+            ? const _LocationSkeleton(key: Key('location-skeleton'))
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  const _SectionTitle('当前地址'),
+                  Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                    child: Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            _currentAddress,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF333333),
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: _getAccess,
+                          icon: const Icon(Icons.my_location_rounded, size: 20),
+                          label: const Text('重新定位'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const _SectionTitle('附近社区'),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    child: TextField(
+                      onChanged: (String value) {
+                        setState(() => _keyword = value);
+                      },
+                      decoration: InputDecoration(
+                        hintText: '请输入社区名称或地址',
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding:
+                            const EdgeInsets.symmetric(vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: locations.isEmpty
+                        ? Center(
+                            child: const Text(
+                              '附近暂无社区信息',
+                              style: TextStyle(color: Color(0xFF777777)),
+                            ),
+                          )
+                        : ListView.separated(
+                            itemCount: locations.length,
+                            separatorBuilder: (_, __) => const Divider(
+                              height: 1,
+                              indent: 16,
+                            ),
+                            itemBuilder: (BuildContext context, int index) {
+                              final NearbyCommunity item = locations[index];
+                              return ListTile(
+                                onTap: () => _selectCommunity(item),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 6,
+                                ),
+                                tileColor: Colors.white,
+                                title: Text(
+                                  item.name,
+                                  style: const TextStyle(
+                                    color: Color(0xFF262626),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                subtitle: item.address.isEmpty
+                                    ? null
+                                    : Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: Text(
+                                          item.address,
+                                          style: const TextStyle(
+                                            color: Color(0xFF888888),
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ),
+                                trailing: const Icon(
+                                  Icons.chevron_right_rounded,
+                                  color: Color(0xFFAAAAAA),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _LocationSkeleton extends StatelessWidget {
+  const _LocationSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      label: '正在获取当前位置和附近社区',
+      child: ExcludeSemantics(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             const _SectionTitle('当前地址'),
             Container(
               color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+              child: const Row(
                 children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      _currentAddress,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF333333),
-                        fontSize: 15,
-                      ),
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: _isLoading ? null : _getAccess,
-                    icon: _isLoading
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.my_location_rounded, size: 20),
-                    label: const Text('重新定位'),
-                  ),
+                  Expanded(child: _SkeletonBlock(height: 18)),
+                  SizedBox(width: 28),
+                  _SkeletonBlock(width: 76, height: 18),
                 ],
               ),
             ),
             const _SectionTitle('附近社区'),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: TextField(
-                onChanged: (String value) {
-                  setState(() => _keyword = value);
-                },
-                decoration: InputDecoration(
-                  hintText: '请输入社区名称或地址',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  filled: true,
-                  fillColor: Colors.white,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(6),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: _SkeletonBlock(height: 48, borderRadius: 6),
             ),
             Expanded(
-              child: locations.isEmpty
-                  ? Center(
-                      child: Text(
-                        _isLoading ? '正在获取附近社区' : '附近暂无社区信息',
-                        style: const TextStyle(color: Color(0xFF777777)),
+              child: ListView.separated(
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: 5,
+                separatorBuilder: (_, __) => const Divider(
+                  height: 1,
+                  indent: 16,
+                ),
+                itemBuilder: (BuildContext context, int index) {
+                  return const ColoredBox(
+                    color: Colors.white,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(16, 16, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          _SkeletonBlock(width: 132, height: 18),
+                          SizedBox(height: 10),
+                          _SkeletonBlock(width: 220, height: 13),
+                        ],
                       ),
-                    )
-                  : ListView.separated(
-                      itemCount: locations.length,
-                      separatorBuilder: (_, __) => const Divider(
-                        height: 1,
-                        indent: 16,
-                      ),
-                      itemBuilder: (BuildContext context, int index) {
-                        final NearbyCommunity item = locations[index];
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 6,
-                          ),
-                          tileColor: Colors.white,
-                          title: Text(
-                            item.name,
-                            style: const TextStyle(
-                              color: Color(0xFF262626),
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          subtitle: item.address.isEmpty
-                              ? null
-                              : Padding(
-                                  padding: const EdgeInsets.only(top: 6),
-                                  child: Text(
-                                    item.address,
-                                    style: const TextStyle(
-                                      color: Color(0xFF888888),
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                ),
-                          trailing: const Icon(
-                            Icons.chevron_right_rounded,
-                            color: Color(0xFFAAAAAA),
-                          ),
-                        );
-                      },
                     ),
+                  );
+                },
+              ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SkeletonBlock extends StatelessWidget {
+  const _SkeletonBlock({
+    required this.height,
+    this.width,
+    this.borderRadius = 4,
+  });
+
+  final double? width;
+  final double height;
+  final double borderRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8E3E8),
+        borderRadius: BorderRadius.circular(borderRadius),
       ),
     );
   }

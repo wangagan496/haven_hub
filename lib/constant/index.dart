@@ -38,6 +38,8 @@ class HttpPath {
       'https://apis.map.qq.com/ws/coord/v1/translate';
   static const String tencentReverseGeocode =
       'https://apis.map.qq.com/ws/geocoder/v1/';
+  static const String tencentPlaceSearch =
+      'https://apis.map.qq.com/ws/place/v1/search';
 
   static String announcementDetail(String id) {
     return '$announcement/${Uri.encodeComponent(id)}';

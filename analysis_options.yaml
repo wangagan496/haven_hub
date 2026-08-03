@@ -9,6 +9,18 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  # 鸿蒙构建会在项目内创建依赖缓存及指向缓存的 Junction。显式排除这些
+  # 非业务源码目录，避免全项目 analyze 递归扫描数万个依赖和生成文件。
+  exclude:
+    - .dart_tool/**
+    - .pub-cache/**
+    - build/**
+    - tmp/**
+    - ohos/**/build/**
+    - ohos/**/node_modules/**
+    - ohos/**/oh_modules/**
+
 linter:
   # The lint rules applied to this project can be customized in the
   # section below to disable rules from the `package:flutter_lints/flutter.yaml`

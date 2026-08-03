@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../api/home.dart';
+import '../pages/Building/BuildingList.dart';
+import '../pages/House/HouseForm.dart';
 import '../pages/House/HouseList.dart';
 import '../pages/Location/LocationList.dart';
+import '../pages/Room/RoomList.dart';
 import '../pages/login/index.dart';
 import '../pages/notice_detail/index.dart';
 import '../pages/profile/index.dart';
@@ -37,6 +40,24 @@ Widget? getRouteWidget(
         return const LoginPage(toName: LocationList.routeName);
       }
       return const LocationList();
+    },
+    BuildingList.routeName: () {
+      if (tokenManager.getToken().isEmpty) {
+        return const LoginPage(toName: LocationList.routeName);
+      }
+      return const BuildingList();
+    },
+    RoomList.routeName: () {
+      if (tokenManager.getToken().isEmpty) {
+        return const LoginPage(toName: LocationList.routeName);
+      }
+      return const RoomList();
+    },
+    HouseForm.routeName: () {
+      if (tokenManager.getToken().isEmpty) {
+        return const LoginPage(toName: LocationList.routeName);
+      }
+      return const HouseForm();
     },
   };
 

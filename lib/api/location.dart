@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../constant/index.dart';
 import '../utils/app_exception.dart';
 import '../utils/request_dio.dart';
@@ -79,9 +81,6 @@ Future<LocationLookupResult> getTencentLocationInfo(
     params: <String, dynamic>{
       'location': '$gcjLatitude,$gcjLongitude',
       'key': key,
-      'get_poi': 1,
-      'poi_options':
-          'address_format=short;radius=2000;policy=2;orderby=_distance',
       'output': 'json',
     },
   );
@@ -95,7 +94,26 @@ Future<LocationLookupResult> getTencentLocationInfo(
   }
   final Map<String, dynamic> result = Map<String, dynamic>.from(rawResult);
   final String address = _readAddress(result);
-  final List<NearbyCommunity> communities = _readCommunities(result['pois']);
+
+  final dynamic searchData = await requestDio.getExternal(
+    HttpPath.tencentPlaceSearch,
+    params: <String, dynamic>{
+      'key': key,
+      'keyword': '小区',
+      'boundary': 'nearby($gcjLatitude,$gcjLongitude,1000,0)',
+      'orderby': '_distance',
+      'page_size': 10,
+      'page_index': 1,
+      'output': 'json',
+    },
+  );
+  if (kDebugMode) {
+    // 课程要求在调试控制台查看腾讯周边搜索的原始返回值。
+    // ignore: avoid_print
+    print('腾讯周边搜索返回值：$searchData');
+  }
+  final List<NearbyCommunity> communities =
+      parseTencentNearbyCommunities(searchData);
 
   return LocationLookupResult(
     address: address,
@@ -155,6 +173,19 @@ String _readAddress(Map<String, dynamic> result) {
     throw const FormatException('腾讯位置服务未返回当前地址');
   }
   return address;
+}
+
+@visibleForTesting
+List<NearbyCommunity> parseTencentNearbyCommunities(dynamic data) {
+  final Map<String, dynamic> search = _requireTencentSuccess(
+    data,
+    fallbackMessage: '周边社区搜索失败',
+  );
+  final dynamic rawPois = search['data'];
+  if (rawPois is! List<dynamic>) {
+    throw const FormatException('腾讯周边搜索响应格式不正确');
+  }
+  return _readCommunities(rawPois);
 }
 
 List<NearbyCommunity> _readCommunities(dynamic rawPois) {

@@ -82,8 +82,13 @@ Mock 服务提供以下接口：
 ```powershell
 .\tool\flutter_ohos.ps1 doctor -v
 .\tool\flutter_ohos.ps1 pub get
+.\tool\flutter_ohos.ps1 analyze --no-pub
 .\tool\flutter_ohos.ps1 build hap --debug
 ```
+
+静态分析也必须通过包装脚本执行。项目内的 `analysis_options.yaml` 已排除
+鸿蒙构建生成目录、依赖缓存及其 Junction，避免全项目分析递归扫描数万个
+非业务 Dart 文件而长时间无响应。
 
 自动查找失败或电脑安装了多个 Flutter OH SDK 时，可以设置环境变量，
 也可以为单次命令显式指定 SDK 根目录：
@@ -108,7 +113,8 @@ build\ohos\hap\entry-default-signed.hap
 “选择社区”页面使用 `geolocator` 获取 GPS 经纬度，再调用腾讯位置服务完成：
 
 1. 自动区分真机 GPS（WGS84）和虚拟机拾取坐标（GCJ-02），仅在需要时转换坐标。
-2. 逆地址解析，得到当前地址和附近社区。
+2. 逆地址解析，得到当前地址。
+3. 地点周边搜索，得到附近社区列表，并在 Debug 控制台打印接口原始返回值。
 
 腾讯控制台中需要创建用途为 **WebService API** 的 Key。调试时通过编译参数传入，
 不要把 Key 直接写进 Dart 源码：
@@ -122,6 +128,7 @@ build\ohos\hap\entry-default-signed.hap
 
 - `GET https://apis.map.qq.com/ws/coord/v1/translate`
 - `GET https://apis.map.qq.com/ws/geocoder/v1/`
+- `GET https://apis.map.qq.com/ws/place/v1/search`
 
 移动端包内的编译参数仍可能被逆向获取。正式环境应由业务后端保存 Key，App 只调用
 自己的后端接口，由后端转发腾讯位置服务请求并限制调用频率。
