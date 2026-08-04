@@ -5,6 +5,58 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
+import '../../utils/toast.dart';
+
+final RegExp _ownerNamePattern = RegExp(r'^[\u4e00-\u9fa5]{2,15}$');
+final RegExp _mobilePattern = RegExp(r'^1[3-9]\d{9}$');
+
+Map<String, dynamic> createHouseFormData(BuildController controller) {
+  return <String, dynamic>{
+    'point': controller.buildingInfo['name']?.toString().trim() ?? '',
+    'building': controller.build.trim(),
+    'room': controller.room.trim(),
+    'name': '',
+    'gender': 1,
+    'mobile': '',
+    'idcardFrontUrl': '',
+    'idcardBackUrl': '',
+  };
+}
+
+String? validateHouseFormData(Map<String, dynamic> formData) {
+  final String point = formData['point']?.toString().trim() ?? '';
+  final String building = formData['building']?.toString().trim() ?? '';
+  final String room = formData['room']?.toString().trim() ?? '';
+  if (point.isEmpty || building.isEmpty || room.isEmpty) {
+    return '小区、楼栋、房间不能为空';
+  }
+
+  final String name = formData['name']?.toString().trim() ?? '';
+  if (name.isEmpty) {
+    return '业主姓名不能为空';
+  }
+  if (!_ownerNamePattern.hasMatch(name)) {
+    return '业主姓名须为2-15位中文';
+  }
+
+  final String mobile = formData['mobile']?.toString().trim() ?? '';
+  if (mobile.isEmpty) {
+    return '手机号不能为空';
+  }
+  if (!_mobilePattern.hasMatch(mobile)) {
+    return '手机号格式不正确';
+  }
+
+  final String idcardFrontUrl =
+      formData['idcardFrontUrl']?.toString().trim() ?? '';
+  final String idcardBackUrl =
+      formData['idcardBackUrl']?.toString().trim() ?? '';
+  if (idcardFrontUrl.isEmpty || idcardBackUrl.isEmpty) {
+    return '请上传身份证正反面照片';
+  }
+
+  return null;
+}
 
 class HouseForm extends StatefulWidget {
   const HouseForm({super.key});
@@ -17,13 +69,8 @@ class HouseForm extends StatefulWidget {
 
 class _HouseFormState extends State<HouseForm> {
   late final BuildController _controller;
-  final Map<String, dynamic> _formData = <String, dynamic>{
-    'name': '',
-    'gender': 1,
-    'mobile': '',
-    'idcardFrontUrl': '',
-    'idcardBackUrl': '',
-  };
+  late final Map<String, dynamic> _formData;
+  bool _isLoading = false;
 
   @override
   void initState() {
@@ -31,21 +78,32 @@ class _HouseFormState extends State<HouseForm> {
     _controller = Get.isRegistered<BuildController>()
         ? Get.find<BuildController>()
         : Get.put(BuildController());
+    _formData = createHouseFormData(_controller);
+  }
+
+  Future<void> _submit() async {
+    if (_isLoading) return;
+
+    final String? validationMessage = validateHouseFormData(_formData);
+    if (validationMessage != null) {
+      await PromptAction.showWarning(validationMessage);
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      await PromptAction.showSuccess('数据校验通过');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   Widget _buildAddIdcardPhoto(String info) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: <Widget>[
-        const Icon(
-          Icons.add,
-          size: 30,
-          color: Color(0xFF5591AF),
-        ),
-        Text(
-          info,
-          style: const TextStyle(color: Color(0xFF5591AF)),
-        ),
+        const Icon(Icons.add, size: 30, color: Color(0xFF5591AF)),
+        Text(info, style: const TextStyle(color: Color(0xFF5591AF))),
       ],
     );
   }
@@ -202,7 +260,7 @@ class _HouseFormState extends State<HouseForm> {
                 child: SizedBox(
                   height: 52,
                   child: ElevatedButton.icon(
-                    onPressed: () {},
+                    onPressed: _isLoading ? null : _submit,
                     icon: const Icon(Icons.exit_to_app),
                     label: const Text('提交审核'),
                   ),
