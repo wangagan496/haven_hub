@@ -1,3 +1,5 @@
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/material.dart';
 
 import '../utils/logger.dart';
@@ -45,7 +47,11 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
           _buildDefaultErrorWidget(context);
     }
 
-    return ErrorWidget.builder = (FlutterErrorDetails details) {
+    ErrorWidget.builder = (FlutterErrorDetails details) {
+      if (!mounted) {
+        return ErrorWidget(details.exception);
+      }
+
       // 记录错误日志
       Logger.error(
         'Widget Error',
@@ -54,7 +60,8 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
       );
 
       // 触发错误回调
-      widget.onError?.call(details.exception, details.stack ?? StackTrace.empty);
+      widget.onError
+          ?.call(details.exception, details.stack ?? StackTrace.empty);
 
       // 在当前帧结束后更新状态
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -68,7 +75,7 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
 
       // 返回默认错误组件（会在下一帧被替换）
       return _buildDefaultErrorWidget(context);
-    } as Widget;
+    };
 
     return widget.child;
   }
@@ -207,7 +214,8 @@ class GlobalErrorHandler {
     };
 
     // 捕获异步错误
-    PlatformDispatcher.instance.onError = (Object error, StackTrace stackTrace) {
+    PlatformDispatcher.instance.onError =
+        (Object error, StackTrace stackTrace) {
       Logger.error('Uncaught Error', error, stackTrace);
       onError?.call(error, stackTrace);
       return true; // 返回 true 表示错误已处理

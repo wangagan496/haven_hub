@@ -4,12 +4,12 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'api/home.dart';
 import 'constant/index.dart';
 import 'core/app_initializer.dart';
+import 'l10n/app_localizations.dart';
 import 'pages/not_found/not_found.dart';
 import 'router/index.dart';
 import 'theme/app_theme.dart';
 import 'utils/logger.dart';
 import 'widgets/error_boundary.dart';
-import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
