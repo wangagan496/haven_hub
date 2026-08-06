@@ -1,0 +1,136 @@
+{
+  "@@locale": "en",
+  "appTitle": "Haven Hub",
+  "@appTitle": {
+    "description": "Application title"
+  },
+  "home": "Home",
+  "mine": "Mine",
+  "login": "Login",
+  "logout": "Logout",
+  "profile": "Profile",
+  "settings": "Settings",
+
+  "houseManagement": "House Management",
+  "myHouses": "My Houses",
+  "addHouse": "Add House",
+  "editHouse": "Edit House",
+  "houseDetail": "House Detail",
+  "deleteHouse": "Delete House",
+
+  "community": "Community",
+  "building": "Building",
+  "room": "Room",
+  "ownerName": "Owner Name",
+  "gender": "Gender",
+  "male": "Male",
+  "female": "Female",
+  "mobile": "Mobile",
+  "idCard": "ID Card",
+
+  "selectCommunity": "Select Community",
+  "selectBuilding": "Select Building",
+  "selectRoom": "Select Room",
+
+  "submit": "Submit",
+  "submitForReview": "Submit for Review",
+  "cancel": "Cancel",
+  "confirm": "Confirm",
+  "save": "Save",
+  "delete": "Delete",
+  "edit": "Edit",
+  "refresh": "Refresh",
+  "retry": "Retry",
+  "back": "Back",
+
+  "loading": "Loading...",
+  "loadingFailed": "Loading Failed",
+  "noData": "No Data",
+  "networkError": "Network Error",
+  "serverError": "Server Error",
+
+  "success": "Success",
+  "failed": "Failed",
+  "addSuccess": "Added Successfully",
+  "updateSuccess": "Updated Successfully",
+  "deleteSuccess": "Deleted Successfully",
+
+  "pleaseEnter": "Please enter",
+  "pleaseSelect": "Please select",
+  "required": "Required",
+
+  "errorRequired": "{field} is required",
+  "@errorRequired": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      }
+    }
+  },
+
+  "errorInvalidFormat": "Invalid {field} format",
+  "@errorInvalidFormat": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      }
+    }
+  },
+
+  "errorMinLength": "{field} must be at least {min} characters",
+  "@errorMinLength": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      },
+      "min": {
+        "type": "int"
+      }
+    }
+  },
+
+  "errorMaxLength": "{field} must not exceed {max} characters",
+  "@errorMaxLength": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      },
+      "max": {
+        "type": "int"
+      }
+    }
+  },
+
+  "uploadPhoto": "Upload Photo",
+  "takePhoto": "Take Photo",
+  "chooseFromGallery": "Choose from Gallery",
+  "uploadIdCardFront": "Upload ID Card Front",
+  "uploadIdCardBack": "Upload ID Card Back",
+
+  "houseStatus": "House Status",
+  "statusPending": "Pending",
+  "statusApproved": "Approved",
+  "statusRejected": "Rejected",
+
+  "confirmDelete": "Confirm Delete?",
+  "confirmDeleteMessage": "This action cannot be undone",
+
+  "announcement": "Announcement",
+  "announcementDetail": "Announcement Detail",
+  "noAnnouncement": "No Announcements",
+
+  "location": "Location",
+  "currentLocation": "Current Location",
+  "relocate": "Relocate",
+  "nearbyCommunities": "Nearby Communities",
+
+  "pageLoadError": "Page Load Error",
+  "pageLoadErrorMessage": "Sorry, the page encountered some problems",
+  "reload": "Reload",
+  "viewDetails": "View Details",
+
+  "errorDetails": "Error Details",
+  "errorMessage": "Error Message",
+  "stackTrace": "Stack Trace",
+  "close": "Close"
+}

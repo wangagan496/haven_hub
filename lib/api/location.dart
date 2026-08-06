@@ -18,10 +18,14 @@ class LocationLookupResult {
   const LocationLookupResult({
     required this.address,
     required this.communities,
+    this.ipAddress,
+    this.isIpBased = false,
   });
 
   final String address;
   final List<NearbyCommunity> communities;
+  final String? ipAddress;
+  final bool isIpBased;
 }
 
 typedef LocationLookup = Future<LocationLookupResult> Function(
@@ -29,6 +33,22 @@ typedef LocationLookup = Future<LocationLookupResult> Function(
   double longitude, {
   required bool isMocked,
 });
+
+typedef TencentExternalGet = Future<dynamic> Function(
+  String url, {
+  Map<String, dynamic>? params,
+});
+
+typedef IpLocationLookup = Future<LocationLookupResult> Function();
+
+const List<({String keyword, int autoExtend})> _nearbySearchAttempts =
+    <({String keyword, int autoExtend})>[
+  (keyword: '小区', autoExtend: 0),
+  (keyword: '小区', autoExtend: 1),
+  (keyword: '社区', autoExtend: 1),
+  (keyword: '住宅区', autoExtend: 1),
+  (keyword: '村', autoExtend: 1),
+];
 
 Future<LocationLookupResult> getTencentLocationInfo(
   double latitude,
@@ -95,30 +115,129 @@ Future<LocationLookupResult> getTencentLocationInfo(
   final Map<String, dynamic> result = Map<String, dynamic>.from(rawResult);
   final String address = _readAddress(result);
 
-  final dynamic searchData = await requestDio.getExternal(
-    HttpPath.tencentPlaceSearch,
-    params: <String, dynamic>{
-      'key': key,
-      'keyword': '小区',
-      'boundary': 'nearby($gcjLatitude,$gcjLongitude,1000,0)',
-      'orderby': '_distance',
-      'page_size': 10,
-      'page_index': 1,
-      'output': 'json',
-    },
-  );
-  if (kDebugMode) {
-    // 课程要求在调试控制台查看腾讯周边搜索的原始返回值。
-    // ignore: avoid_print
-    print('腾讯周边搜索返回值：$searchData');
-  }
   final List<NearbyCommunity> communities =
-      parseTencentNearbyCommunities(searchData);
+      await searchTencentNearbyCommunities(
+    gcjLatitude,
+    gcjLongitude,
+    key: key,
+  );
 
   return LocationLookupResult(
     address: address,
     communities: List<NearbyCommunity>.unmodifiable(communities),
   );
+}
+
+Future<LocationLookupResult> getTencentIpLocationInfo({
+  TencentExternalGet externalGet = _getTencentExternal,
+  String? apiKey,
+}) async {
+  final String key = (apiKey ?? GlobalVariable.tencentMapKey).trim();
+  if (key.isEmpty) {
+    throw const FormatException(
+      '未配置腾讯位置服务 Key，请使用 TENCENT_MAP_KEY 编译参数',
+    );
+  }
+
+  final dynamic rawData = await externalGet(
+    HttpPath.tencentIpLocation,
+    params: <String, dynamic>{
+      'key': key,
+      'output': 'json',
+    },
+  );
+  final Map<String, dynamic> body = _requireTencentSuccess(
+    rawData,
+    fallbackMessage: '腾讯 IP 定位失败',
+  );
+  final dynamic rawResult = body['result'];
+  if (rawResult is! Map<dynamic, dynamic>) {
+    throw const FormatException('腾讯 IP 定位响应格式不正确');
+  }
+
+  final Map<String, dynamic> result = Map<String, dynamic>.from(rawResult);
+  final dynamic rawLocation = result['location'];
+  final dynamic rawAdInfo = result['ad_info'];
+  if (rawLocation is! Map<dynamic, dynamic> ||
+      rawAdInfo is! Map<dynamic, dynamic>) {
+    throw const FormatException('腾讯 IP 定位结果缺少位置或行政区划信息');
+  }
+
+  final Map<String, dynamic> location = Map<String, dynamic>.from(rawLocation);
+  final double? latitude = _toDouble(location['lat']);
+  final double? longitude = _toDouble(location['lng']);
+  if (latitude == null || longitude == null) {
+    throw const FormatException('腾讯 IP 定位结果缺少经纬度');
+  }
+  _validateCoordinate(latitude, longitude);
+
+  final Map<String, dynamic> adInfo = Map<String, dynamic>.from(rawAdInfo);
+  final List<String> addressParts = <String>[
+    adInfo['nation']?.toString().trim() ?? '',
+    adInfo['province']?.toString().trim() ?? '',
+    adInfo['city']?.toString().trim() ?? '',
+    adInfo['district']?.toString().trim() ?? '',
+  ].where((String value) => value.isNotEmpty).toList(growable: false);
+  if (addressParts.isEmpty) {
+    throw const FormatException('腾讯 IP 定位结果缺少行政区划');
+  }
+
+  return LocationLookupResult(
+    address: addressParts.join(' '),
+    communities: const <NearbyCommunity>[],
+    ipAddress: result['ip']?.toString().trim(),
+    isIpBased: true,
+  );
+}
+
+Future<dynamic> _getTencentExternal(
+  String url, {
+  Map<String, dynamic>? params,
+}) {
+  return requestDio.getExternal(url, params: params);
+}
+
+@visibleForTesting
+Future<List<NearbyCommunity>> searchTencentNearbyCommunities(
+  double latitude,
+  double longitude, {
+  required String key,
+  TencentExternalGet externalGet = _getTencentExternal,
+}) async {
+  for (final ({String keyword, int autoExtend}) attempt
+      in _nearbySearchAttempts) {
+    final dynamic searchData = await externalGet(
+      HttpPath.tencentPlaceSearch,
+      params: <String, dynamic>{
+        'key': key,
+        'keyword': attempt.keyword,
+        // 腾讯地点搜索 radius 最大为 1000 米；auto_extend=1 会按
+        // 1、2、5 公里逐级扩大，仍为空时继续扩大到城市范围。
+        'boundary': 'nearby($latitude,$longitude,1000,${attempt.autoExtend})',
+        'orderby': '_distance',
+        'page_size': 10,
+        'page_index': 1,
+        'output': 'json',
+      },
+    );
+    if (kDebugMode) {
+      // 课程要求在调试控制台查看腾讯周边搜索的原始返回值。
+      // ignore: avoid_print
+      print(
+        '腾讯周边搜索返回值'
+        '（关键词：${attempt.keyword}，自动扩大：${attempt.autoExtend}）：'
+        '$searchData',
+      );
+    }
+
+    final List<NearbyCommunity> communities =
+        parseTencentNearbyCommunities(searchData);
+    if (communities.isNotEmpty) {
+      return communities;
+    }
+  }
+
+  return const <NearbyCommunity>[];
 }
 
 bool shouldTranslateTencentCoordinate({

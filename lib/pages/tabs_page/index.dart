@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/home.dart';
 import '../../constant/tab_config.dart';
+import '../../controller/build_controller.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
@@ -32,6 +33,7 @@ class _TabsPageState extends State<TabsPage> {
   @override
   void initState() {
     super.initState();
+    BuildController.instance();
     _tokenInitialization = tokenManager.init();
     _logoutSubscription = eventBus.on<LogoutEvent>().listen(_onLogoutEvent);
   }

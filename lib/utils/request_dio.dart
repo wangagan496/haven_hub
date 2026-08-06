@@ -3,6 +3,7 @@ import 'package:dio/dio.dart' as dio;
 import '../constant/index.dart';
 import 'app_exception.dart';
 import 'emitter.dart';
+import 'logger.dart';
 import 'token_manager.dart';
 
 typedef RefreshDioFactory = dio.Dio Function();
@@ -15,6 +16,11 @@ class RequestDio {
         _refreshDioFactory = refreshDioFactory ?? dio.Dio.new {
     // 配置请求基地址和超时时间，使用级联（链式）调用。
     _configureDio(_dio);
+
+    // 添加日志拦截器（在其他拦截器之前）
+    if (Logger.enabled) {
+      _dio.interceptors.add(_createLoggingInterceptor());
+    }
 
     _dio.interceptors.add(
       dio.InterceptorsWrapper(
@@ -101,6 +107,95 @@ class RequestDio {
       ..receiveTimeout = GlobalVariable.networkTimeout
       ..sendTimeout = GlobalVariable.networkTimeout
       ..responseType = dio.ResponseType.json;
+  }
+
+  /// 创建日志拦截器，记录请求和响应详情。
+  static dio.InterceptorsWrapper _createLoggingInterceptor() {
+    return dio.InterceptorsWrapper(
+      onRequest: (
+        dio.RequestOptions options,
+        dio.RequestInterceptorHandler handler,
+      ) {
+        Logger.network(
+          '→ ${options.method} ${options.uri}',
+          _buildRequestLog(options),
+        );
+        handler.next(options);
+      },
+      onResponse: (
+        dio.Response<dynamic> response,
+        dio.ResponseInterceptorHandler handler,
+      ) {
+        final int duration = DateTime.now()
+            .difference(response.requestOptions.extra['request_time'] as DateTime?
+                ?? DateTime.now())
+            .inMilliseconds;
+        Logger.network(
+          '← ${response.statusCode} ${response.requestOptions.uri} (${duration}ms)',
+          _buildResponseLog(response),
+        );
+        handler.next(response);
+      },
+      onError: (
+        dio.DioException error,
+        dio.ErrorInterceptorHandler handler,
+      ) {
+        Logger.error(
+          '✖ ${error.requestOptions.method} ${error.requestOptions.uri}',
+          error.message,
+        );
+        handler.next(error);
+      },
+    );
+  }
+
+  /// 构建请求日志内容。
+  static Map<String, dynamic> _buildRequestLog(dio.RequestOptions options) {
+    // 记录请求时间，用于计算耗时
+    options.extra['request_time'] = DateTime.now();
+
+    final Map<String, dynamic> log = <String, dynamic>{
+      'method': options.method,
+      'url': options.uri.toString(),
+    };
+
+    if (options.queryParameters.isNotEmpty) {
+      log['params'] = options.queryParameters;
+    }
+
+    if (options.headers.isNotEmpty) {
+      // 隐藏敏感信息
+      final Map<String, dynamic> safeHeaders = Map<String, dynamic>.from(
+        options.headers,
+      );
+      if (safeHeaders.containsKey('Authorization')) {
+        safeHeaders['Authorization'] = '***';
+      }
+      log['headers'] = safeHeaders;
+    }
+
+    if (options.data != null && options.data is! dio.FormData) {
+      log['body'] = options.data;
+    }
+
+    return log;
+  }
+
+  /// 构建响应日志内容。
+  static Map<String, dynamic> _buildResponseLog(dio.Response<dynamic> response) {
+    final Map<String, dynamic> log = <String, dynamic>{
+      'status': response.statusCode,
+    };
+
+    if (response.data != null) {
+      // 限制响应体日志长度，避免过大的数据污染日志
+      final String dataStr = response.data.toString();
+      log['body'] = dataStr.length > 500
+          ? '${dataStr.substring(0, 500)}... (truncated)'
+          : response.data;
+    }
+
+    return log;
   }
 
   dio.RequestOptions _createRetryRequest(

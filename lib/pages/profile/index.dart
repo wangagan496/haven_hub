@@ -5,14 +5,9 @@ import 'package:get/get.dart' hide FormData, MultipartFile;
 import '../../api/user.dart';
 import '../../controller/user_info_controller.dart';
 import '../../platform/avatar_picker.dart';
+import '../../widgets/camera_dialog.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
-
-typedef _AvatarOption = ({
-  IconData icon,
-  String label,
-  AvatarSource? source,
-});
 
 class _PendingAvatar {
   const _PendingAvatar({
@@ -75,27 +70,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
   bool get _supportsCamera => widget.cameraSupported ?? supportsAvatarCamera;
 
-  List<_AvatarOption> get _avatarOptions {
-    return <_AvatarOption>[
-      if (_supportsCamera)
-        (
-          label: '拍照',
-          icon: Icons.camera_alt,
-          source: AvatarSource.camera,
-        ),
-      (
-        label: _supportsCamera ? '相册' : '选择图片',
-        icon: Icons.photo_library,
-        source: AvatarSource.gallery,
-      ),
-      (
-        label: '取消',
-        icon: Icons.cancel,
-        source: null,
-      ),
-    ];
-  }
-
   String _getUserNickname() {
     return _userInfoController.userInfo['nickName']?.toString().trim() ?? '';
   }
@@ -149,47 +123,12 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     }
 
-    final List<_AvatarOption> avatarOptions = _avatarOptions;
-    final AvatarSource? selectedSource =
-        await showModalBottomSheet<AvatarSource>(
-      context: context,
-      builder: (BuildContext sheetContext) {
-        return SafeArea(
-          child: ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemBuilder: (BuildContext context, int index) {
-              final _AvatarOption option = avatarOptions[index];
-              return InkWell(
-                onTap: () {
-                  Navigator.pop<AvatarSource>(sheetContext, option.source);
-                },
-                child: SizedBox(
-                  height: 56,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: <Widget>[
-                      Icon(option.icon),
-                      const SizedBox(width: 8),
-                      Text(option.label),
-                    ],
-                  ),
-                ),
-              );
-            },
-            separatorBuilder: (BuildContext context, int index) {
-              return const Divider(height: 1);
-            },
-            itemCount: avatarOptions.length,
-          ),
-        );
-      },
+    await showCameraDialog(
+      context,
+      onOpenGallery: () => _pickAvatar(AvatarSource.gallery),
+      onOpenCamera: () => _pickAvatar(AvatarSource.camera),
+      showCameraOption: _supportsCamera,
     );
-
-    if (!mounted || selectedSource == null) {
-      return;
-    }
-    await _pickAvatar(selectedSource);
   }
 
   Future<void> _pickAvatar(AvatarSource source) async {
@@ -221,7 +160,7 @@ class _ProfilePageState extends State<ProfilePage> {
       });
     } on Object catch (error) {
       await PromptAction.showError(
-        _getErrorMessage(error, fallback: '选择头像失败，请重试'),
+        describeError(error, fallback: '选择头像失败，请重试'),
       );
     } finally {
       if (mounted) {
@@ -291,7 +230,7 @@ class _ProfilePageState extends State<ProfilePage> {
       Navigator.maybePop(context);
     } on Object catch (error) {
       await PromptAction.showError(
-        _getErrorMessage(error, fallback: '修改失败，请重试'),
+        describeError(error, fallback: '修改失败，请重试'),
       );
     } finally {
       if (mounted) {
@@ -300,15 +239,6 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       }
     }
-  }
-
-  String _getErrorMessage(Object error, {required String fallback}) {
-    return switch (error) {
-      BusinessException() => error.message,
-      NetworkException() => error.message,
-      FormatException() => error.message,
-      _ => fallback,
-    };
   }
 
   @override

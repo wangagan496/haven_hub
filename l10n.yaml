@@ -1,0 +1,6 @@
+# l10n.yaml
+# Flutter 国际化配置文件
+
+arb-dir: lib/l10n
+template-arb-file: app_zh.arb
+output-localization-file: app_localizations.dart

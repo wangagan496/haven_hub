@@ -9,7 +9,7 @@ import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
-import '../House/HouseList.dart';
+import '../house/house_list.dart';
 import '../login/index.dart';
 import '../profile/index.dart';
 
@@ -140,12 +140,7 @@ class _MinePageState extends State<MinePage> {
       if (!mounted || widget.activeIndex != 1 || !_isLoggedIn) {
         return;
       }
-      final String msg = switch (error) {
-        BusinessException() => error.message,
-        NetworkException() => error.message,
-        FormatException() => error.message,
-        _ => '获取用户信息失败',
-      };
+      final String msg = describeError(error, fallback: '获取用户信息失败');
       await PromptAction.showError(msg);
     } finally {
       _isLoadingUserInfo = false;

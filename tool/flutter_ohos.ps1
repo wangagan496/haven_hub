@@ -7,6 +7,7 @@ param(
 )
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$localDartDefines = Join-Path $PSScriptRoot 'dart_defines.local.env'
 $devecoHome = if ($env:DEVECO_HOME) {
   $env:DEVECO_HOME
 } else {
@@ -90,6 +91,21 @@ if (
   $env:DEVECO_SDK_HOME = Join-Path $devecoHome 'sdk'
 }
 $env:PUB_CACHE = Join-Path $projectRoot '.pub-cache'
+
+if (
+  (Test-Path -LiteralPath $localDartDefines -PathType Leaf) -and
+  $FlutterArguments.Count -gt 0 -and
+  $FlutterArguments[0] -in @('run', 'build')
+) {
+  $remainingArguments = @()
+  if ($FlutterArguments.Count -gt 1) {
+    $remainingArguments = $FlutterArguments[1..($FlutterArguments.Count - 1)]
+  }
+  $FlutterArguments = @(
+    $FlutterArguments[0]
+    "--dart-define-from-file=$localDartDefines"
+  ) + $remainingArguments
+}
 
 $toolPaths = @(
   $flutterOhosBin

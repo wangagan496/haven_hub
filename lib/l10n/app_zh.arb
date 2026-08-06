@@ -1,0 +1,136 @@
+{
+  "@@locale": "zh",
+  "appTitle": "享家社区",
+  "@appTitle": {
+    "description": "应用标题"
+  },
+  "home": "首页",
+  "mine": "我的",
+  "login": "登录",
+  "logout": "退出登录",
+  "profile": "个人资料",
+  "settings": "设置",
+
+  "houseManagement": "房屋管理",
+  "myHouses": "我的房屋",
+  "addHouse": "添加房屋",
+  "editHouse": "修改房屋信息",
+  "houseDetail": "房屋详情",
+  "deleteHouse": "删除房屋",
+
+  "community": "小区",
+  "building": "楼栋",
+  "room": "房间",
+  "ownerName": "业主姓名",
+  "gender": "性别",
+  "male": "男",
+  "female": "女",
+  "mobile": "手机号",
+  "idCard": "身份证",
+
+  "selectCommunity": "选择小区",
+  "selectBuilding": "选择楼栋",
+  "selectRoom": "选择房间",
+
+  "submit": "提交",
+  "submitForReview": "提交审核",
+  "cancel": "取消",
+  "confirm": "确定",
+  "save": "保存",
+  "delete": "删除",
+  "edit": "编辑",
+  "refresh": "刷新",
+  "retry": "重试",
+  "back": "返回",
+
+  "loading": "加载中...",
+  "loadingFailed": "加载失败",
+  "noData": "暂无数据",
+  "networkError": "网络错误",
+  "serverError": "服务器错误",
+
+  "success": "成功",
+  "failed": "失败",
+  "addSuccess": "添加成功",
+  "updateSuccess": "修改成功",
+  "deleteSuccess": "删除成功",
+
+  "pleaseEnter": "请输入",
+  "pleaseSelect": "请选择",
+  "required": "不能为空",
+
+  "errorRequired": "{field}不能为空",
+  "@errorRequired": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      }
+    }
+  },
+
+  "errorInvalidFormat": "{field}格式不正确",
+  "@errorInvalidFormat": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      }
+    }
+  },
+
+  "errorMinLength": "{field}长度不能少于{min}个字符",
+  "@errorMinLength": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      },
+      "min": {
+        "type": "int"
+      }
+    }
+  },
+
+  "errorMaxLength": "{field}长度不能超过{max}个字符",
+  "@errorMaxLength": {
+    "placeholders": {
+      "field": {
+        "type": "String"
+      },
+      "max": {
+        "type": "int"
+      }
+    }
+  },
+
+  "uploadPhoto": "上传照片",
+  "takePhoto": "拍照",
+  "chooseFromGallery": "从相册选择",
+  "uploadIdCardFront": "上传人像面照片",
+  "uploadIdCardBack": "上传国徽面照片",
+
+  "houseStatus": "房屋状态",
+  "statusPending": "待审核",
+  "statusApproved": "审核通过",
+  "statusRejected": "审核未通过",
+
+  "confirmDelete": "确认删除？",
+  "confirmDeleteMessage": "删除后将无法恢复",
+
+  "announcement": "公告",
+  "announcementDetail": "公告详情",
+  "noAnnouncement": "暂无公告",
+
+  "location": "位置",
+  "currentLocation": "当前位置",
+  "relocate": "重新定位",
+  "nearbyCommunities": "附近小区",
+
+  "pageLoadError": "页面加载失败",
+  "pageLoadErrorMessage": "抱歉，页面遇到了一些问题",
+  "reload": "重新加载",
+  "viewDetails": "查看详情",
+
+  "errorDetails": "错误详情",
+  "errorMessage": "错误信息",
+  "stackTrace": "堆栈跟踪",
+  "close": "关闭"
+}

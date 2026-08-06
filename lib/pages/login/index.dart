@@ -12,6 +12,7 @@ import '../../utils/token_manager.dart';
 class LoginPage extends StatefulWidget {
   const LoginPage({
     this.toName,
+    this.toArguments,
     this.sendCodeLoader = sendCodeApi,
     this.loginLoader = loginApi,
     this.enableDevelopmentCodeAutofill = kDebugMode,
@@ -21,6 +22,9 @@ class LoginPage extends StatefulWidget {
   static const String routeName = '/login';
 
   final String? toName;
+
+  /// 登录成功回跳到 [toName] 时透传的 route arguments。
+  final Object? toArguments;
   final SendCodeLoader sendCodeLoader;
   final LoginLoader loginLoader;
   final bool enableDevelopmentCodeAutofill;
@@ -89,7 +93,7 @@ class _LoginPageState extends State<LoginPage> {
           isSend = false;
         });
       }
-      await PromptAction.showError(_getErrorMessage(error));
+      await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
     }
   }
 
@@ -168,12 +172,16 @@ class _LoginPageState extends State<LoginPage> {
 
       final String? toName = widget.toName;
       if (toName != null && toName.isNotEmpty) {
-        Navigator.pushReplacementNamed(context, toName);
+        Navigator.pushReplacementNamed(
+          context,
+          toName,
+          arguments: widget.toArguments,
+        );
         return;
       }
       Navigator.maybePop(context);
     } on Object catch (error) {
-      await PromptAction.showError(_getErrorMessage(error));
+      await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
     } finally {
       if (mounted) {
         setState(() {
@@ -181,15 +189,6 @@ class _LoginPageState extends State<LoginPage> {
         });
       }
     }
-  }
-
-  String _getErrorMessage(Object error) {
-    return switch (error) {
-      BusinessException() => error.message,
-      NetworkException() => error.message,
-      FormatException() => error.message,
-      _ => '操作失败，请重试',
-    };
   }
 
   String _normalizeMobile(String mobile) {

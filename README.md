@@ -1,6 +1,113 @@
-# haven_hub
+# Haven Hub
 
-享家社区 Flutter 项目。
+享家社区 Flutter 项目 - 社区物业管理移动应用。
+
+## 项目概述
+
+Haven Hub 是一个基于 Flutter 开发的社区物业管理应用，支持多平台部署（Android、iOS、HarmonyOS、Web）。
+主要功能包括：
+
+- 用户认证与个人信息管理
+- 房屋信息录入与审核
+- 社区公告浏览
+- 基于腾讯位置服务的智能选址
+
+## 项目结构
+
+```
+lib/
+├── api/              # API 接口层
+│   ├── home.dart    # 首页相关接口
+│   ├── house.dart   # 房屋管理接口
+│   ├── location.dart # 腾讯位置服务接口
+│   └── user.dart    # 用户相关接口
+├── constant/         # 常量定义
+│   ├── index.dart   # 全局常量和配置
+│   └── tab_config.dart # 底部导航配置
+├── controller/       # GetX 状态控制器
+│   ├── build_controller.dart # 选楼流程状态
+│   └── user_info_controller.dart # 用户信息状态
+├── models/          # 数据模型
+│   ├── building_info.dart # 建筑信息模型
+│   ├── house.dart   # 房屋信息模型
+│   ├── notice_data.dart # 公告数据模型
+│   └── user_info.dart # 用户信息模型
+├── pages/           # 页面组件
+│   ├── building/    # 楼栋选择
+│   ├── home/        # 首页
+│   ├── house/       # 房屋管理
+│   ├── location/    # 位置选择
+│   ├── login/       # 登录
+│   ├── mine/        # 我的
+│   ├── not_found/   # 404页面
+│   ├── notice_detail/ # 公告详情
+│   ├── profile/     # 个人资料
+│   ├── room/        # 房间选择
+│   └── tabs_page/   # 底部导航容器
+├── platform/        # 平台适配层
+│   ├── avatar_picker.dart # 头像选择器
+│   ├── local_image.dart # 本地图片加载接口
+│   └── local_image_io.dart # IO平台实现
+├── router/          # 路由配置
+│   └── index.dart   # 路由表
+├── theme/           # 主题配置
+│   ├── app_colors.dart # 颜色常量
+│   └── app_theme.dart # 主题定义
+├── utils/           # 工具类
+│   ├── app_exception.dart # 异常定义
+│   ├── emitter.dart # 事件总线
+│   ├── location.dart # 位置工具
+│   ├── request_dio.dart # 网络请求封装
+│   ├── toast.dart   # Toast提示
+│   └── token_manager.dart # Token管理
+├── widgets/         # 通用组件
+│   ├── async_state_view.dart # 异步状态视图
+│   ├── camera_dialog.dart # 相机选择对话框
+│   ├── community_picker.dart # 社区选择器
+│   ├── house_status_tag.dart # 房屋状态标签
+│   ├── loading_state_mixin.dart # 加载状态Mixin
+│   └── section_title.dart # 区域标题
+└── main.dart        # 应用入口
+```
+
+## 技术栈
+
+- **框架**: Flutter 3.6+
+- **状态管理**: GetX
+- **网络请求**: Dio
+- **本地存储**: SharedPreferences
+- **位置服务**: Geolocator + 腾讯地图API
+- **权限管理**: PermissionHandler
+- **图片选择**: ImagePicker
+
+## 代码质量
+
+- ✅ 类型安全：全面使用 Dart 3 null safety
+- ✅ 错误处理：统一的异常处理机制
+- ✅ 文档注释：公共API均有详细文档
+- ✅ 代码规范：遵循 Flutter Lints 规则
+- ✅ 测试覆盖：核心业务逻辑有单元测试
+
+## 最近优化 (2026-08-05)
+
+### 架构优化
+- ✅ 将 `BuildController` 的 Map 存储改为类型安全的 `BuildingInfo` 模型
+- ✅ 优化搜索过滤性能，添加结果缓存避免重复计算
+- ✅ 创建 `LoadingStateMixin` 统一异步加载状态管理
+
+### 代码质量提升
+- ✅ 为所有公共API添加详细文档注释
+- ✅ 增强 `analysis_options.yaml`，启用更严格的lint规则
+- ✅ 改进异常类文档和示例
+- ✅ 为 `House` 模型添加便捷属性方法
+
+### 性能优化
+- ✅ `location_list` 搜索过滤添加缓存机制
+- ✅ 增加 const 构造函数使用
+
+详细优化内容请查看 [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
+
+## 快速开始
 
 ## API 环境切换
 
@@ -118,6 +225,23 @@ build\ohos\hap\entry-default-signed.hap
 
 腾讯控制台中需要创建用途为 **WebService API** 的 Key。调试时通过编译参数传入，
 不要把 Key 直接写进 Dart 源码：
+
+推荐只在本机配置一次：复制 `tool/dart_defines.example.env` 为
+`tool/dart_defines.local.env`，然后填写真实 Key。`local` 文件已被 Git 忽略，
+`tool/flutter_ohos.ps1` 启动时会自动加载：
+
+```dotenv
+TENCENT_MAP_KEY=你的腾讯位置服务Key
+LOCATION_COORDINATE_SYSTEM=auto
+```
+
+之后每次只需要运行：
+
+```powershell
+.\tool\flutter_ohos.ps1 run
+```
+
+也可以不创建本地配置文件，临时通过命令行覆盖：
 
 ```powershell
 .\tool\flutter_ohos.ps1 run `
