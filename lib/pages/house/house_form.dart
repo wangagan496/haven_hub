@@ -5,19 +5,28 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../api/house.dart';
-import '../../theme/app_colors.dart';
 import '../../controller/build_controller.dart';
+import '../../l10n/app_localizations.dart';
 import '../../models/house.dart';
 import '../../platform/local_image.dart'
     if (dart.library.io) '../../platform/local_image_io.dart';
-import '../../widgets/camera_dialog.dart';
+import '../../router/app_routes.dart';
+import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
+import '../../widgets/cached_image.dart';
+import '../../widgets/camera_dialog.dart';
 import '../../widgets/section_title.dart';
 import 'house_list.dart';
 
 final RegExp _ownerNamePattern = RegExp(r'^[\u4e00-\u9fa5]{2,15}$');
 final RegExp _mobilePattern = RegExp(r'^1[3-9]\d{9}$');
+const int _maxIdentityPhotoBytes = 8 * 1024 * 1024;
+const Set<String> _allowedIdentityPhotoExtensions = <String>{
+  'jpg',
+  'jpeg',
+  'png',
+};
 
 typedef HousePhotoPicker = Future<XFile?> Function(ImageSource source);
 
@@ -80,7 +89,7 @@ class HouseForm extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/houseform';
+  static const String routeName = AppRoutes.houseForm;
 
   final HousePhotoPicker photoPicker;
   final UploadPhotoLoader uploadPhotoLoader;
@@ -123,9 +132,11 @@ class _HouseFormState extends State<HouseForm> {
 
     final String id = switch (arguments) {
       String() => arguments.trim(),
+      HouseFormArguments() => arguments.houseId?.trim() ?? '',
       Map<dynamic, dynamic>() => arguments['id']?.toString().trim() ?? '',
       _ => '',
     };
+    if (arguments is HouseFormArguments && arguments.isCreate) return;
     if (id.isEmpty) {
       setState(() => _detailErrorMessage = '房屋参数不正确');
       return;
@@ -258,6 +269,7 @@ class _HouseFormState extends State<HouseForm> {
     if (_isPickingImage) return;
 
     setState(() => _isPickingImage = true);
+    final AppLocalizations l10n = AppLocalizations.of(context)!;
     try {
       final XFile? photo = await widget.photoPicker(source);
       if (photo == null || !mounted) {
@@ -269,9 +281,19 @@ class _HouseFormState extends State<HouseForm> {
         throw const FormatException('所选图片路径为空');
       }
       final String fileName = _getPhotoFileName(photo);
+      final String extension =
+          fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+      if (!_allowedIdentityPhotoExtensions.contains(extension)) {
+        throw FormatException(
+          l10n.idPhotoFormatError,
+        );
+      }
       final Uint8List fileBytes = await photo.readAsBytes();
       if (fileBytes.isEmpty) {
         throw const FormatException('所选图片内容为空');
+      }
+      if (fileBytes.length > _maxIdentityPhotoBytes) {
+        throw FormatException(l10n.idPhotoTooLarge);
       }
       if (!mounted) return;
 
@@ -359,10 +381,10 @@ class _HouseFormState extends State<HouseForm> {
   }
 
   Widget _buildNetworkPhoto(String photoPath) {
-    return Image.network(
-      photoPath,
+    return CachedImage(
+      imageUrl: photoPath,
       fit: BoxFit.contain,
-      errorBuilder: (_, __, ___) => const Center(
+      errorWidget: const Center(
         child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 42),
       ),
     );

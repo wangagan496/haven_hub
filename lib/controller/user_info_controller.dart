@@ -1,20 +1,28 @@
 import 'package:get/get.dart' show GetxController;
 
+import '../models/user_info.dart';
+
 class UserInfoController extends GetxController {
-  static const Map<String, dynamic> _emptyUserInfo = <String, dynamic>{
-    'nickName': '',
-    'avatar': '',
-    'id': '',
-  };
+  UserInfo currentUser = const UserInfo.empty();
 
-  Map<String, dynamic> userInfo = Map<String, dynamic>.from(_emptyUserInfo);
+  /// Compatibility projection for older callers. New code should use
+  /// [currentUser] so field names are checked by the analyzer.
+  Map<String, dynamic> get userInfo => <String, dynamic>{
+        'id': currentUser.id,
+        'avatar': currentUser.avatarUrl,
+        'nickName': currentUser.nickName,
+      };
 
-  void updateUserInfo(Map<String, dynamic> info) {
-    userInfo = Map<String, dynamic>.from(info);
+  void updateUser(UserInfo user) {
+    currentUser = user;
     update();
   }
 
+  void updateUserInfo(Map<String, dynamic> info) {
+    updateUser(UserInfo.fromJson(info));
+  }
+
   void clearUserInfo() {
-    updateUserInfo(_emptyUserInfo);
+    updateUser(const UserInfo.empty());
   }
 }

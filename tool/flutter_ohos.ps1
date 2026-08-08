@@ -2,16 +2,61 @@ param(
   [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
   [string[]] $FlutterArguments,
   [string] $FlutterOhosSdk = $env:FLUTTER_OHOS_HOME,
+  [string] $DartDefinesFile,
   [Alias('d')]
   [string] $DeviceId
 )
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$localDartDefines = Join-Path $PSScriptRoot 'dart_defines.local.env'
+$defaultDartDefinesFile = Join-Path $PSScriptRoot 'dart_defines.local.env'
+$dartDefinesPath = if ([string]::IsNullOrWhiteSpace($DartDefinesFile)) {
+  $defaultDartDefinesFile
+} elseif ([System.IO.Path]::IsPathRooted($DartDefinesFile)) {
+  $DartDefinesFile
+} else {
+  Join-Path $projectRoot $DartDefinesFile
+}
 $devecoHome = if ($env:DEVECO_HOME) {
   $env:DEVECO_HOME
 } else {
   'C:\Huawei\DevEco Studio'
+}
+
+function Get-DartDefineValue {
+  param(
+    [string] $Name,
+    [string] $DefinesFile,
+    [string[]] $Arguments
+  )
+
+  # Flutter gives explicit --dart-define arguments precedence over values read
+  # from --dart-define-from-file, so inspect the file first and CLI arguments
+  # afterwards in the same order.
+  $value = $null
+  if (Test-Path -LiteralPath $DefinesFile -PathType Leaf) {
+    foreach ($line in Get-Content -LiteralPath $DefinesFile) {
+      if ($line -match "^\s*$([regex]::Escape($Name))\s*=\s*(.*)\s*$") {
+        $value = $Matches[1]
+      }
+    }
+  }
+
+  for ($index = 0; $index -lt $Arguments.Count; $index++) {
+    $argument = $Arguments[$index]
+    $define = $null
+    if ($argument -eq '--dart-define' -and $index + 1 -lt $Arguments.Count) {
+      $index++
+      $define = $Arguments[$index]
+    } elseif ($argument -like '--dart-define=*') {
+      $define = $argument.Substring('--dart-define='.Length)
+    }
+
+    if ($null -ne $define -and $define -match "^$([regex]::Escape($Name))=(.*)$") {
+      $value = $Matches[1]
+    }
+  }
+
+  return $value
 }
 
 function Test-FlutterOhosSdk {
@@ -92,19 +137,32 @@ if (
 }
 $env:PUB_CACHE = Join-Path $projectRoot '.pub-cache'
 
-if (
-  (Test-Path -LiteralPath $localDartDefines -PathType Leaf) -and
-  $FlutterArguments.Count -gt 0 -and
-  $FlutterArguments[0] -in @('run', 'build')
-) {
-  $remainingArguments = @()
-  if ($FlutterArguments.Count -gt 1) {
-    $remainingArguments = $FlutterArguments[1..($FlutterArguments.Count - 1)]
+if ($FlutterArguments.Count -gt 0 -and $FlutterArguments[0] -in @('run', 'build')) {
+  $tencentMapKey = Get-DartDefineValue `
+    -Name 'TENCENT_MAP_KEY' `
+    -DefinesFile $dartDefinesPath `
+    -Arguments $FlutterArguments
+  if ([string]::IsNullOrWhiteSpace($tencentMapKey)) {
+    throw @"
+TENCENT_MAP_KEY is required for a runnable Haven Hub build.
+Create tool\dart_defines.local.env from tool\dart_defines.example.env, or pass
+-DartDefinesFile <secure production env file> / --dart-define=TENCENT_MAP_KEY=...
+before running or building the app.
+"@
   }
-  $FlutterArguments = @(
-    $FlutterArguments[0]
-    "--dart-define-from-file=$localDartDefines"
-  ) + $remainingArguments
+
+  if (Test-Path -LiteralPath $dartDefinesPath -PathType Leaf) {
+    $remainingArguments = @()
+    if ($FlutterArguments.Count -gt 1) {
+      $remainingArguments = $FlutterArguments[1..($FlutterArguments.Count - 1)]
+    }
+    $FlutterArguments = @(
+      $FlutterArguments[0]
+    ) + $remainingArguments + "--dart-define-from-file=$dartDefinesPath"
+    Write-Host 'Tencent location configuration: TENCENT_MAP_KEY loaded.'
+  } else {
+    Write-Host 'Tencent location configuration: TENCENT_MAP_KEY loaded from explicit command-line define.'
+  }
 }
 
 $toolPaths = @(

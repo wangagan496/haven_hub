@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../models/notice_data.dart';
+import '../../../router/app_routes.dart';
 import 'notify_item.dart';
 
 class HomeList extends StatelessWidget {
@@ -53,13 +54,10 @@ class HomeList extends StatelessWidget {
         return GestureDetector(
           onTap: item.id.isEmpty
               ? null
-              : () {
-                  Navigator.pushNamed(
+              : () => AppRoutes.toNoticeDetail<void>(
                     context,
-                    '/notice-detail-404-test',
-                    arguments: item.id,
-                  );
-                },
+                    noticeId: item.id,
+                  ),
           child: NotifyItem(item: item),
         );
       },

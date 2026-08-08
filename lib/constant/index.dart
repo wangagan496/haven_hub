@@ -38,9 +38,19 @@ class GlobalVariable {
 
   /// 腾讯地图服务密钥。
   ///
-  /// 必须通过 `--dart-define=TENCENT_MAP_KEY=...` 提供。
+  /// 必须通过 `--dart-define=TENCENT_MAP_KEY=...` 显式提供，避免把真实密钥
+  /// 编译进客户端产物。生产环境更推荐使用服务端代理。
   static const String tencentMapKey = String.fromEnvironment(
     'TENCENT_MAP_KEY',
+  );
+
+  /// 腾讯位置服务的基础地址。
+  ///
+  /// 原生平台默认直连腾讯；Flutter Web 调试时可通过
+  /// `TENCENT_MAP_API_BASE_URL` 指向本机开发代理，绕过浏览器 CORS 限制。
+  static const String tencentMapApiBaseUrl = String.fromEnvironment(
+    'TENCENT_MAP_API_BASE_URL',
+    defaultValue: 'https://apis.map.qq.com/',
   );
 
   /// 定位坐标系类型。
@@ -70,15 +80,17 @@ class HttpPath {
   static const String houseList = 'room';
   static const String refreshToken = 'refreshToken';
 
-  // 腾讯地图服务接口（完整 URL）
-  static const String tencentCoordinateTranslate =
-      'https://apis.map.qq.com/ws/coord/v1/translate';
-  static const String tencentReverseGeocode =
-      'https://apis.map.qq.com/ws/geocoder/v1/';
-  static const String tencentPlaceSearch =
-      'https://apis.map.qq.com/ws/place/v1/search';
-  static const String tencentIpLocation =
-      'https://apis.map.qq.com/ws/location/v1/ip';
+  // 腾讯地图服务接口（相对于可配置的 tencentMapApiBaseUrl）
+  static final String tencentCoordinateTranslate =
+      _tencentMapUrl('ws/coord/v1/translate');
+  static final String tencentReverseGeocode = _tencentMapUrl('ws/geocoder/v1/');
+  static final String tencentPlaceSearch = _tencentMapUrl('ws/place/v1/search');
+  static final String tencentIpLocation = _tencentMapUrl('ws/location/v1/ip');
+
+  static String _tencentMapUrl(String path) {
+    const String baseUrl = GlobalVariable.tencentMapApiBaseUrl;
+    return '${baseUrl.endsWith('/') ? baseUrl : '$baseUrl/'}$path';
+  }
 
   /// 获取公告详情路径。
   ///

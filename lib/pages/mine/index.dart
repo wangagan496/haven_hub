@@ -9,6 +9,7 @@ import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
+import '../../widgets/cached_image.dart';
 import '../house/house_list.dart';
 import '../login/index.dart';
 import '../profile/index.dart';
@@ -131,11 +132,7 @@ class _MinePageState extends State<MinePage> {
       if (!mounted || !_isLoggedIn || tokenManager.getToken().isEmpty) {
         return;
       }
-      _userInfoController.updateUserInfo(<String, dynamic>{
-        'nickName': userInfo.nickName,
-        'avatar': userInfo.avatarUrl,
-        'id': userInfo.id,
-      });
+      _userInfoController.updateUser(userInfo);
     } on Object catch (error) {
       if (!mounted || widget.activeIndex != 1 || !_isLoggedIn) {
         return;
@@ -157,26 +154,20 @@ class _MinePageState extends State<MinePage> {
   }
 
   Widget _buildUserAvatar() {
-    final String avatar =
-        _userInfoController.userInfo['avatar']?.toString() ?? '';
+    final String avatar = _userInfoController.currentUser.avatarUrl;
     if (_isLoggedIn && avatar.isNotEmpty) {
-      return Image.network(
-        avatar,
+      return CachedImage(
+        imageUrl: avatar,
         width: 72,
         height: 72,
-        fit: BoxFit.cover,
-        errorBuilder:
-            (BuildContext context, Object error, StackTrace? stackTrace) {
-          return _buildDefaultAvatar();
-        },
+        errorWidget: _buildDefaultAvatar(),
       );
     }
     return _buildDefaultAvatar();
   }
 
   String _getUserNickName() {
-    final String nickName =
-        _userInfoController.userInfo['nickName']?.toString() ?? '';
+    final String nickName = _userInfoController.currentUser.nickName;
     if (nickName.isNotEmpty) {
       return nickName;
     }
@@ -184,7 +175,7 @@ class _MinePageState extends State<MinePage> {
   }
 
   bool _hasLoggedInUser() {
-    final String id = _userInfoController.userInfo['id']?.toString() ?? '';
+    final String id = _userInfoController.currentUser.id;
     return id.isNotEmpty;
   }
 
@@ -422,7 +413,7 @@ class _MinePageState extends State<MinePage> {
                                 String label,
                                 String icon,
                                 String? routeName
-                              }) item) {
+                              }) item,) {
                             return InkWell(
                               onTap: () {
                                 unawaited(_openMenuItem(item));
@@ -431,7 +422,7 @@ class _MinePageState extends State<MinePage> {
                                 height: 72,
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(
-                                      horizontal: 20),
+                                      horizontal: 20,),
                                   child: Row(
                                     children: <Widget>[
                                       Image.asset(

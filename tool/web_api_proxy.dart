@@ -1,8 +1,22 @@
 import 'dart:convert';
 import 'dart:io';
 
-const String _upstreamBaseUrl = 'https://live-api.itheima.net/';
+const String _courseApiBaseUrl = 'https://live-api.itheima.net/';
+const String _tencentMapBaseUrl = 'https://apis.map.qq.com/';
+const String _tencentMapProxyPrefix = '/tencent-map/';
 const int _defaultPort = 3001;
+
+class _ProxyOptions {
+  const _ProxyOptions({
+    required this.port,
+    required this.bindAddress,
+    required this.bypassSystemProxy,
+  });
+
+  final int port;
+  final InternetAddress bindAddress;
+  final bool bypassSystemProxy;
+}
 
 const Set<String> _hopByHopHeaders = <String>{
   'connection',
@@ -16,14 +30,16 @@ const Set<String> _hopByHopHeaders = <String>{
 };
 
 Future<void> main(List<String> arguments) async {
-  final int port = _parsePort(arguments);
+  final _ProxyOptions options = _parseOptions(arguments);
+  final int port = options.port;
   final HttpServer server = await HttpServer.bind(
-    InternetAddress.loopbackIPv4,
-    port,
+    options.bindAddress,
+    options.port,
   );
 
   stdout.writeln('Web API 开发代理已启动：http://127.0.0.1:$port/');
-  stdout.writeln('上游接口：$_upstreamBaseUrl');
+  stdout.writeln('课程接口：$_courseApiBaseUrl');
+  stdout.writeln('腾讯位置服务：$_tencentMapBaseUrl');
   stdout.writeln('按 Ctrl+C 停止服务。');
 
   final HttpClient client = HttpClient()
@@ -31,10 +47,53 @@ Future<void> main(List<String> arguments) async {
     ..connectionTimeout = const Duration(seconds: 15)
     ..userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 Chrome/150 Safari/537.36';
+  if (options.bypassSystemProxy) {
+    client.findProxy = (_) => 'DIRECT';
+  }
 
   await for (final HttpRequest request in server) {
-    await _handleRequest(request, client);
+    await _handleRequest(request, client, options.bindAddress);
   }
+}
+
+_ProxyOptions _parseOptions(List<String> arguments) {
+  int port = _defaultPort;
+  String bindAddress = InternetAddress.loopbackIPv4.address;
+  bool bypassSystemProxy = false;
+
+  for (int index = 0; index < arguments.length; index++) {
+    final String argument = arguments[index];
+    if (argument == '--direct') {
+      bypassSystemProxy = true;
+      continue;
+    }
+    if (argument == '--bind' && index + 1 < arguments.length) {
+      bindAddress = arguments[++index];
+      continue;
+    }
+    if (argument.startsWith('--bind=')) {
+      bindAddress = argument.substring('--bind='.length);
+      continue;
+    }
+    if (!argument.startsWith('-') && index == 0) {
+      port = _parsePort(<String>[argument]);
+      continue;
+    }
+    throw ArgumentError(
+      'Usage: dart run tool/web_api_proxy.dart [port] '
+      '[--bind=<host IPv4>] [--direct]',
+    );
+  }
+
+  final InternetAddress? address = InternetAddress.tryParse(bindAddress);
+  if (address == null || address.type != InternetAddressType.IPv4) {
+    throw ArgumentError.value(bindAddress, 'bind', 'Only IPv4 is supported');
+  }
+  return _ProxyOptions(
+    port: port,
+    bindAddress: address,
+    bypassSystemProxy: bypassSystemProxy,
+  );
 }
 
 int _parsePort(List<String> arguments) {
@@ -51,9 +110,13 @@ int _parsePort(List<String> arguments) {
   return port;
 }
 
-Future<void> _handleRequest(HttpRequest request, HttpClient client) async {
+Future<void> _handleRequest(
+  HttpRequest request,
+  HttpClient client,
+  InternetAddress bindAddress,
+) async {
   final String? origin = request.headers.value('origin');
-  if (!_isAllowedOrigin(origin)) {
+  if (!_isAllowedOrigin(origin, bindAddress)) {
     request.response.statusCode = HttpStatus.forbidden;
     await _sendJson(
       request.response,
@@ -73,9 +136,16 @@ Future<void> _handleRequest(HttpRequest request, HttpClient client) async {
     return;
   }
 
-  final Uri upstreamBaseUri = Uri.parse(_upstreamBaseUrl);
+  final bool isTencentMapRequest =
+      request.uri.path.startsWith(_tencentMapProxyPrefix);
+  final Uri upstreamBaseUri = Uri.parse(
+    isTencentMapRequest ? _tencentMapBaseUrl : _courseApiBaseUrl,
+  );
+  final String upstreamPath = isTencentMapRequest
+      ? '/${request.uri.path.substring(_tencentMapProxyPrefix.length)}'
+      : request.uri.path;
   final Uri upstreamUri = upstreamBaseUri.replace(
-    path: request.uri.path,
+    path: upstreamPath,
     query: request.uri.hasQuery ? request.uri.query : null,
     fragment: '',
   );
@@ -110,7 +180,7 @@ Future<void> _handleRequest(HttpRequest request, HttpClient client) async {
         request.response,
         <String, Object?>{
           'code': 50200,
-          'message': '开发代理连接课程接口失败',
+          'message': isTencentMapRequest ? '开发代理连接腾讯位置服务失败' : '开发代理连接课程接口失败',
           'data': null,
         },
       );
@@ -120,7 +190,7 @@ Future<void> _handleRequest(HttpRequest request, HttpClient client) async {
   }
 }
 
-bool _isAllowedOrigin(String? origin) {
+bool _isAllowedOrigin(String? origin, InternetAddress bindAddress) {
   if (origin == null || origin.isEmpty) {
     return true;
   }
@@ -129,7 +199,9 @@ bool _isAllowedOrigin(String? origin) {
   if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
     return false;
   }
-  return uri.host == '127.0.0.1' || uri.host == 'localhost';
+  return uri.host == '127.0.0.1' ||
+      uri.host == 'localhost' ||
+      uri.host == bindAddress.address;
 }
 
 void _addCorsHeaders(HttpRequest request, String? origin) {
@@ -137,7 +209,7 @@ void _addCorsHeaders(HttpRequest request, String? origin) {
   response.headers
     ..set(
       HttpHeaders.accessControlAllowOriginHeader,
-      origin?.isNotEmpty == true ? origin! : '*',
+      origin?.isNotEmpty ?? false ? origin! : '*',
     )
     ..set(
       HttpHeaders.accessControlAllowMethodsHeader,
@@ -191,3 +263,4 @@ Future<void> _sendJson(
   response.write(jsonEncode(body));
   await response.close();
 }
+// ignore_for_file: cascade_invocations

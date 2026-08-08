@@ -5,10 +5,11 @@ import 'package:geolocator/geolocator.dart';
 
 typedef PositionLoader = Future<Position> Function();
 
-const Duration _locationTimeout = Duration(seconds: 25);
+// 给 GPS 足够时间完成冷启动和卫星收敛，避免过早接受网络/基站粗略位置。
+const Duration _locationTimeout = Duration(seconds: 45);
 const Duration _maximumPositionAge = Duration(minutes: 2);
-const double _targetAccuracyInMeters = 30;
-const double _fallbackAccuracyInMeters = 100;
+const double _targetAccuracyInMeters = 10;
+const double _fallbackAccuracyInMeters = 50;
 
 Future<Position> getLocation() async {
   final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -20,7 +21,6 @@ Future<Position> getLocation() async {
     Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
       ),
     ),
   );

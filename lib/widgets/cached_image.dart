@@ -140,7 +140,6 @@ class CachedAvatar extends StatelessWidget {
         imageUrl: imageUrl,
         width: size,
         height: size,
-        fit: BoxFit.cover,
         placeholder: _buildAvatarPlaceholder(context),
         errorWidget: _buildAvatarError(context),
       ),

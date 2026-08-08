@@ -3,14 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../api/house.dart';
-import '../../theme/app_colors.dart';
 import '../../models/house.dart';
+import '../../router/app_routes.dart';
+import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
 import '../../widgets/async_state_view.dart';
 import '../location/location_list.dart';
-import 'house_detail.dart';
 import 'components/house_item.dart';
+import 'house_detail.dart';
 
 class HouseList extends StatefulWidget {
   const HouseList({
@@ -18,7 +19,7 @@ class HouseList extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/houselist';
+  static const String routeName = AppRoutes.houseList;
 
   final HouseListLoader houseListLoader;
 

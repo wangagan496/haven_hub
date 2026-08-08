@@ -172,14 +172,14 @@ class _LoginPageState extends State<LoginPage> {
 
       final String? toName = widget.toName;
       if (toName != null && toName.isNotEmpty) {
-        Navigator.pushReplacementNamed(
+        await Navigator.pushReplacementNamed(
           context,
           toName,
           arguments: widget.toArguments,
         );
         return;
       }
-      Navigator.maybePop(context);
+      await Navigator.maybePop(context);
     } on Object catch (error) {
       await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
     } finally {
@@ -242,7 +242,6 @@ class _LoginPageState extends State<LoginPage> {
       body: Container(
         padding: const EdgeInsets.all(20),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.start,
           children: <Widget>[
             const Row(
               children: <Widget>[
@@ -266,14 +265,13 @@ class _LoginPageState extends State<LoginPage> {
             ),
             const SizedBox(height: 30),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
               children: <Widget>[
                 Expanded(
                   child: TextField(
                     controller: _phoneController,
                     keyboardType: TextInputType.phone,
                     textInputAction: TextInputAction.next,
-                    decoration: InputDecoration(
+                    decoration: const InputDecoration(
                       labelText: '手机号',
                       hintText: '请输入手机号（可带 +86）',
                     ),
@@ -298,7 +296,7 @@ class _LoginPageState extends State<LoginPage> {
               textInputAction: TextInputAction.done,
               maxLength: 6,
               onSubmitted: (_) => _login(),
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: '验证码',
                 hintText: '请输入6位验证码',
                 counterText: '',

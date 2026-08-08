@@ -7,6 +7,11 @@
 
 ## [未发布]
 
+### 当前验证状态（2026-08-06）
+- 房屋列表、详情、编辑、添加房屋、位置、楼栋、房间、表单、保存和删除流程已通过浏览器真实操作验证。
+- Web 调试使用 `tool/web_api_proxy.dart`，腾讯位置服务通过本地代理处理浏览器跨域限制。
+- 当前仓库不保留自动化测试文件；功能回归以浏览器真实流程和 `flutter analyze --no-pub --no-fatal-infos` 为准。
+
 ### 新增
 - 创建 `BuildingInfo` 模型类，替代 Map 存储建筑信息
 - 新增 `LoadingStateMixin` 用于统一异步加载状态管理
@@ -25,8 +30,11 @@
 
 ### 修复
 - 修复 `BuildController` 类型安全问题
-- 修复测试用例以适配新的 `BuildingInfo` 模型
 - 修复 `location_list.dart` 中的 Map 类型声明
+- 统一房屋、位置、楼栋、房间相关页面的 `AppRoutes` 路由
+- 修复房屋详情和表单的类型化路由参数解析
+- 修复首页房屋导航 import 的大小写问题
+- 删除公告详情的 404 测试页面入口
 
 ### 文档
 - 完善 `lib/constant/index.dart` 文档注释
@@ -35,9 +43,9 @@
 - 完善 `lib/utils/app_exception.dart` 文档注释
 - 完善 `lib/controller/build_controller.dart` 文档注释
 
-### 测试
-- ✅ 所有 28 个测试通过
-- 更新测试以使用新的 `BuildingInfo` API
+### 验证
+- ✅ 静态分析无编译错误
+- ✅ 浏览器真实流程验证通过
 
 ## [1.0.0] - 2026-08-05
 

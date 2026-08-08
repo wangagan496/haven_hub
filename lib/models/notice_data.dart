@@ -1,9 +1,6 @@
 class NoticeData {
   const NoticeData({
-    this.id = '',
-    required this.title,
-    required this.content,
-    required this.date,
+    required this.title, required this.content, required this.date, this.id = '',
     this.creatorName = '',
   });
 

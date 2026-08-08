@@ -1,5 +1,7 @@
 # 享家社区（Haven Hub）完整学习手册
 
+> **当前项目状态（2026-08-06）**：房屋列表、详情、编辑、添加房屋、位置、楼栋、房间、表单、保存和删除流程已通过浏览器真实操作验证。Web 调试需要先启动 `dart run tool/web_api_proxy.dart`，再通过 `API_BASE_URL=http://127.0.0.1:3001/` 和 `TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/` 运行 Flutter Web。仓库当前不保留自动化测试文件，测试章节中的代码为教学示例，不代表当前测试目录内容。
+
 > **适用人群**: Flutter 初学者 → 进阶开发者  
 > **学习时长**: 2-4 周（根据基础而定）  
 > **项目版本**: v1.1.0
@@ -801,4 +803,3 @@ void main() {
 
 文档位置：D:/haven_hub/COMPLETE_LEARNING_GUIDE.md
 文档大小：18KB
-

@@ -36,6 +36,30 @@ class AppLocalizationsZh extends AppLocalizations {
   String get myHouses => '我的房屋';
 
   @override
+  String get repair => '我的报修';
+
+  @override
+  String get visitorRegistration => '访客登记';
+
+  @override
+  String get communityTitle => '社区';
+
+  @override
+  String get offlineNotice => '网络不可用时会显示本地示例内容，联网后将自动更新公告。';
+
+  @override
+  String get announcementLoadFailed => '公告加载失败，请稍后重试';
+
+  @override
+  String get announcementDetailLoadFailed => '公告详情加载失败，请稍后重试';
+
+  @override
+  String get idPhotoFormatError => '仅支持 JPG、JPEG 或 PNG 格式的证件照片';
+
+  @override
+  String get idPhotoTooLarge => '证件照片不能超过 8 MB';
+
+  @override
   String get addHouse => '添加房屋';
 
   @override

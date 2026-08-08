@@ -172,19 +172,28 @@ Future<LocationLookupResult> getTencentIpLocationInfo({
   _validateCoordinate(latitude, longitude);
 
   final Map<String, dynamic> adInfo = Map<String, dynamic>.from(rawAdInfo);
+  final String district = adInfo['district']?.toString().trim() ?? '';
   final List<String> addressParts = <String>[
     adInfo['nation']?.toString().trim() ?? '',
     adInfo['province']?.toString().trim() ?? '',
     adInfo['city']?.toString().trim() ?? '',
-    adInfo['district']?.toString().trim() ?? '',
+    district,
   ].where((String value) => value.isNotEmpty).toList(growable: false);
   if (addressParts.isEmpty) {
     throw const FormatException('腾讯 IP 定位结果缺少行政区划');
   }
 
+  final List<NearbyCommunity> communities =
+      await searchTencentNearbyCommunities(
+    latitude,
+    longitude,
+    key: key,
+    externalGet: externalGet,
+  );
+
   return LocationLookupResult(
     address: addressParts.join(' '),
-    communities: const <NearbyCommunity>[],
+    communities: List<NearbyCommunity>.unmodifiable(communities),
     ipAddress: result['ip']?.toString().trim(),
     isIpBased: true,
   );

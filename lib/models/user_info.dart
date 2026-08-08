@@ -1,8 +1,6 @@
 class UserInfo {
   const UserInfo({
-    this.id = '',
-    required this.avatarUrl,
-    required this.nickName,
+    required this.avatarUrl, required this.nickName, this.id = '',
   });
 
   const UserInfo.empty()

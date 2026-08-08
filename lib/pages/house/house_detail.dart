@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../api/house.dart';
-import '../../theme/app_colors.dart';
 import '../../models/house.dart';
+import '../../router/app_routes.dart';
+import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
 import '../../widgets/async_state_view.dart';
+import '../../widgets/cached_image.dart';
 import '../../widgets/house_status_tag.dart';
 import '../../widgets/section_title.dart';
 import 'house_form.dart';
@@ -19,7 +21,7 @@ class HouseDetail extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/housedetail';
+  static const String routeName = AppRoutes.houseDetail;
 
   final HouseDetailLoader houseDetailLoader;
   final DeleteHouseLoader deleteHouseLoader;
@@ -45,6 +47,7 @@ class _HouseDetailState extends State<HouseDetail> {
     final Object? arguments = ModalRoute.of(context)?.settings.arguments;
     _houseId = switch (arguments) {
       String() => arguments.trim(),
+      HouseDetailArguments() => arguments.houseId.trim(),
       Map<dynamic, dynamic>() => arguments['id']?.toString().trim() ?? '',
       _ => '',
     };
@@ -306,10 +309,10 @@ class _IdentityPhoto extends StatelessWidget {
                       ),
                     ),
                   )
-                : Image.network(
-                    imageUrl,
+                : CachedImage(
+                    imageUrl: imageUrl,
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const ColoredBox(
+                    errorWidget: const ColoredBox(
                       color: AppColors.placeholder,
                       child: Center(
                         child: Icon(

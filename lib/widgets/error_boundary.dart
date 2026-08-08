@@ -147,9 +147,9 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
+                const Text(
                   '错误信息：',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -158,9 +158,9 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
                 ),
                 if (_stackTrace != null) ...[
                   const SizedBox(height: 16),
-                  Text(
+                  const Text(
                     '堆栈跟踪：',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Text(

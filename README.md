@@ -12,6 +12,18 @@ Haven Hub 是一个基于 Flutter 开发的社区物业管理应用，支持多�
 - 社区公告浏览
 - 基于腾讯位置服务的智能选址
 
+## 房屋业务流程
+
+登录后可从“我的”进入“我的房屋”，支持以下完整流程：
+
+```text
+房屋列表 → 房屋详情 → 编辑 → 保存
+添加房屋 → 位置 → 楼栋 → 房间 → 房屋表单 → 提交审核
+房屋详情 → 删除房屋 → 返回房屋列表
+```
+
+房屋相关页面统一使用 `AppRoutes` 中的路由常量，避免直接拼接旧路径。房屋详情和编辑表单通过类型化参数传递房屋 ID。
+
 ## 项目结构
 
 ```
@@ -86,7 +98,8 @@ lib/
 - ✅ 错误处理：统一的异常处理机制
 - ✅ 文档注释：公共API均有详细文档
 - ✅ 代码规范：遵循 Flutter Lints 规则
-- ✅ 测试覆盖：核心业务逻辑有单元测试
+- ✅ 静态检查：`flutter analyze --no-pub --no-fatal-infos` 无编译错误
+- ℹ️ 当前仓库不保留自动化测试文件，功能验证通过浏览器真实流程完成
 
 ## 最近优化 (2026-08-05)
 
@@ -108,6 +121,19 @@ lib/
 详细优化内容请查看 [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
 
 ## 快速开始
+
+### Web/桌面浏览器真实验证
+
+课程接口的登录验证码接口在测试环境会直接返回测试验证码，手机号只需符合手机号格式即可。启动 Web 调试代理后运行 Flutter Web：
+
+```powershell
+dart run tool/web_api_proxy.dart
+flutter run -d web-server --web-port 8767 `
+  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
+  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+```
+
+浏览器验证建议按“登录 → 我的房屋 → 房屋列表/详情/编辑 → 添加房屋 → 位置/楼栋/房间/表单”的顺序执行。Web 环境会优先请求浏览器定位权限，权限不可用或超时会自动切换为腾讯 IP 定位。IP 定位结果可能落在境外；如果没有返回附近社区，这是定位数据没有匹配到社区，不代表楼栋、房间或表单路由异常。
 
 ## API 环境切换
 
@@ -138,18 +164,20 @@ dart run tool/web_api_proxy.dart
 
 ```powershell
 flutter run -d chrome `
-  --dart-define=API_BASE_URL=http://127.0.0.1:3001/
+  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
+  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
 ```
 
 使用内置浏览器或手动打开网址时，也可以启动 Web Server：
 
 ```powershell
 flutter run -d web-server --web-port 56891 `
-  --dart-define=API_BASE_URL=http://127.0.0.1:3001/
+  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
+  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
 ```
 
 该代理仅监听 `127.0.0.1`，只接受来自 `localhost` 或 `127.0.0.1`
-网页的请求，并固定转发到课程接口。它只用于本机开发，不应部署到线上。
+网页的请求，并分别固定转发到课程接口和腾讯位置服务。它只用于本机开发，不应部署到线上。
 鸿蒙和其他原生平台仍可直接使用默认课程接口。
 
 ## 本地 Mock 接口
@@ -241,6 +269,22 @@ LOCATION_COORDINATE_SYSTEM=auto
 .\tool\flutter_ohos.ps1 run
 ```
 
+`flutter_ohos.ps1` 会在运行或打包前校验 `TENCENT_MAP_KEY` 是否有效；缺少
+Key 时会直接停止构建，因此不会再安装一个进入“选择社区”后才提示未配置的包。
+不要直接用 DevEco/Hvigor 的 HAP 构建按钮或裸 `flutter run`，它们不会自动读取
+`dart_defines.local.env`。
+
+正式发布时，将生产配置文件保存到 CI/CD 的 Secret 或发布机受保护路径，并通过同一
+入口显式指定它：
+
+```powershell
+.\tool\flutter_ohos.ps1 `
+  -DartDefinesFile 'C:\secure\haven-hub.release.env' `
+  build hap --release
+```
+
+生产配置文件与本地配置文件格式相同，且必须包含 `TENCENT_MAP_KEY`；不要提交到 Git。
+
 也可以不创建本地配置文件，临时通过命令行覆盖：
 
 ```powershell
@@ -253,6 +297,16 @@ LOCATION_COORDINATE_SYSTEM=auto
 - `GET https://apis.map.qq.com/ws/coord/v1/translate`
 - `GET https://apis.map.qq.com/ws/geocoder/v1/`
 - `GET https://apis.map.qq.com/ws/place/v1/search`
+- `GET https://apis.map.qq.com/ws/location/v1/ip`
+
+腾讯 WebService API 不允许浏览器直接跨域调用。Web 调试时需要同时启动上面的
+本机代理，并传入：
+
+```powershell
+--dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+```
+
+原生和鸿蒙端不要设置该参数，会继续直连腾讯官方接口。
 
 移动端包内的编译参数仍可能被逆向获取。正式环境应由业务后端保存 Key，App 只调用
 自己的后端接口，由后端转发腾讯位置服务请求并限制调用频率。

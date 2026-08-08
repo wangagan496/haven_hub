@@ -117,7 +117,7 @@ class RequestDio {
         dio.RequestInterceptorHandler handler,
       ) {
         Logger.network(
-          '→ ${options.method} ${options.uri}',
+          '→ ${options.method} ${_redactUri(options.uri)}',
           _buildRequestLog(options),
         );
         handler.next(options);
@@ -127,11 +127,14 @@ class RequestDio {
         dio.ResponseInterceptorHandler handler,
       ) {
         final int duration = DateTime.now()
-            .difference(response.requestOptions.extra['request_time'] as DateTime?
-                ?? DateTime.now())
+            .difference(
+              response.requestOptions.extra['request_time'] as DateTime? ??
+                  DateTime.now(),
+            )
             .inMilliseconds;
         Logger.network(
-          '← ${response.statusCode} ${response.requestOptions.uri} (${duration}ms)',
+          '← ${response.statusCode} '
+          '${_redactUri(response.requestOptions.uri)} (${duration}ms)',
           _buildResponseLog(response),
         );
         handler.next(response);
@@ -141,7 +144,8 @@ class RequestDio {
         dio.ErrorInterceptorHandler handler,
       ) {
         Logger.error(
-          '✖ ${error.requestOptions.method} ${error.requestOptions.uri}',
+          '✖ ${error.requestOptions.method} '
+          '${_redactUri(error.requestOptions.uri)}',
           error.message,
         );
         handler.next(error);
@@ -156,11 +160,11 @@ class RequestDio {
 
     final Map<String, dynamic> log = <String, dynamic>{
       'method': options.method,
-      'url': options.uri.toString(),
+      'url': _redactUri(options.uri).toString(),
     };
 
     if (options.queryParameters.isNotEmpty) {
-      log['params'] = options.queryParameters;
+      log['params'] = _redactSensitiveValues(options.queryParameters);
     }
 
     if (options.headers.isNotEmpty) {
@@ -181,8 +185,28 @@ class RequestDio {
     return log;
   }
 
+  static Uri _redactUri(Uri uri) {
+    if (!uri.queryParameters.containsKey('key')) return uri;
+    return uri.replace(
+      queryParameters: <String, String>{
+        ...uri.queryParameters,
+        'key': '***',
+      },
+    );
+  }
+
+  static Map<String, dynamic> _redactSensitiveValues(
+    Map<String, dynamic> values,
+  ) {
+    return <String, dynamic>{
+      for (final MapEntry<String, dynamic> entry in values.entries)
+        entry.key: entry.key.toLowerCase() == 'key' ? '***' : entry.value,
+    };
+  }
+
   /// 构建响应日志内容。
-  static Map<String, dynamic> _buildResponseLog(dio.Response<dynamic> response) {
+  static Map<String, dynamic> _buildResponseLog(
+      dio.Response<dynamic> response) {
     final Map<String, dynamic> log = <String, dynamic>{
       'status': response.statusCode,
     };
@@ -190,6 +214,7 @@ class RequestDio {
     if (response.data != null) {
       // 限制响应体日志长度，避免过大的数据污染日志
       final String dataStr = response.data.toString();
+      // ignore: require_trailing_commas
       log['body'] = dataStr.length > 500
           ? '${dataStr.substring(0, 500)}... (truncated)'
           : response.data;
@@ -268,7 +293,7 @@ class RequestDio {
           }
         }
         return false;
-      } catch (_) {
+      } on Object catch (_) {
         return false;
       } finally {
         _refreshTokenFuture = null;

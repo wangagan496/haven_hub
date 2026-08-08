@@ -152,6 +152,54 @@ abstract class AppLocalizations {
   /// **'我的房屋'**
   String get myHouses;
 
+  /// No description provided for @repair.
+  ///
+  /// In zh, this message translates to:
+  /// **'我的报修'**
+  String get repair;
+
+  /// No description provided for @visitorRegistration.
+  ///
+  /// In zh, this message translates to:
+  /// **'访客登记'**
+  String get visitorRegistration;
+
+  /// No description provided for @communityTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'社区'**
+  String get communityTitle;
+
+  /// No description provided for @offlineNotice.
+  ///
+  /// In zh, this message translates to:
+  /// **'网络不可用时会显示本地示例内容，联网后将自动更新公告。'**
+  String get offlineNotice;
+
+  /// No description provided for @announcementLoadFailed.
+  ///
+  /// In zh, this message translates to:
+  /// **'公告加载失败，请稍后重试'**
+  String get announcementLoadFailed;
+
+  /// No description provided for @announcementDetailLoadFailed.
+  ///
+  /// In zh, this message translates to:
+  /// **'公告详情加载失败，请稍后重试'**
+  String get announcementDetailLoadFailed;
+
+  /// No description provided for @idPhotoFormatError.
+  ///
+  /// In zh, this message translates to:
+  /// **'仅支持 JPG、JPEG 或 PNG 格式的证件照片'**
+  String get idPhotoFormatError;
+
+  /// No description provided for @idPhotoTooLarge.
+  ///
+  /// In zh, this message translates to:
+  /// **'证件照片不能超过 8 MB'**
+  String get idPhotoTooLarge;
+
   /// No description provided for @addHouse.
   ///
   /// In zh, this message translates to:

@@ -36,6 +36,34 @@ class AppLocalizationsEn extends AppLocalizations {
   String get myHouses => 'My Houses';
 
   @override
+  String get repair => 'Repairs';
+
+  @override
+  String get visitorRegistration => 'Visitor Registration';
+
+  @override
+  String get communityTitle => 'Community';
+
+  @override
+  String get offlineNotice =>
+      'Offline sample content is shown until the latest announcements load.';
+
+  @override
+  String get announcementLoadFailed =>
+      'Announcements could not be loaded. Please try again.';
+
+  @override
+  String get announcementDetailLoadFailed =>
+      'Announcement details could not be loaded. Please try again.';
+
+  @override
+  String get idPhotoFormatError =>
+      'Only JPG, JPEG, and PNG identity photos are supported.';
+
+  @override
+  String get idPhotoTooLarge => 'An identity photo cannot exceed 8 MB.';
+
+  @override
   String get addHouse => 'Add House';
 
   @override

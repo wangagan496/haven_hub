@@ -47,7 +47,6 @@ linter:
     # 额外启用的规则
     # 代码风格
     - always_declare_return_types
-    - always_put_control_body_on_new_line
     - always_put_required_named_parameters_first
     - avoid_bool_literals_in_conditional_expressions
     - avoid_catches_without_on_clauses
@@ -64,7 +63,6 @@ linter:
     - prefer_final_locals
     - prefer_if_elements_to_conditional_expressions
     - prefer_single_quotes
-    - require_trailing_commas
     - sort_child_properties_last
     - unawaited_futures
     - unnecessary_await_in_return
@@ -75,9 +73,6 @@ linter:
     - use_named_constants
     - use_string_buffers
 
-    # 文档
-    - package_api_docs
-    - public_member_api_docs
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options

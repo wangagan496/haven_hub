@@ -4,10 +4,12 @@ import 'package:get/get.dart' hide FormData, MultipartFile;
 
 import '../../api/user.dart';
 import '../../controller/user_info_controller.dart';
+import '../../models/user_info.dart';
 import '../../platform/avatar_picker.dart';
-import '../../widgets/camera_dialog.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
+import '../../widgets/cached_image.dart';
+import '../../widgets/camera_dialog.dart';
 
 class _PendingAvatar {
   const _PendingAvatar({
@@ -71,7 +73,7 @@ class _ProfilePageState extends State<ProfilePage> {
   bool get _supportsCamera => widget.cameraSupported ?? supportsAvatarCamera;
 
   String _getUserNickname() {
-    return _userInfoController.userInfo['nickName']?.toString().trim() ?? '';
+    return _userInfoController.currentUser.nickName;
   }
 
   Widget _buildUserAvatar(UserInfoController controller) {
@@ -86,15 +88,13 @@ class _ProfilePageState extends State<ProfilePage> {
       );
     }
 
-    final String avatar =
-        controller.userInfo['avatar']?.toString().trim() ?? '';
+    final String avatar = controller.currentUser.avatarUrl;
     if (avatar.isNotEmpty) {
-      return Image.network(
-        avatar,
+      return CachedImage(
+        imageUrl: avatar,
         width: 40,
         height: 40,
-        fit: BoxFit.cover,
-        errorBuilder: _buildAvatarError,
+        errorWidget: _buildDefaultAvatar(),
       );
     }
     return _buildDefaultAvatar();
@@ -191,8 +191,7 @@ class _ProfilePageState extends State<ProfilePage> {
       _isSaving = true;
     });
     try {
-      String avatar =
-          _userInfoController.userInfo['avatar']?.toString().trim() ?? '';
+      String avatar = _userInfoController.currentUser.avatarUrl;
       final _PendingAvatar? pendingAvatar = _pendingAvatar;
       if (pendingAvatar != null) {
         avatar = pendingAvatar.uploadedUrl ??
@@ -215,19 +214,20 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       final String id = result['id']?.toString().trim() ?? '';
-      _userInfoController.updateUserInfo(<String, dynamic>{
-        ..._userInfoController.userInfo,
-        'nickName': nickName,
-        'avatar': avatar,
-        if (id.isNotEmpty) 'id': id,
-      });
+      _userInfoController.updateUser(
+        UserInfo(
+          id: id.isNotEmpty ? id : _userInfoController.currentUser.id,
+          avatarUrl: avatar,
+          nickName: nickName,
+        ),
+      );
       _pendingAvatar = null;
 
       await PromptAction.showSuccess('修改成功');
       if (!mounted) {
         return;
       }
-      Navigator.maybePop(context);
+      await Navigator.maybePop(context);
     } on Object catch (error) {
       await PromptAction.showError(
         describeError(error, fallback: '修改失败，请重试'),

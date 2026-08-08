@@ -147,6 +147,8 @@ class Validator {
   /// 只有当前验证通过时，才会执行下一个验证器。
   Validator chain(Validator next) {
     _chain.add(next);
+    // Fluent validator composition intentionally returns the same instance.
+    // ignore: avoid_returning_this
     return this;
   }
 

@@ -1,12 +1,14 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../api/location.dart';
-import '../../theme/app_colors.dart';
 import '../../controller/build_controller.dart';
+import '../../router/app_routes.dart';
+import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/location.dart';
 import '../../utils/toast.dart';
@@ -15,22 +17,42 @@ import '../building/building_list.dart';
 
 typedef LocationPermissionRequester = Future<PermissionStatus> Function();
 
-Future<PermissionStatus> requestLocationPermission() {
-  return Permission.location.request();
+const Duration _permissionRequestTimeout = Duration(seconds: 12);
+
+Future<PermissionStatus> requestLocationPermission() async {
+  if (!kIsWeb) {
+    return Permission.location.request();
+  }
+
+  LocationPermission permission = await Geolocator.checkPermission();
+  if (permission == LocationPermission.denied) {
+    permission = await Geolocator.requestPermission();
+  }
+
+  if (permission == LocationPermission.always ||
+      permission == LocationPermission.whileInUse) {
+    return PermissionStatus.granted;
+  }
+  if (permission == LocationPermission.deniedForever) {
+    return PermissionStatus.permanentlyDenied;
+  }
+  return PermissionStatus.denied;
 }
 
 class LocationList extends StatefulWidget {
   const LocationList({
     this.permissionRequester = requestLocationPermission,
+    this.permissionRequestTimeout = _permissionRequestTimeout,
     this.positionLoader = getLocation,
     this.locationLookup = getTencentLocationInfo,
     this.ipLocationLookup = getTencentIpLocationInfo,
     super.key,
   });
 
-  static const String routeName = '/locationlist';
+  static const String routeName = AppRoutes.locationList;
 
   final LocationPermissionRequester permissionRequester;
+  final Duration permissionRequestTimeout;
   final PositionLoader positionLoader;
   final LocationLookup locationLookup;
   final IpLocationLookup ipLocationLookup;
@@ -59,7 +81,19 @@ class _LocationListState extends State<LocationList> {
 
     setState(() => _isLoading = true);
     try {
-      final PermissionStatus status = await widget.permissionRequester();
+      // GPS 反查可返回区、街道等完整行政区划；IP 定位只作为兜底，
+      // 因其通常只能稳定到城市级别。
+      late final PermissionStatus status;
+      try {
+        status = await widget.permissionRequester().timeout(
+              widget.permissionRequestTimeout,
+            );
+      } on Object {
+        await _loadIpLocation(
+          '无法获取定位权限，已切换为 IP 定位，仅供城市级参考',
+        );
+        return;
+      }
       if (!mounted) return;
 
       if (status.isGranted) {
@@ -89,7 +123,66 @@ class _LocationListState extends State<LocationList> {
     }
   }
 
-  Future<void> _loadCurrentLocation() async {
+  /// 主动切换到设备 GPS 定位。
+  ///
+  /// 页面默认已优先使用 GPS；此按钮可在用户移动或修改模拟器坐标后
+  /// 主动刷新设备位置。
+  Future<void> _getGpsAccess() async {
+    if (_isLoading) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final PermissionStatus status =
+          await widget.permissionRequester().timeout(
+                widget.permissionRequestTimeout,
+              );
+      if (!mounted) return;
+
+      if (status.isGranted) {
+        await _loadCurrentLocation(allowIpFallback: false);
+      } else if (status.isPermanentlyDenied) {
+        throw const FormatException('GPS 定位权限已被永久拒绝，请在系统设置中开启精确位置权限');
+      } else {
+        throw const FormatException('未获得 GPS 定位权限，请允许使用精确位置');
+      }
+    } on Object catch (error) {
+      final String msg = describeError(
+        error,
+        fallback: '获取 GPS 定位失败，请重试',
+        onOtherError: (Object error) => switch (error) {
+          LocationServiceDisabledException() => '请先开启系统定位服务',
+          TimeoutException() => 'GPS 定位超时，请移动到开阔位置后重试',
+          _ => null,
+        },
+      );
+      await PromptAction.showError(msg);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _getIpAccess() async {
+    if (_isLoading) return;
+
+    setState(() => _isLoading = true);
+    try {
+      await _loadIpLocation();
+      if (!mounted) return;
+      await PromptAction.showWarning(
+        'IP 定位显示的是网络出口位置，可能与实际所在区不同，仅供参考',
+      );
+    } on Object catch (error) {
+      final String msg = describeError(
+        error,
+        fallback: 'IP 定位失败，请重试',
+      );
+      await PromptAction.showError(msg);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadCurrentLocation({bool allowIpFallback = true}) async {
     LocationLookupResult? result;
     try {
       final Position position = await widget.positionLoader();
@@ -106,6 +199,9 @@ class _LocationListState extends State<LocationList> {
         isMocked: position.isMocked,
       );
     } on Object catch (locationError, locationStackTrace) {
+      if (!allowIpFallback) {
+        Error.throwWithStackTrace(locationError, locationStackTrace);
+      }
       try {
         result = await widget.ipLocationLookup();
       } on Object {
@@ -120,11 +216,13 @@ class _LocationListState extends State<LocationList> {
     _applyLookupResult(lookupResult);
   }
 
-  Future<void> _loadIpLocation(String warningMessage) async {
+  Future<void> _loadIpLocation([String warningMessage = '']) async {
     final LocationLookupResult result = await widget.ipLocationLookup();
     if (!mounted) return;
 
-    await PromptAction.showWarning(warningMessage);
+    if (warningMessage.isNotEmpty) {
+      await PromptAction.showWarning(warningMessage);
+    }
     if (!mounted) return;
 
     _applyLookupResult(result);
@@ -133,7 +231,7 @@ class _LocationListState extends State<LocationList> {
   void _applyLookupResult(LocationLookupResult result) {
     setState(() {
       _currentAddress = result.isIpBased
-          ? '${result.address}（IP 定位，精度仅到城市级）'
+          ? '${result.address}（IP 网络出口位置，仅供参考）'
           : result.address;
       _locations = result.communities;
       _filteredLocations = null; // 清空缓存，因为列表已更新
@@ -210,9 +308,16 @@ class _LocationListState extends State<LocationList> {
                           ),
                         ),
                         TextButton.icon(
-                          onPressed: _getAccess,
-                          icon: const Icon(Icons.my_location_rounded, size: 20),
-                          label: const Text('重新定位'),
+                          key: const Key('gps-location-button'),
+                          onPressed: _getGpsAccess,
+                          icon: const Icon(Icons.gps_fixed_rounded, size: 20),
+                          label: const Text('GPS定位'),
+                        ),
+                        TextButton.icon(
+                          key: const Key('ip-location-button'),
+                          onPressed: _getIpAccess,
+                          icon: const Icon(Icons.public_rounded, size: 20),
+                          label: const Text('IP定位'),
                         ),
                       ],
                     ),
@@ -238,8 +343,8 @@ class _LocationListState extends State<LocationList> {
                   ),
                   Expanded(
                     child: locations.isEmpty
-                        ? Center(
-                            child: const Text(
+                        ? const Center(
+                            child: Text(
                               '附近暂无社区信息',
                               style: TextStyle(color: AppColors.textTertiary),
                             ),

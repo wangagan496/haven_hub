@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../api/home.dart';
 import '../../constant/tab_config.dart';
 import '../../controller/build_controller.dart';
+import '../../l10n/app_localizations.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
@@ -84,8 +85,11 @@ class _TabsPageState extends State<TabsPage> {
     });
   }
 
-  List<BottomNavigationBarItem> getTabs() {
-    return tabsList.map((TabConfig item) {
+  List<BottomNavigationBarItem> getTabs(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context)!;
+    final List<String> labels = <String>[l10n.home, l10n.mine];
+    return tabsList.asMap().entries.map((MapEntry<int, TabConfig> entry) {
+      final TabConfig item = entry.value;
       return BottomNavigationBarItem(
         icon: Image.asset(
           item.icon,
@@ -99,7 +103,7 @@ class _TabsPageState extends State<TabsPage> {
           height: 28,
           fit: BoxFit.contain,
         ),
-        label: item.label,
+        label: labels[entry.key],
       );
     }).toList(growable: false);
   }
@@ -149,7 +153,7 @@ class _TabsPageState extends State<TabsPage> {
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
-        items: getTabs(),
+        items: getTabs(context),
         currentIndex: _currentIndex,
         selectedItemColor: const Color(0xFF5591AF),
         unselectedItemColor: Colors.grey,

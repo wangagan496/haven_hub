@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 
 import '../../api/home.dart';
+import '../../l10n/app_localizations.dart';
 import '../../models/notice_data.dart';
+import '../../router/app_routes.dart';
+import '../../utils/app_exception.dart';
+import '../../utils/toast.dart';
 
 class NoticeDetail extends StatefulWidget {
   const NoticeDetail({
@@ -10,7 +14,7 @@ class NoticeDetail extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/noticedetail';
+  static const String routeName = AppRoutes.noticeDetail;
 
   final AnnouncementDetailLoader detailLoader;
 
@@ -21,6 +25,8 @@ class NoticeDetail extends StatefulWidget {
 class _NoticeDetailState extends State<NoticeDetail> {
   NoticeData? _detail;
   String? _errorMessage;
+  String _noticeId = '';
+  bool _isLoading = false;
   bool _didRequest = false;
 
   @override
@@ -32,31 +38,49 @@ class _NoticeDetailState extends State<NoticeDetail> {
     _didRequest = true;
 
     final Object? arguments = ModalRoute.of(context)?.settings.arguments;
-    if (arguments is! String || arguments.isEmpty) {
-      setState(() {
-        _errorMessage = '公告参数不正确';
-      });
+    _noticeId = switch (arguments) {
+      String() => arguments.trim(),
+      NoticeDetailArguments() => arguments.noticeId.trim(),
+      Map<dynamic, dynamic>() => arguments['id']?.toString().trim() ?? '',
+      _ => '',
+    };
+    if (_noticeId.isEmpty) {
+      setState(() => _errorMessage = '公告参数不正确');
       return;
     }
-    _getNoticeDetail(arguments);
+    _getNoticeDetail();
   }
 
-  Future<void> _getNoticeDetail(String id) async {
+  Future<void> _getNoticeDetail() async {
+    if (_isLoading || _noticeId.isEmpty) {
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    final String detailLoadError =
+        AppLocalizations.of(context)!.announcementDetailLoadFailed;
     try {
-      final Map<String, dynamic> result = await widget.detailLoader(id);
+      final NoticeData result = await widget.detailLoader(_noticeId);
       if (!mounted) {
         return;
       }
-      setState(() {
-        _detail = NoticeData.fromJson(result);
-      });
-    } on Object {
+      setState(() => _detail = result);
+    } on Object catch (error) {
+      final String message = describeError(
+        error,
+        fallback: detailLoadError,
+      );
       if (!mounted) {
         return;
       }
-      setState(() {
-        _errorMessage = '公告详情获取失败';
-      });
+      setState(() => _errorMessage = message);
+      await PromptAction.showError(message);
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -64,15 +88,22 @@ class _NoticeDetailState extends State<NoticeDetail> {
     final String? errorMessage = _errorMessage;
     if (errorMessage != null) {
       return Center(
-        child: Text(
-          errorMessage,
-          style: const TextStyle(color: Colors.red),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(errorMessage, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _isLoading ? null : _getNoticeDetail,
+              child: Text(AppLocalizations.of(context)!.retry),
+            ),
+          ],
         ),
       );
     }
 
     final NoticeData? detail = _detail;
-    if (detail == null) {
+    if (_isLoading || detail == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -93,18 +124,13 @@ class _NoticeDetailState extends State<NoticeDetail> {
               Expanded(
                 child: Text(
                   detail.creatorName,
-                  style: const TextStyle(
-                    color: Color(0xFF999999),
-                    fontSize: 16,
-                  ),
+                  style:
+                      const TextStyle(color: Color(0xFF999999), fontSize: 16),
                 ),
               ),
               Text(
                 detail.date,
-                style: const TextStyle(
-                  color: Color(0xFF999999),
-                  fontSize: 16,
-                ),
+                style: const TextStyle(color: Color(0xFF999999), fontSize: 16),
               ),
             ],
           ),
@@ -129,7 +155,7 @@ class _NoticeDetailState extends State<NoticeDetail> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('公告详情'),
+        title: Text(AppLocalizations.of(context)!.announcementDetail),
         centerTitle: false,
       ),
       body: _buildBody(),

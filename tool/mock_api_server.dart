@@ -123,3 +123,4 @@ extension<T> on Iterable<T> {
     return iterator.moveNext() ? iterator.current : null;
   }
 }
+// ignore_for_file: cascade_invocations

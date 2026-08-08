@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
+import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/community_picker.dart';
 import '../../widgets/section_title.dart';
@@ -29,7 +30,7 @@ class RoomList extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/roomlist';
+  static const String routeName = AppRoutes.roomList;
 
   final RoomDataGenerator roomDataGenerator;
 

@@ -35,6 +35,7 @@ migrate_working_dir/
 /artifacts/
 /tmp/
 /tool/dart_defines.local.env
+/tool/dart_defines.web.local.env
 
 # Symbolication related
 app.*.symbols

@@ -43,7 +43,8 @@ class HavenHubApp extends StatelessWidget {
     return ErrorBoundary(
       child: MaterialApp(
         navigatorKey: GlobalVariable.navigatorKey,
-        title: 'Haven Hub',
+        onGenerateTitle: (BuildContext context) =>
+            AppLocalizations.of(context)?.appTitle ?? 'Haven Hub',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
 

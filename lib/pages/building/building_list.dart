@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
+import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
@@ -20,7 +21,7 @@ class BuildingList extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/buildinglist';
+  static const String routeName = AppRoutes.buildingList;
 
   final BuildingCountGenerator buildingCountGenerator;
 
