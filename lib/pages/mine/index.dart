@@ -13,6 +13,8 @@ import '../../widgets/cached_image.dart';
 import '../house/house_list.dart';
 import '../login/index.dart';
 import '../profile/index.dart';
+import '../repair/repair_pages.dart';
+import '../visitor/visitor_pages.dart';
 
 class MinePage extends StatefulWidget {
   const MinePage({
@@ -31,8 +33,8 @@ class MinePage extends StatefulWidget {
 class _MinePageState extends State<MinePage> {
   static const Color _backgroundColor = Color(0xFF5B9AB8);
 
-  static const List<({String label, String icon, String? routeName})>
-      _menuItems = <({String label, String icon, String? routeName})>[
+  static const List<({String label, String icon, String routeName})>
+      _menuItems = <({String label, String icon, String routeName})>[
     (
       label: '我的房屋',
       icon: 'assets/images/house_profile_icon@2x.png',
@@ -41,12 +43,12 @@ class _MinePageState extends State<MinePage> {
     (
       label: '我的报修',
       icon: 'assets/images/repair_profile_icon@2x.png',
-      routeName: null,
+      routeName: RepairListPage.routeName,
     ),
     (
       label: '访客记录',
       icon: 'assets/images/visitor_profile_icon@2x.png',
-      routeName: null,
+      routeName: VisitorListPage.routeName,
     ),
   ];
 
@@ -300,14 +302,9 @@ class _MinePageState extends State<MinePage> {
   }
 
   Future<void> _openMenuItem(
-    ({String label, String icon, String? routeName}) item,
+    ({String label, String icon, String routeName}) item,
   ) async {
-    final String? routeName = item.routeName;
-    if (routeName != null) {
-      await Navigator.pushNamed<void>(context, routeName);
-      return;
-    }
-    await PromptAction.showToast('${item.label}功能暂未开放');
+    await Navigator.pushNamed<void>(context, item.routeName);
   }
 
   @override
@@ -409,11 +406,13 @@ class _MinePageState extends State<MinePage> {
                   child: Column(
                     children: _menuItems
                         .map<Widget>(
-                          (({
-                                String label,
-                                String icon,
-                                String? routeName
-                              }) item,) {
+                          (
+                            ({
+                              String label,
+                              String icon,
+                              String routeName
+                            }) item,
+                          ) {
                             return InkWell(
                               onTap: () {
                                 unawaited(_openMenuItem(item));
@@ -422,7 +421,8 @@ class _MinePageState extends State<MinePage> {
                                 height: 72,
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(
-                                      horizontal: 20,),
+                                    horizontal: 20,
+                                  ),
                                   child: Row(
                                     children: <Widget>[
                                       Image.asset(
