@@ -79,6 +79,9 @@ class HttpPath {
   static const String upload = 'upload';
   static const String houseList = 'room';
   static const String refreshToken = 'refreshToken';
+  static const String repair = 'repair';
+  static const String repairItem = 'repairItem';
+  static const String visitor = 'visitor';
 
   // 腾讯地图服务接口（相对于可配置的 tencentMapApiBaseUrl）
   static final String tencentCoordinateTranslate =
@@ -105,4 +108,12 @@ class HttpPath {
   static String houseDetail(String id) {
     return '$houseList/${Uri.encodeComponent(id)}';
   }
+
+  static String repairDetail(String id) => '$repair/${Uri.encodeComponent(id)}';
+
+  static String cancelRepair(String id) =>
+      'cancel/repair/${Uri.encodeComponent(id)}';
+
+  static String visitorDetail(String id) =>
+      '$visitor/${Uri.encodeComponent(id)}';
 }

@@ -9,8 +9,10 @@ import '../pages/location/location_list.dart';
 import '../pages/login/index.dart';
 import '../pages/notice_detail/index.dart';
 import '../pages/profile/index.dart';
+import '../pages/repair/repair_pages.dart';
 import '../pages/room/room_list.dart';
 import '../pages/tabs_page/index.dart';
+import '../pages/visitor/visitor_pages.dart';
 import '../utils/token_manager.dart';
 import 'app_routes.dart';
 
@@ -78,6 +80,36 @@ Widget? getRouteWidget(
         AppRoutes.houseDetail,
         arguments,
         () => const HouseDetail(),
+      ),
+    AppRoutes.repairList => _requireLogin(
+        AppRoutes.repairList,
+        arguments,
+        () => const RepairListPage(),
+      ),
+    AppRoutes.repairDetail => _requireLogin(
+        AppRoutes.repairDetail,
+        arguments,
+        () => const RepairDetailPage(),
+      ),
+    AppRoutes.repairForm => _requireLogin(
+        AppRoutes.repairForm,
+        arguments,
+        () => const RepairFormPage(),
+      ),
+    AppRoutes.visitorList => _requireLogin(
+        AppRoutes.visitorList,
+        arguments,
+        () => const VisitorListPage(),
+      ),
+    AppRoutes.visitorDetail => _requireLogin(
+        AppRoutes.visitorDetail,
+        arguments,
+        () => const VisitorDetailPage(),
+      ),
+    AppRoutes.visitorForm => _requireLogin(
+        AppRoutes.visitorForm,
+        arguments,
+        () => const VisitorFormPage(),
       ),
     _ => null,
   };

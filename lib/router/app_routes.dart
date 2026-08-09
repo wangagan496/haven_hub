@@ -38,6 +38,16 @@ class AppRoutes {
   /// 房间选择页。
   static const String roomList = '/room-list';
 
+  /// 报修记录与报修表单。
+  static const String repairList = '/repair-list';
+  static const String repairDetail = '/repair-detail';
+  static const String repairForm = '/repair-form';
+
+  /// 访客邀请记录与表单。
+  static const String visitorList = '/visitor-list';
+  static const String visitorDetail = '/visitor-detail';
+  static const String visitorForm = '/visitor-form';
+
   // ==================== 类型安全的导航方法 ====================
 
   /// 导航到登录页。
@@ -127,6 +137,42 @@ class AppRoutes {
   /// 导航到房间选择页。
   static Future<T?> toRoomList<T>(BuildContext context) {
     return Navigator.pushNamed<T>(context, roomList);
+  }
+
+  /// 导航到报修记录页。
+  static Future<T?> toRepairList<T>(BuildContext context) {
+    return Navigator.pushNamed<T>(context, repairList);
+  }
+
+  /// 导航到报修详情页。
+  static Future<T?> toRepairDetail<T>(
+    BuildContext context, {
+    required String repairId,
+  }) {
+    return Navigator.pushNamed<T>(context, repairDetail, arguments: repairId);
+  }
+
+  /// 导航到报修表单页。
+  static Future<T?> toRepairForm<T>(BuildContext context) {
+    return Navigator.pushNamed<T>(context, repairForm);
+  }
+
+  /// 导航到访客记录页。
+  static Future<T?> toVisitorList<T>(BuildContext context) {
+    return Navigator.pushNamed<T>(context, visitorList);
+  }
+
+  /// 导航到访客邀请详情页。
+  static Future<T?> toVisitorDetail<T>(
+    BuildContext context, {
+    required String visitorId,
+  }) {
+    return Navigator.pushNamed<T>(context, visitorDetail, arguments: visitorId);
+  }
+
+  /// 导航到访客邀请表单页。
+  static Future<T?> toVisitorForm<T>(BuildContext context) {
+    return Navigator.pushNamed<T>(context, visitorForm);
   }
 
   /// 替换当前路由（不保留历史记录）。

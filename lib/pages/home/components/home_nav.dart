@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
-import '../../../utils/toast.dart';
 import '../../house/house_list.dart';
+import '../../repair/repair_pages.dart';
+import '../../visitor/visitor_pages.dart';
 import 'home_nav_item.dart';
 
 class HomeNav extends StatelessWidget {
@@ -11,8 +12,8 @@ class HomeNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final AppLocalizations l10n = AppLocalizations.of(context)!;
-    final List<({String label, String icon, String? routeName})> items =
-        <({String label, String icon, String? routeName})>[
+    final List<({String label, String icon, String routeName})> items =
+        <({String label, String icon, String routeName})>[
       (
         label: l10n.myHouses,
         icon: 'assets/images/house_nav_icon@2x.png',
@@ -21,12 +22,12 @@ class HomeNav extends StatelessWidget {
       (
         label: l10n.repair,
         icon: 'assets/images/repair_nav_icon@2x.png',
-        routeName: null,
+        routeName: RepairListPage.routeName,
       ),
       (
         label: l10n.visitorRegistration,
         icon: 'assets/images/visitor_nav_icon@2x.png',
-        routeName: null,
+        routeName: VisitorListPage.routeName,
       ),
     ];
 
@@ -40,18 +41,11 @@ class HomeNav extends StatelessWidget {
       ),
       child: Row(
         children:
-            items.map((({String label, String icon, String? routeName}) item) {
+            items.map((({String label, String icon, String routeName}) item) {
           return HomeNavItem(
             label: item.label,
             icon: item.icon,
-            onTap: () async {
-              final String? routeName = item.routeName;
-              if (routeName != null) {
-                await Navigator.pushNamed<void>(context, routeName);
-                return;
-              }
-              await PromptAction.showToast('${item.label}功能暂未开放');
-            },
+            onTap: () => Navigator.pushNamed<void>(context, item.routeName),
           );
         }).toList(growable: false),
       ),
