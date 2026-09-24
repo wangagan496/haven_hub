@@ -64,10 +64,19 @@ class LocationList extends StatefulWidget {
 class _LocationListState extends State<LocationList> {
   late final BuildController _buildController;
   bool _isLoading = false;
+
+  /// 是否已经拿到过一次定位结果。决定刷新时用整屏骨架还是保留页面：
+  /// 已经有内容时把搜索框和定位按钮整块换掉，用户会以为页面被重置了。
+  bool _hasResolved = false;
   String _currentAddress = '正在获取当前位置';
   String _keyword = '';
   List<NearbyCommunity> _locations = const <NearbyCommunity>[];
-  List<NearbyCommunity>? _filteredLocations;
+
+  /// 当前应展示的社区列表，与 [_locations] 和 [_keyword] 同步更新。
+  ///
+  /// 不再放进 build 里惰性计算：那样缓存是否有效取决于「每条改数据的路径都
+  /// 记得把它置空」，漏一处就会显示出上一次的过滤结果。
+  List<NearbyCommunity> _visibleLocations = const <NearbyCommunity>[];
 
   @override
   void initState() {
@@ -89,6 +98,7 @@ class _LocationListState extends State<LocationList> {
               widget.permissionRequestTimeout,
             );
       } on Object {
+        if (!mounted) return;
         await _loadIpLocation(
           '无法获取定位权限，已切换为 IP 定位，仅供城市级参考',
         );
@@ -108,6 +118,7 @@ class _LocationListState extends State<LocationList> {
         );
       }
     } on Object catch (error) {
+      if (!mounted) return;
       final String msg = describeError(
         error,
         fallback: '获取当前位置失败，请重试',
@@ -141,11 +152,16 @@ class _LocationListState extends State<LocationList> {
       if (status.isGranted) {
         await _loadCurrentLocation(allowIpFallback: false);
       } else if (status.isPermanentlyDenied) {
-        throw const FormatException('GPS 定位权限已被永久拒绝，请在系统设置中开启精确位置权限');
+        // 永久拒绝后系统不再弹权限框，只能去设置里改。这里主动给一条路，
+        // 否则用户点多少次「GPS定位」都只是同一个报错。
+        await _promptOpenSettings(
+          '定位权限已被永久拒绝，需要在小区的系统设置中开启精确位置权限。',
+        );
       } else {
         throw const FormatException('未获得 GPS 定位权限，请允许使用精确位置');
       }
     } on Object catch (error) {
+      if (!mounted) return;
       final String msg = describeError(
         error,
         fallback: '获取 GPS 定位失败，请重试',
@@ -172,6 +188,7 @@ class _LocationListState extends State<LocationList> {
         'IP 定位显示的是网络出口位置，可能与实际所在区不同，仅供参考',
       );
     } on Object catch (error) {
+      if (!mounted) return;
       final String msg = describeError(
         error,
         fallback: 'IP 定位失败，请重试',
@@ -199,6 +216,7 @@ class _LocationListState extends State<LocationList> {
         isMocked: position.isMocked,
       );
     } on Object catch (locationError, locationStackTrace) {
+      if (!mounted) return;
       if (!allowIpFallback) {
         Error.throwWithStackTrace(locationError, locationStackTrace);
       }
@@ -234,33 +252,55 @@ class _LocationListState extends State<LocationList> {
           ? '${result.address}（IP 网络出口位置，仅供参考）'
           : result.address;
       _locations = result.communities;
-      _filteredLocations = null; // 清空缓存，因为列表已更新
+      _visibleLocations = _filterCommunities(_locations, _keyword);
+      _hasResolved = true;
     });
   }
 
   void _onSearchChanged(String value) {
     setState(() {
       _keyword = value;
-      _filteredLocations = null; // 清空缓存，强制重新过滤
+      _visibleLocations = _filterCommunities(_locations, value);
     });
   }
 
-  List<NearbyCommunity> _getFilteredLocations() {
-    // 使用缓存的过滤结果，避免每次 build 都重新计算
-    if (_filteredLocations != null) {
-      return _filteredLocations!;
+  static List<NearbyCommunity> _filterCommunities(
+    List<NearbyCommunity> source,
+    String keyword,
+  ) {
+    final String needle = keyword.trim().toLowerCase();
+    if (needle.isEmpty) {
+      return source;
     }
+    return source
+        .where((NearbyCommunity item) =>
+            item.name.toLowerCase().contains(needle) ||
+            item.address.toLowerCase().contains(needle))
+        .toList(growable: false);
+  }
 
-    final String keyword = _keyword.trim().toLowerCase();
-    final List<NearbyCommunity> filtered = keyword.isEmpty
-        ? _locations
-        : _locations.where((NearbyCommunity item) {
-            return item.name.toLowerCase().contains(keyword) ||
-                item.address.toLowerCase().contains(keyword);
-          }).toList(growable: false);
-
-    _filteredLocations = filtered;
-    return filtered;
+  /// 权限被永久拒绝后，唯一的恢复路径是系统设置。
+  Future<void> _promptOpenSettings(String message) async {
+    final bool? openSettings = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialog) => AlertDialog(
+        title: const Text('需要定位权限'),
+        content: Text(message),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('暂不'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('前往设置'),
+          ),
+        ],
+      ),
+    );
+    if (openSettings ?? false) {
+      await openAppSettings();
+    }
   }
 
   Future<void> _selectCommunity(NearbyCommunity community) async {
@@ -276,7 +316,7 @@ class _LocationListState extends State<LocationList> {
 
   @override
   Widget build(BuildContext context) {
-    final List<NearbyCommunity> locations = _getFilteredLocations();
+    final List<NearbyCommunity> locations = _visibleLocations;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -285,7 +325,9 @@ class _LocationListState extends State<LocationList> {
       ),
       body: SafeArea(
         top: false,
-        child: _isLoading
+        // 只有首次进入才铺整屏骨架。已经有地址或列表后再刷新，页面结构保持
+        // 不动，搜索框和两个定位按钮始终可点。
+        child: _isLoading && !_hasResolved
             ? const _LocationSkeleton(key: Key('location-skeleton'))
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,

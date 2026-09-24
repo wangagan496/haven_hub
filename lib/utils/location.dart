@@ -99,8 +99,10 @@ bool _isFreshValidPosition(Position position, DateTime now) {
 }
 
 bool _isUsableFallback(Position position) {
-  final double accuracy = _accuracyScore(position);
-  return accuracy <= _fallbackAccuracyInMeters || !accuracy.isFinite;
+  final double accuracy = position.accuracy;
+  return accuracy.isFinite &&
+      accuracy > 0 &&
+      accuracy <= _fallbackAccuracyInMeters;
 }
 
 double _accuracyScore(Position position) {
