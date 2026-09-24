@@ -37,11 +37,35 @@ class House {
       name: _readText(json['name']),
       gender: _readGender(json['gender']),
       mobile: _readText(json['mobile']),
-      idcardFrontUrl: _readText(json['idcardFrontUrl']),
-      idcardBackUrl: _readText(json['idcardBackUrl']),
+      idcardFrontUrl: _readFirstText(json, _idcardFrontKeys),
+      idcardBackUrl: _readFirstText(json, _idcardBackKeys),
       status: _readStatus(json['status']),
     );
   }
+
+  /// 身份证正面照在响应里可能的键名，按优先级排列。
+  ///
+  /// 详情接口的字段名没有正式约定，而 [toJson] 只在非空时才提交这两个字段，
+  /// 一旦读不到就会呈现成「还没上传」：用户看到的是已有照片变成了空白的上传
+  /// 占位，提交时又被校验拦下。多试几个常见拼写，比要求后端改名现实。
+  static const List<String> _idcardFrontKeys = <String>[
+    'idcardFrontUrl',
+    'idcardFront',
+    'idcard_front_url',
+    'idcard_front',
+    'frontUrl',
+    'front_url',
+  ];
+
+  /// 身份证国徽面照的候选键名，规则同 [_idcardFrontKeys]。
+  static const List<String> _idcardBackKeys = <String>[
+    'idcardBackUrl',
+    'idcardBack',
+    'idcard_back_url',
+    'idcard_back',
+    'backUrl',
+    'back_url',
+  ];
 
   final String id;
 
@@ -132,6 +156,17 @@ class House {
   }
 
   static String _readText(Object? value) => value?.toString().trim() ?? '';
+
+  /// 按 [keys] 的顺序返回第一个非空值，都没有时返回空串。
+  static String _readFirstText(Map<String, dynamic> json, List<String> keys) {
+    for (final String key in keys) {
+      final String value = _readText(json[key]);
+      if (value.isNotEmpty) {
+        return value;
+      }
+    }
+    return '';
+  }
 
   static int _readStatus(Object? value) {
     if (value is num) return value.toInt();

@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/house.dart';
 import '../../api/visitor.dart';
 import '../../models/house.dart';
 import '../../models/visitor.dart';
+import '../../platform/visitor_pass_share.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
@@ -124,19 +126,65 @@ class _VisitorListPageState extends State<VisitorListPage> {
       );
 }
 
+Widget _buildVisitorPassPreview(String url) => CachedImage(
+      imageUrl: url,
+      fit: BoxFit.contain,
+      errorWidget:
+          const Center(child: Icon(Icons.broken_image_outlined, size: 48)),
+    );
+
 class VisitorDetailPage extends StatefulWidget {
-  const VisitorDetailPage({this.loader = getVisitorDetailApi, super.key});
+  const VisitorDetailPage({
+    this.loader = getVisitorDetailApi,
+    this.imageLoader = loadVisitorPassImage,
+    this.sharer = shareVisitorPassImage,
+    this.shareSupported,
+    this.previewBuilder = _buildVisitorPassPreview,
+    super.key,
+  });
   static const String routeName = AppRoutes.visitorDetail;
   final VisitorDetailLoader loader;
+  final VisitorPassImageLoader imageLoader;
+  final VisitorPassSharer sharer;
+  final bool? shareSupported;
+  final Widget Function(String url) previewBuilder;
   @override
   State<VisitorDetailPage> createState() => _VisitorDetailPageState();
 }
 
-class _VisitorDetailPageState extends State<VisitorDetailPage> {
+class _VisitorDetailPageState extends State<VisitorDetailPage>
+    with WidgetsBindingObserver {
+  final GlobalKey _shareButtonKey = GlobalKey();
+  int _visibilityRevision = 0;
   String _id = '';
   VisitorRecord? _record;
   bool _loading = false;
+  bool _sharing = false;
   String? _error;
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _visibilityRevision++;
+  }
+
+  bool get _canPresentShare {
+    final AppLifecycleState? state = WidgetsBinding.instance.lifecycleState;
+    return mounted &&
+        (state == null || state == AppLifecycleState.resumed) &&
+        (ModalRoute.of(context)?.isCurrent ?? false);
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -170,12 +218,91 @@ class _VisitorDetailPageState extends State<VisitorDetailPage> {
     }
   }
 
+  Future<void> _share() async {
+    if (_sharing || !_canPresentShare) return;
+    final VisitorRecord? record = _record;
+    if (record == null || !record.canShare) {
+      await PromptAction.showWarning('当前访客通行码不可分享');
+      return;
+    }
+    setState(() => _sharing = true);
+    final int visibilityRevision = _visibilityRevision;
+    try {
+      final Uint8List bytes = await widget.imageLoader(record.url);
+      if (!mounted ||
+          !_canPresentShare ||
+          visibilityRevision != _visibilityRevision) {
+        return;
+      }
+      final RenderObject? render =
+          _shareButtonKey.currentContext?.findRenderObject();
+      if (render is! RenderBox || !render.hasSize) return;
+      final Offset position = render.localToGlobal(Offset.zero);
+      final double ratio = MediaQuery.devicePixelRatioOf(context);
+      final Rect anchor = Rect.fromLTWH(
+          position.dx * ratio,
+          position.dy * ratio,
+          render.size.width * ratio,
+          render.size.height * ratio);
+      await widget.sharer(bytes, anchor: anchor);
+      // A closed panel does not prove that the recipient received the image.
+    } on Object catch (error) {
+      if (!_canPresentShare || visibilityRevision != _visibilityRevision) {
+        return;
+      }
+      await PromptAction.showError(
+          describeError(error, fallback: '通行码分享失败，请重试'));
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final VisitorRecord? item = _record;
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('访客邀请详情')),
+      bottomNavigationBar: item == null
+          ? null
+          : SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        key: _shareButtonKey,
+                        onPressed: !_sharing &&
+                                item.canShare &&
+                                (widget.shareSupported ??
+                                    supportsVisitorPassShare)
+                            ? _share
+                            : null,
+                        icon: _sharing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.share_outlined),
+                        label: Text(_sharing ? '正在分享…' : '分享通行码'),
+                      ),
+                    ),
+                    if (!item.canShare ||
+                        !(widget.shareSupported ??
+                            supportsVisitorPassShare)) ...<Widget>[
+                      const SizedBox(height: 8),
+                      Text(!item.canShare ? '暂无可分享的有效通行码' : '请在鸿蒙设备上分享通行码',
+                          textAlign: TextAlign.center),
+                    ],
+                  ],
+                ),
+              ),
+            ),
       body: AsyncStateView(
         isLoading: _loading,
         errorMessage: _error,
@@ -204,14 +331,8 @@ class _VisitorDetailPageState extends State<VisitorDetailPage> {
                                       child: SizedBox(
                                           width: 220,
                                           height: 220,
-                                          child: CachedImage(
-                                              imageUrl: item.url,
-                                              fit: BoxFit.contain,
-                                              errorWidget: const Center(
-                                                  child: Icon(
-                                                      Icons
-                                                          .broken_image_outlined,
-                                                      size: 48)))))
+                                          child:
+                                              widget.previewBuilder(item.url)))
                                 ]
                               ])))
                 ],
@@ -305,6 +426,7 @@ class _VisitorFormPageState extends State<VisitorFormPage> {
       await PromptAction.showSuccess('访客邀请已创建');
       if (mounted) Navigator.pop(context, true);
     } on Object catch (error) {
+      if (!mounted) return;
       await PromptAction.showError(
           describeError(error, fallback: '创建访客邀请失败，请重试'));
     } finally {
@@ -361,9 +483,8 @@ class _VisitorFormPageState extends State<VisitorFormPage> {
                     const SizedBox(height: 14),
                     ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: Text(_date == null
-                            ? '请选择到访日期'
-                            : formatDate(_date!)),
+                        title: Text(
+                            _date == null ? '请选择到访日期' : formatDate(_date!)),
                         trailing: const Icon(Icons.calendar_today_outlined),
                         onTap: _pickDate),
                     const SizedBox(height: 28),

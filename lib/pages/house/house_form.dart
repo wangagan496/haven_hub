@@ -14,12 +14,12 @@ import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
+import '../../utils/validators.dart';
 import '../../widgets/cached_image.dart';
 import '../../widgets/camera_dialog.dart';
 import '../../widgets/section_title.dart';
 import 'house_list.dart';
 
-final RegExp _ownerNamePattern = RegExp(r'^[\u4e00-\u9fa5]{2,15}$');
 final RegExp _mobilePattern = RegExp(r'^1[3-9]\d{9}$');
 const int _maxIdentityPhotoBytes = 8 * 1024 * 1024;
 const Set<String> _allowedIdentityPhotoExtensions = <String>{
@@ -60,7 +60,7 @@ String? validateHouseFormData(House house) {
   if (name.isEmpty) {
     return '业主姓名不能为空';
   }
-  if (!_ownerNamePattern.hasMatch(name)) {
+  if (!Validators.ownerNamePattern.hasMatch(name)) {
     return '业主姓名须为2-15位中文';
   }
 
@@ -209,11 +209,14 @@ class _HouseFormState extends State<HouseForm> {
       );
       if (!mounted) return;
 
-      _controller.clearBuildingInfo();
       if (_houseId.isNotEmpty) {
+        // 编辑路径不清选楼上下文：用户可能是从「添加房屋」流程点进来的，
+        // 这份小区/楼栋/房间还要接着用。
         Navigator.pop(context, true);
         return;
       }
+
+      _controller.clearBuildingInfo();
 
       unawaited(
         Navigator.pushNamedAndRemoveUntil<void>(

@@ -48,7 +48,9 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoggingIn = false;
 
   Future<void> _sendCode() async {
-    if (isSend) {
+    // 登录请求进行中不发码：两个动作共用同一个验证码输入框，此时发的新码
+    // 很可能覆盖不掉已经提交出去的那一次登录。
+    if (isSend || _isLoggingIn) {
       return;
     }
 
@@ -88,11 +90,10 @@ class _LoginPageState extends State<LoginPage> {
 
       _startCountdown();
     } on Object catch (error) {
-      if (mounted) {
-        setState(() {
-          isSend = false;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        isSend = false;
+      });
       await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
     }
   }
@@ -181,7 +182,10 @@ class _LoginPageState extends State<LoginPage> {
       }
       await Navigator.maybePop(context);
     } on Object catch (error) {
-      await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
+      if (mounted) {
+        await PromptAction.showError(
+            describeError(error, fallback: '操作失败，请重试'));
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -284,7 +288,7 @@ class _LoginPageState extends State<LoginPage> {
                     foregroundColor: const Color.fromARGB(255, 85, 145, 175),
                     minimumSize: const Size(100, 50),
                   ),
-                  onPressed: isSend ? null : _sendCode,
+                  onPressed: isSend || _isLoggingIn ? null : _sendCode,
                   child: _getCodeButtonText(),
                 ),
               ],
