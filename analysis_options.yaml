@@ -17,6 +17,7 @@ analyzer:
     - .pub-cache/**
     - build/**
     - tmp/**
+    - third_party/image_picker_ohos/**
     - ohos/**/build/**
     - ohos/**/node_modules/**
     - ohos/**/oh_modules/**
