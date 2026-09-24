@@ -1,19 +1,22 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
+import '../../utils/deterministic_sample.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
 import '../../widgets/section_title.dart';
 import '../room/room_list.dart';
 
-typedef BuildingCountGenerator = int Function();
+typedef BuildingCountGenerator = int Function(String communityName);
 
-int generateBuildingCount() => Random().nextInt(10) + 2;
+/// 按小区名推导楼栋数，同一小区每次进入都得到同一个列表。
+int generateBuildingCount(String communityName) {
+  final DeterministicSample sample = DeterministicSample(communityName);
+  return sample.nextInt(10) + 2;
+}
 
 class BuildingList extends StatefulWidget {
   const BuildingList({
@@ -38,8 +41,8 @@ class _BuildingListState extends State<BuildingList> {
   void initState() {
     super.initState();
     _controller = BuildController.instance();
-    final int buildingCount = widget.buildingCountGenerator();
     final String communityName = _controller.buildingInfo.name;
+    final int buildingCount = widget.buildingCountGenerator(communityName);
     final String suffix = buildingCount >= 5 ? '栋' : '单元';
     _list = List<String>.generate(
       buildingCount,

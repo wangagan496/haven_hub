@@ -1,21 +1,21 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
+import '../../utils/deterministic_sample.dart';
 import '../../widgets/community_picker.dart';
 import '../../widgets/section_title.dart';
 import '../house/house_form.dart';
 
-typedef RoomDataGenerator = List<String> Function();
+typedef RoomDataGenerator = List<String> Function(String buildingName);
 
-List<String> generateMockRoomNumbers() {
-  final Random random = Random();
-  final int floor = random.nextInt(6) + 1;
-  final int roomCount = random.nextInt(5) + 2;
+/// 按楼栋名推导楼层与房间号，同一楼栋每次进入都得到同一个列表。
+List<String> generateMockRoomNumbers(String buildingName) {
+  final DeterministicSample sample = DeterministicSample(buildingName);
+  final int floor = sample.nextInt(6) + 1;
+  final int roomCount = sample.nextInt(5) + 2;
 
   return List<String>.generate(
     roomCount,
@@ -51,7 +51,7 @@ class _RoomListState extends State<RoomList> {
   }
 
   void _mockData() {
-    _list = widget.roomDataGenerator();
+    _list = widget.roomDataGenerator(_controller.build);
   }
 
   Future<void> _selectRoom(String room) async {
