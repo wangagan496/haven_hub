@@ -9,7 +9,17 @@ class TokenManager {
   int _sessionVersion = 0;
   int? _refreshSessionVersion;
 
+  /// 会话身份。只在**登录、登出**时变化，刷新不动它。
+  ///
+  /// 与 [sessionVersion] 分开是必要的：版本号回答「凭证换到第几代了」，这个
+  /// 回答「现在是谁的会话」。两者混用会让「同一会话内刷新两次」和「换了账号
+  /// 又刷新」变得无法区分——前者该重放，后者绝不能重放。
+  int _sessionId = 0;
+
   int get sessionVersion => _sessionVersion;
+
+  /// 见 [_sessionId]。请求在发出时记下它，处理 401 时比对。
+  int get sessionId => _sessionId;
 
   /// Returns the session version most recently created by a token refresh.
   ///
@@ -69,6 +79,10 @@ class TokenManager {
     if (saved) {
       _sessionVersion++;
       _refreshSessionVersion = fromRefresh ? _sessionVersion : null;
+      // 只有登录换会话；刷新沿用当前会话，否则飞行中的请求会被误判成换了人。
+      if (!fromRefresh) {
+        _sessionId++;
+      }
     }
     return saved;
   }
@@ -85,6 +99,7 @@ class TokenManager {
     if (cleared) {
       _sessionVersion++;
       _refreshSessionVersion = null;
+      _sessionId++;
     }
     return cleared;
   }
@@ -96,6 +111,8 @@ class TokenManager {
   void invalidateLocalSession() {
     _storage.invalidate();
     _refreshSessionVersion = null;
+    // 内存凭证作废等于本会话已经结束：飞行中的请求不能再按它重放。
+    _sessionId++;
   }
 }
 

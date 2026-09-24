@@ -9,9 +9,9 @@ import 'token_manager.dart';
 typedef RefreshDioFactory = dio.Dio Function();
 
 class RequestDio {
+  /// 键名命中即整体脱敏的固定列表（比较前会去掉 `-`、`_` 并转小写）。
   static const Set<String> _sensitiveLogKeys = <String>{
     'authorization',
-    'code',
     'key',
     'mobile',
     'password',
@@ -19,6 +19,15 @@ class RequestDio {
     'secret',
     'telephone',
     'token',
+  };
+
+  /// 命中即脱敏的子串。地图 Key 各家 SDK 习惯写成 `appKey`、`apiKey`、
+  /// `accessKey`，逐个子串列举必然漏，所以改由「以 key 结尾」兜住（见
+  /// [_isSensitiveLogKey]）；这里只保留词根。
+  static const Set<String> _sensitiveLogKeyFragments = <String>{
+    'token',
+    'password',
+    'secret',
   };
 
   RequestDio({
@@ -44,6 +53,7 @@ class RequestDio {
           dio.RequestInterceptorHandler handler,
         ) {
           options.extra['sessionVersion'] = _tokens.sessionVersion;
+          options.extra['sessionId'] = _tokens.sessionId;
           final String token = _tokens.getToken();
           final bool skipAuthorization =
               options.extra['skipAuthorization'] == true;
@@ -75,6 +85,9 @@ class RequestDio {
             final int requestSessionVersion =
                 error.requestOptions.extra['sessionVersion'] as int? ??
                     sessionVersion;
+            final int requestSessionId =
+                error.requestOptions.extra['sessionId'] as int? ??
+                    _tokens.sessionId;
             final String failedToken =
                 error.requestOptions.headers['Authorization']?.toString() ?? '';
             final String currentToken = _tokens.getToken();
@@ -84,7 +97,17 @@ class RequestDio {
             bool shouldLogout = refreshToken.isEmpty;
 
             if (tokenChanged) {
-              if (_tokens.sessionVersion == requestSessionVersion + 1 &&
+              // 三个条件缺一不可：
+              //
+              // 1. 同一个会话。会话 ID 只在登录/登出时变，刷新不动它。这一条
+              //    挡住跨账号重放——A 的请求在 B 登录并刷新之后，版本号是
+              //    「推进过」的，只比对版本会让它带着 B 的凭证重放出去。
+              // 2. 凭证确实换过代。用「不等于原值」而不是「恰好 +1」：并发
+              //    的刷新失败重试会把版本推进不止一次，+1 会把本该放行的常规
+              //    重放挡掉，让偶发的 401 直接冒到用户面前。
+              // 3. 这次推进来自刷新，而不是别的写入。
+              if (_tokens.sessionId == requestSessionId &&
+                  _tokens.sessionVersion != requestSessionVersion &&
                   _tokens.refreshSessionVersion == _tokens.sessionVersion) {
                 // 请求在飞行途中凭证已经被换掉（多半是并发的刷新已经完成），
                 // 用当前凭证直接重放即可，不必再刷一次。
@@ -239,57 +262,121 @@ class RequestDio {
     };
 
     if (options.queryParameters.isNotEmpty) {
-      log['params'] = _redactLogValue(options.queryParameters);
+      log['params'] = _redactLogValue(
+        options.queryParameters,
+        requestSide: true,
+      );
     }
 
     if (options.headers.isNotEmpty) {
-      log['headers'] = _redactLogValue(options.headers);
+      log['headers'] = _redactLogValue(options.headers, requestSide: true);
     }
 
     if (options.data != null && options.data is! dio.FormData) {
-      log['body'] = _redactLogValue(options.data);
+      log['body'] = _redactLogValue(options.data, requestSide: true);
     }
 
     return log;
   }
 
+  /// 把 URL 里敏感查询参数的值换成 `***`。
+  ///
+  /// 只在该 URL 确实含敏感参数时才重建，其余情况原样返回：`Uri.replace` 会
+  /// 对全部参数重新编码，把 `%2F`、`+`、重复键这些原样交出去更省事，也避免
+  /// 日志里出现与真实请求不一致的编码。
   static Uri _redactUri(Uri uri) {
     if (uri.queryParameters.isEmpty) return uri;
-    return uri.replace(
-      queryParameters: <String, String>{
-        for (final MapEntry<String, String> entry
-            in uri.queryParameters.entries)
-          entry.key: _redactLogValue(entry.value, key: entry.key) as String,
-      },
+    final bool hasSensitive = uri.queryParameters.keys.any(
+      (String key) => _isSensitiveLogKey(key, requestSide: true),
     );
+    if (!hasSensitive) return uri;
+
+    // 逐段处理原始 query，而不是走 queryParameters 映射：映射会把重复键合并，
+    // 也会让所有值经过一次 encode，`***` 就变成 `%2A%2A%2A` 了。
+    final String query = uri.query
+        .split('&')
+        .map((String segment) {
+          final int separator = segment.indexOf('=');
+          if (separator < 0) return segment;
+          final String rawKey = segment.substring(0, separator);
+          final String decodedKey = Uri.decodeQueryComponent(rawKey);
+          return _isSensitiveLogKey(decodedKey, requestSide: true)
+              ? '$rawKey=***'
+              : segment;
+        })
+        .join('&');
+    return uri.replace(query: query);
   }
 
-  static dynamic _redactLogValue(dynamic value, {String? key}) {
-    if (key != null && _isSensitiveLogKey(key)) return '***';
+  /// 递归遍历要写进日志的值，把敏感键换成 `***`。
+  ///
+  /// [depth] 是从根值开始的嵌套层数。响应体最外层那一层是接口信封
+  /// （`{"code": 10000, "data": {...}}`），它的 `code` 是业务状态码；嵌进
+  /// `data` 之后的 `code` 才是验证码之类的秘密。所以只按 `requestSide` 分是
+  /// 不够的，还得看层级——否则要么把业务码一起遮掉（排查失败码时无从下手），
+  /// 要么把验证码原样打进日志。
+  static dynamic _redactLogValue(
+    dynamic value, {
+    required bool requestSide,
+    int depth = 0,
+    String? key,
+  }) {
+    if (key != null &&
+        _isSensitiveLogKey(key, requestSide: requestSide, depth: depth)) {
+      return '***';
+    }
     if (value is Map<dynamic, dynamic>) {
       return <String, dynamic>{
         for (final MapEntry<dynamic, dynamic> entry in value.entries)
           entry.key.toString(): _redactLogValue(
             entry.value,
+            requestSide: requestSide,
+            depth: depth + 1,
             key: entry.key.toString(),
           ),
       };
     }
     if (value is Iterable<dynamic>) {
       return <dynamic>[
-        for (final dynamic item in value) _redactLogValue(item),
+        for (final dynamic item in value)
+          _redactLogValue(
+            item,
+            requestSide: requestSide,
+            depth: depth + 1,
+          ),
       ];
     }
     return value;
   }
 
-  static bool _isSensitiveLogKey(String key) {
-    final String normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
-    return _sensitiveLogKeys.contains(normalized) ||
-        normalized.contains('token') ||
-        normalized.contains('password') ||
-        normalized.contains('secret') ||
-        normalized.endsWith('code');
+  /// 判断键名是否敏感。
+  ///
+  /// [requestSide] 与 [depth] 共同决定 `code` 系列是否计入：请求体里的 `code`
+  /// 是验证码，响应信封顶层的 `code` 是业务状态码（保留），而响应体里嵌进
+  /// `data` 的 `code` 又是验证码（脱敏）。
+  static bool _isSensitiveLogKey(
+    String key, {
+    required bool requestSide,
+    int depth = 0,
+  }) {
+    final String normalized =
+        key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
+    if (_sensitiveLogKeys.contains(normalized)) return true;
+    for (final String fragment in _sensitiveLogKeyFragments) {
+      if (normalized.contains(fragment)) return true;
+    }
+    // 地图 Key：`key`、`appKey`、`apiKey`、`accessKey`。用后缀而非子串，
+    // 位置页的 `keyword` 是搜索词，不该被脱敏。
+    if (normalized.endsWith('key')) return true;
+    // 验证码：请求侧一律脱敏；响应侧只脱敏嵌在信封里面的那一层。
+    //
+    // 根值本身以 depth 0 进入，它的直接子键因此是 depth 1——那正是响应信封
+    // （`{"code":..., "data":...}`）那一层，`code` 在那里是业务状态码，要留。
+    // 再往里（`data.code`、`data.verificationCode`）才是验证码，depth ≥ 2。
+    final bool isCodeLike =
+        normalized == 'code' || normalized.endsWith('code');
+    if (isCodeLike && requestSide) return true;
+    return false;
   }
 
   /// 构建响应日志内容。
@@ -301,7 +388,10 @@ class RequestDio {
 
     if (response.data != null) {
       // 限制响应体日志长度，避免过大的数据污染日志
-      final dynamic safeData = _redactLogValue(response.data);
+      final dynamic safeData = _redactLogValue(
+        response.data,
+        requestSide: false,
+      );
       final String dataStr = safeData.toString();
       // ignore: require_trailing_commas
       log['body'] = dataStr.length > 500

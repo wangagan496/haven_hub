@@ -215,6 +215,57 @@ void main() {
     dio.close();
   });
 
+  // 版本号推进不止一次时仍然要重放。并发的刷新失败重试会各写一次凭证，把
+  // 版本从 1 推到 3。若判定要求「恰好 +1」，这种请求会被判成不可重放，于
+  // 是一次偶发的 401 直接冒到用户面前——明明手上已经有一份可用的新凭证。
+  test('replays when concurrent refreshes advanced the version more than once',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{'ok': true},
+            }),
+      ],
+      onFetch: (int index) async {
+        if (index == 0) {
+          // 两次并发刷新先后落盘：版本推进两次，最后一次仍来自刷新。
+          await tokens.setRefreshedToken(
+            'first-new-token',
+            refreshToken: 'first-new-refresh',
+          );
+          await tokens.setRefreshedToken(
+            'second-new-token',
+            refreshToken: 'second-new-refresh',
+          );
+        }
+      },
+    );
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
+      () =>
+          _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
+    ]);
+
+    final Dio dio = Dio()..httpClientAdapter = business;
+    final RequestDio client = RequestDio(
+      client: dio,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      tokens: tokens,
+    );
+
+    final dynamic data = await client.get('userInfo');
+
+    expect(data, <String, dynamic>{'ok': true});
+    expect(business.authorizationHeaders.first, 'Bearer old-token');
+    // 凭证已经是最新的了，不该再刷一次。
+    expect(refresh.paths, isEmpty);
+    expect(business.authorizationHeaders.last, 'Bearer second-new-token');
+
+    dio.close();
+  });
+
   test('does not replay a stale request after switching accounts', () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -252,6 +303,56 @@ void main() {
     expect(business.paths.length, 1, reason: '换号后旧请求不能在新账号下重放');
     expect(refresh.paths, isEmpty);
     expect(tokens.getToken(), 'new-account-token');
+
+    dio.close();
+  });
+
+  // 换号之后再刷新一次，是最容易漏掉的组合：只比对版本号的话，这次刷新让
+  // 版本「相对旧请求推进过」了，于是旧账号的请求会带着新账号的凭证重放出去。
+  // 会话 ID 必须在登录时就变，刷新不能把它带回来。
+  test('does not replay a stale request when the new account then refreshes',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{'ok': true},
+            }),
+      ],
+      onFetch: (int index) async {
+        if (index == 0) {
+          await tokens.deleteToken();
+          await tokens.setToken(
+            'account-b-token',
+            refreshToken: 'account-b-refresh',
+          );
+          // B 随后自己刷新了一次。
+          await tokens.setRefreshedToken(
+            'account-b-refreshed',
+            refreshToken: 'account-b-refreshed-refresh',
+          );
+        }
+      },
+    );
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
+      () =>
+          _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
+    ]);
+
+    final Dio dio = Dio()..httpClientAdapter = business;
+    final RequestDio client = RequestDio(
+      client: dio,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      tokens: tokens,
+    );
+
+    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
+
+    expect(business.paths.length, 1, reason: 'A 的旧请求不能带着 B 的凭证重放');
+    expect(business.authorizationHeaders, <String?>['Bearer old-token']);
+    expect(refresh.paths, isEmpty);
 
     dio.close();
   });
