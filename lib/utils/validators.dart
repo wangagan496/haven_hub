@@ -12,7 +12,11 @@ class Validators {
   const Validators._();
 
   // 常量正则表达式
-  static final RegExp _ownerNamePattern = RegExp(r'^[一-龥]{2,15}$');
+  /// 中文姓名：2-15 个汉字（U+4E00–U+9FA5）。
+  ///
+  /// 公开而非私有：房屋表单在提交前自己校验一次整表，用的必须是同一条规则。
+  /// 两处各写一份正则时，将来放宽范围只会改到其中一处。
+  static final RegExp ownerNamePattern = RegExp(r'^[一-龥]{2,15}$');
   static final RegExp _mobilePattern = RegExp(r'^1[3-9]\d{9}$');
   static final RegExp _emailPattern = RegExp(
     r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$',
@@ -67,7 +71,7 @@ class Validators {
   static Validator chineseName([String message = '姓名必须是2-15位中文']) {
     return Validator((String? value) {
       if (value == null || value.isEmpty) return null;
-      if (!_ownerNamePattern.hasMatch(value)) {
+      if (!ownerNamePattern.hasMatch(value)) {
         return message;
       }
       return null;

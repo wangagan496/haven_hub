@@ -138,6 +138,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
   String? _error;
   bool _loading = false;
   bool _cancelling = false;
+  bool _confirming = false;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -172,33 +173,41 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
   }
 
   Future<void> _cancel() async {
-    if (_cancelling || _id.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-            context: context,
-            builder: (dialog) => AlertDialog(
-                    title: const Text('取消报修'),
-                    content: const Text('确定取消该报修申请吗？'),
-                    actions: <Widget>[
-                      TextButton(
-                          onPressed: () => Navigator.pop(dialog, false),
-                          child: const Text('返回')),
-                      FilledButton(
-                          onPressed: () => Navigator.pop(dialog, true),
-                          child: const Text('确认取消'))
-                    ])) ??
-        false;
-    if (!confirmed || !mounted) return;
-    setState(() => _cancelling = true);
+    if (_cancelling || _confirming || _id.isEmpty) return;
+    // The confirmation dialog is part of the operation too.
+    setState(() => _confirming = true);
     try {
+      final confirmed = await showDialog<bool>(
+              context: context,
+              builder: (dialog) => AlertDialog(
+                      title: const Text('取消报修'),
+                      content: const Text('确定取消该报修申请吗？'),
+                      actions: <Widget>[
+                        TextButton(
+                            onPressed: () => Navigator.pop(dialog, false),
+                            child: const Text('返回')),
+                        FilledButton(
+                            onPressed: () => Navigator.pop(dialog, true),
+                            child: const Text('确认取消'))
+                      ])) ??
+          false;
+      if (!confirmed || !mounted) return;
+      setState(() => _cancelling = true);
       await widget.cancelLoader(_id);
       if (!mounted) return;
       await PromptAction.showSuccess('报修已取消');
       if (mounted) Navigator.pop(context, true);
     } on Object catch (error) {
+      if (!mounted) return;
       await PromptAction.showError(
           describeError(error, fallback: '取消报修失败，请重试'));
     } finally {
-      if (mounted) setState(() => _cancelling = false);
+      if (mounted) {
+        setState(() {
+          _cancelling = false;
+          _confirming = false;
+        });
+      }
     }
   }
 
@@ -233,7 +242,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: FilledButton(
-                  onPressed: _cancelling ? null : _cancel,
+                  onPressed: _cancelling || _confirming ? null : _cancel,
                   style:
                       FilledButton.styleFrom(backgroundColor: AppColors.danger),
                   child: _cancelling
@@ -338,6 +347,7 @@ class _RepairFormPageState extends State<RepairFormPage> {
       await PromptAction.showSuccess('报修提交成功');
       if (mounted) Navigator.pop(context, true);
     } on Object catch (error) {
+      if (!mounted) return;
       await PromptAction.showError(
           describeError(error, fallback: '报修提交失败，请重试'));
     } finally {
@@ -389,9 +399,8 @@ class _RepairFormPageState extends State<RepairFormPage> {
                     const SizedBox(height: 14),
                     ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: Text(_date == null
-                            ? '请选择预约日期'
-                            : formatDate(_date!)),
+                        title: Text(
+                            _date == null ? '请选择预约日期' : formatDate(_date!)),
                         trailing: const Icon(Icons.calendar_today_outlined),
                         onTap: _pickDate),
                     TextFormField(

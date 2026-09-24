@@ -39,6 +39,9 @@ class VisitorRecord {
   final int validTime;
   final String encryptedData;
 
+  // validTime is a duration, not an expiry timestamp. Use server status.
+  bool get canShare => (status == 0 || status == 1) && url.trim().isNotEmpty;
+
   String get statusText => switch (status) {
         1 => '待访问',
         2 => '已访问',
