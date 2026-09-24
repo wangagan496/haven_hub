@@ -6,7 +6,6 @@ name: commit message
 
 on:
   push:
-    branches: ['**']
   pull_request:
 
 jobs:
@@ -17,26 +16,59 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Refuse to answer "did this pass?" with a green job that inspected
+      # nothing. Every failure below exits non-zero on purpose.
       - name: Check commit messages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          COMMITS_JSON: ${{ toJson(github.event.commits) }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          set -euo pipefail
+
+          zero="0000000000000000000000000000000000000000"
+
+          # A branch deletion reports the zero sha as the head. There is
+          # nothing to inspect and nothing to complain about.
+          if [ "$EVENT_NAME" = "push" ] && [ "$HEAD_SHA" = "$zero" ]; then
+            echo "Branch deletion; nothing to check."
+            exit 0
+          fi
+
+          # Collect the commits actually introduced by this event. Taking them
+          # from the payload avoids guessing a revision range, which is where
+          # the previous version silently checked nothing: on a new branch the
+          # "before" sha is all zeroes, `git rev-parse --verify` accepts it, and
+          # the resulting `0000..HEAD` range makes `git log` fail with an empty
+          # result rather than an error the step would notice.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            range="$BASE_SHA..$HEAD_SHA"
+            echo "Pull request range: $range"
+            shas=$(git log --format=%H "$range" || true)
+          elif [ "$BEFORE" != "$zero" ]; then
+            range="$BEFORE..$HEAD_SHA"
+            echo "Push range: $range"
+            shas=$(git log --format=%H "$range" || true)
           else
-            range="${{ github.event.before }}..${{ github.sha }}"
+            # New branch (or the base is missing): the payload lists the commits.
+            echo "New branch; using the commit list from the event payload."
+            shas=$(printf '%s' "$COMMITS_JSON" | jq -r '.[].id')
           fi
 
-          # A new branch or a force-push can leave the range without a usable
-          # base commit. Check just the tip in that case rather than failing.
-          if ! git rev-parse --quiet --verify "${{ github.event.before }}" >/dev/null 2>&1; then
-            range="-1 HEAD"
+          if [ -z "${shas:-}" ]; then
+            # Falling through here with an empty list is exactly how a broken
+            # check used to report success. Treat it as a failure.
+            echo "::error::Resolved no commits to check; refusing to report success."
+            exit 1
           fi
 
-          echo "Checking commits in: $range"
           failed=0
           while IFS= read -r sha; do
             [ -z "$sha" ] && continue
-            subject=$(git log -1 --format='%s' "$sha")
-            body=$(git log -1 --format='%B' "$sha")
+            subject=$(git log -1 --format=%s "$sha")
+            body=$(git log -1 --format=%B "$sha")
             clean=1
             if printf '%s\n' "$body" | grep -inE '^[[:space:]]*co-authored-by:.*(claude|anthropic|chatgpt|openai|copilot|gemini|cursor|windsurf|codeium|aider)'; then
               echo "::error::$sha has an assistant authorship trailer"
@@ -48,10 +80,14 @@ jobs:
               failed=1
               clean=0
             fi
-            [ "$clean" -eq 1 ] && echo "ok: $sha $subject"
-          done <<< "$(git log --format='%H' $range)"
+            if [ "$clean" -eq 1 ]; then
+              echo "ok: $sha $subject"
+            fi
+          done <<< "$shas"
 
           if [ "$failed" -ne 0 ]; then
             echo "Remove the trailer or marker, then amend or rebase."
             exit 1
           fi
+
+          echo "All checked commits are clean."
