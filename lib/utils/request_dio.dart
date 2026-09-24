@@ -130,10 +130,9 @@ class RequestDio {
                 refreshToken,
                 sessionVersion: sessionVersion,
               );
-              // 只有刷新确实成功、且期间没有再次变更凭证时才重放。
-              // 用「不等于原版本」而不是「恰好 +1」：并发的刷新失败重试可能
-              // 再推进一次，那属于凭证又换了，但这种情况下 +1 判断会把本该
-              // 放行的常规重放也挡掉。
+              // 只有刷新确实成功、且期间凭证真的换了代才重放。走这条路时请求
+              // 本身没带上可用凭证变化，所以不比对会话 ID——那是上面那条分支
+              // 的事；这里的凭证就是本次刷新刚写进去的。
               final String refreshedToken = _tokens.getToken();
               if (refreshSuccess &&
                   refreshedToken.isNotEmpty &&
