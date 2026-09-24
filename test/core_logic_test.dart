@@ -64,6 +64,45 @@ void main() {
       expect(house.isPending, isFalse);
     });
 
+    test('House reads idcard photos from alternate field names', () {
+      // 详情接口的键名没有正式约定。读不到时编辑页会把已上传的照片显示成
+      // 空白占位，提交时又被「请上传身份证正反面照片」拦下。
+      expect(
+        House.fromJson(<String, dynamic>{
+          'idcardFront': ' https://example.com/front.png ',
+          'idcardBack': 'https://example.com/back.png',
+        }).idcardFrontUrl,
+        'https://example.com/front.png',
+      );
+
+      expect(
+        House.fromJson(<String, dynamic>{
+          'idcard_front_url': 'https://example.com/front.png',
+          'idcard_back_url': 'https://example.com/back.png',
+        }).idcardBackUrl,
+        'https://example.com/back.png',
+      );
+    });
+
+    test('House prefers the canonical idcard keys when both are present', () {
+      final House house = House.fromJson(<String, dynamic>{
+        'idcardFrontUrl': 'https://example.com/canonical.png',
+        'idcardFront': 'https://example.com/alias.png',
+      });
+
+      expect(house.idcardFrontUrl, 'https://example.com/canonical.png');
+    });
+
+    test('House leaves idcard photos empty when no candidate key matches', () {
+      final House house = House.fromJson(<String, dynamic>{
+        'id': 1,
+        'idcardFront': '   ',
+      });
+
+      expect(house.idcardFrontUrl, isEmpty);
+      expect(house.idcardBackUrl, isEmpty);
+    });
+
     test('notice and user models parse API payloads', () {
       final NoticeData notice = NoticeData.fromJson(<String, dynamic>{
         'id': 7,
