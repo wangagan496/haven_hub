@@ -64,6 +64,11 @@ dependencies:
       path: geolocator
   cached_network_image: ^3.3.0
 
+# Local OHOS-only fix for pending results after camera failures; see UPSTREAM.md.
+dependency_overrides:
+  image_picker_ohos:
+    path: third_party/image_picker_ohos
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

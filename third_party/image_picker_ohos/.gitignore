@@ -1,0 +1,10 @@
+.dart_tool/
+.flutter-plugins*
+pubspec.lock
+**/build/
+**/.hvigor/
+**/oh_modules/
+**/node_modules/
+**/.cxx/
+**/oh-package-lock.json5
+**/BuildProfile.ets
