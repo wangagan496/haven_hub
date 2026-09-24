@@ -375,7 +375,7 @@ class RequestDio {
     // 再往里（`data.code`、`data.verificationCode`）才是验证码，depth ≥ 2。
     final bool isCodeLike =
         normalized == 'code' || normalized.endsWith('code');
-    if (isCodeLike && requestSide) return true;
+    if (isCodeLike && (requestSide || depth > 1)) return true;
     return false;
   }
 
