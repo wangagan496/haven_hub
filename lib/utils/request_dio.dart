@@ -9,6 +9,18 @@ import 'token_manager.dart';
 typedef RefreshDioFactory = dio.Dio Function();
 
 class RequestDio {
+  static const Set<String> _sensitiveLogKeys = <String>{
+    'authorization',
+    'code',
+    'key',
+    'mobile',
+    'password',
+    'phone',
+    'secret',
+    'telephone',
+    'token',
+  };
+
   RequestDio({
     dio.Dio? client,
     RefreshDioFactory? refreshDioFactory,
@@ -227,44 +239,57 @@ class RequestDio {
     };
 
     if (options.queryParameters.isNotEmpty) {
-      log['params'] = _redactSensitiveValues(options.queryParameters);
+      log['params'] = _redactLogValue(options.queryParameters);
     }
 
     if (options.headers.isNotEmpty) {
-      // 隐藏敏感信息
-      final Map<String, dynamic> safeHeaders = Map<String, dynamic>.from(
-        options.headers,
-      );
-      if (safeHeaders.containsKey('Authorization')) {
-        safeHeaders['Authorization'] = '***';
-      }
-      log['headers'] = safeHeaders;
+      log['headers'] = _redactLogValue(options.headers);
     }
 
     if (options.data != null && options.data is! dio.FormData) {
-      log['body'] = options.data;
+      log['body'] = _redactLogValue(options.data);
     }
 
     return log;
   }
 
   static Uri _redactUri(Uri uri) {
-    if (!uri.queryParameters.containsKey('key')) return uri;
+    if (uri.queryParameters.isEmpty) return uri;
     return uri.replace(
       queryParameters: <String, String>{
-        ...uri.queryParameters,
-        'key': '***',
+        for (final MapEntry<String, String> entry
+            in uri.queryParameters.entries)
+          entry.key: _redactLogValue(entry.value, key: entry.key) as String,
       },
     );
   }
 
-  static Map<String, dynamic> _redactSensitiveValues(
-    Map<String, dynamic> values,
-  ) {
-    return <String, dynamic>{
-      for (final MapEntry<String, dynamic> entry in values.entries)
-        entry.key: entry.key.toLowerCase() == 'key' ? '***' : entry.value,
-    };
+  static dynamic _redactLogValue(dynamic value, {String? key}) {
+    if (key != null && _isSensitiveLogKey(key)) return '***';
+    if (value is Map<dynamic, dynamic>) {
+      return <String, dynamic>{
+        for (final MapEntry<dynamic, dynamic> entry in value.entries)
+          entry.key.toString(): _redactLogValue(
+            entry.value,
+            key: entry.key.toString(),
+          ),
+      };
+    }
+    if (value is Iterable<dynamic>) {
+      return <dynamic>[
+        for (final dynamic item in value) _redactLogValue(item),
+      ];
+    }
+    return value;
+  }
+
+  static bool _isSensitiveLogKey(String key) {
+    final String normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
+    return _sensitiveLogKeys.contains(normalized) ||
+        normalized.contains('token') ||
+        normalized.contains('password') ||
+        normalized.contains('secret') ||
+        normalized.endsWith('code');
   }
 
   /// 构建响应日志内容。
@@ -276,11 +301,12 @@ class RequestDio {
 
     if (response.data != null) {
       // 限制响应体日志长度，避免过大的数据污染日志
-      final String dataStr = response.data.toString();
+      final dynamic safeData = _redactLogValue(response.data);
+      final String dataStr = safeData.toString();
       // ignore: require_trailing_commas
       log['body'] = dataStr.length > 500
           ? '${dataStr.substring(0, 500)}... (truncated)'
-          : response.data;
+          : safeData;
     }
 
     return log;
