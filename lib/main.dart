@@ -70,7 +70,8 @@ class HavenHubApp extends StatelessWidget {
           );
           if (page == null) return null;
 
-          return MaterialPageRoute<void>(
+          // Mutation pages return true to refresh their calling list.
+          return MaterialPageRoute<bool>(
             settings: settings,
             builder: (BuildContext context) => ErrorBoundary(child: page),
           );
