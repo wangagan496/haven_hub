@@ -126,9 +126,10 @@ class PromptAction {
     if (entry == null) {
       return;
     }
-    if (entry.mounted) {
-      entry.remove();
-    }
-    entry.dispose();
+    // insert() attaches the entry before its first frame sets mounted=true.
+    // Every stored entry was inserted and must be removed before disposal.
+    entry
+      ..remove()
+      ..dispose();
   }
 }

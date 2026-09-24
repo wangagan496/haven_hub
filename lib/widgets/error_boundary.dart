@@ -1,5 +1,6 @@
 import 'dart:ui' show PlatformDispatcher;
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../utils/logger.dart';
@@ -33,11 +34,74 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
   Object? _error;
   StackTrace? _stackTrace;
 
+  /// 每次重试递增，作为子树的 key，逼 Flutter 丢弃旧元素树重建。
+  int _revision = 0;
+
+  /// 上一个 [ErrorWidget.builder]，用于销毁时还原。
+  ErrorWidgetBuilder? _previousErrorWidgetBuilder;
+
+  /// 本边界安装进 [ErrorWidget.builder] 的那个闭包。
+  ///
+  /// 必须存成字段：方法 tear-off 每次取值未必是同一个对象，拿 `identical`
+  /// 去比对 `ErrorWidget.builder` 和 `_handleWidgetError` 会得到 false，于是
+  /// dispose 时判断成「别人后来装过」，还原被静默跳过，这个定制就永久留在
+  /// 全局了。
+  late final ErrorWidgetBuilder _installedErrorWidgetBuilder;
+
   @override
   void initState() {
     super.initState();
-    // 在开发模式下，错误会直接抛出，方便调试
-    // 在生产模式下，错误会被捕获并显示友好界面
+    _previousErrorWidgetBuilder = ErrorWidget.builder;
+    _installedErrorWidgetBuilder = _handleWidgetError;
+    // 只在这里装一次。放在 build 里会每帧覆盖别的定制，而且 dispose 时无从
+    // 还原——同一个构建错误会反复安装，把别人装的换掉再也换不回来。
+    ErrorWidget.builder = _installedErrorWidgetBuilder;
+  }
+
+  @override
+  void dispose() {
+    if (identical(ErrorWidget.builder, _installedErrorWidgetBuilder)) {
+      ErrorWidget.builder = _previousErrorWidgetBuilder ?? ErrorWidget.new;
+    }
+    super.dispose();
+  }
+
+  Widget _handleWidgetError(FlutterErrorDetails details) {
+    if (!mounted) {
+      return ErrorWidget(details.exception);
+    }
+
+    Logger.error(
+      'Widget Error',
+      details.exception,
+      details.stack,
+    );
+
+    widget.onError?.call(details.exception, details.stack ?? StackTrace.empty);
+
+    // 构建期间不能 setState，推到当前帧结束后再切到错误界面。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        setState(() {
+          _error = details.exception;
+          _stackTrace = details.stack;
+        });
+      }
+    });
+
+    // 返回默认错误组件（会在下一帧被替换）
+    return _buildDefaultErrorWidget(context);
+  }
+
+  void _retry() {
+    setState(() {
+      _error = null;
+      _stackTrace = null;
+      // 只清错误不够：widget.child 是同一个 Widget 实例，元素树会照原样
+      // 复用，同一个构建错误立刻再抛一次，界面看起来毫无反应。换 key 才会
+      // 真正重建子树。
+      _revision++;
+    });
   }
 
   @override
@@ -47,37 +111,7 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
           _buildDefaultErrorWidget(context);
     }
 
-    ErrorWidget.builder = (FlutterErrorDetails details) {
-      if (!mounted) {
-        return ErrorWidget(details.exception);
-      }
-
-      // 记录错误日志
-      Logger.error(
-        'Widget Error',
-        details.exception,
-        details.stack,
-      );
-
-      // 触发错误回调
-      widget.onError
-          ?.call(details.exception, details.stack ?? StackTrace.empty);
-
-      // 在当前帧结束后更新状态
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() {
-            _error = details.exception;
-            _stackTrace = details.stack;
-          });
-        }
-      });
-
-      // 返回默认错误组件（会在下一帧被替换）
-      return _buildDefaultErrorWidget(context);
-    };
-
-    return widget.child;
+    return KeyedSubtree(key: ValueKey<int>(_revision), child: widget.child);
   }
 
   /// 构建默认错误视图。
@@ -111,16 +145,13 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _error = null;
-                  _stackTrace = null;
-                });
-              },
+              onPressed: _retry,
               icon: const Icon(Icons.refresh),
               label: const Text('重新加载'),
             ),
-            if (_error != null) ...[
+            // 堆栈只给调试用：生产环境把它摊开给终端用户看，等于把内部结构
+            // 和文件路径直接暴露出去。
+            if (kDebugMode && _error != null) ...[
               const SizedBox(height: 16),
               TextButton(
                 onPressed: () {
