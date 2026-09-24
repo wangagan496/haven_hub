@@ -31,6 +31,7 @@ class RequestDio {
           dio.RequestOptions options,
           dio.RequestInterceptorHandler handler,
         ) {
+          options.extra['sessionVersion'] = _tokens.sessionVersion;
           final String token = _tokens.getToken();
           final bool skipAuthorization =
               options.extra['skipAuthorization'] == true;
@@ -59,28 +60,35 @@ class RequestDio {
               error.requestOptions.extra['skipAuthorization'] != true) {
             final String refreshToken = _tokens.getRefreshToken();
             final int sessionVersion = _tokens.sessionVersion;
+            final int requestSessionVersion =
+                error.requestOptions.extra['sessionVersion'] as int? ??
+                    sessionVersion;
             final String failedToken =
                 error.requestOptions.headers['Authorization']?.toString() ?? '';
             final String currentToken = _tokens.getToken();
+            final bool tokenChanged = failedToken.isNotEmpty &&
+                currentToken.isNotEmpty &&
+                failedToken != 'Bearer $currentToken';
             bool shouldLogout = refreshToken.isEmpty;
 
-            if (failedToken.isNotEmpty &&
-                currentToken.isNotEmpty &&
-                failedToken != 'Bearer $currentToken') {
-              // 请求在飞行途中凭证已经被换掉（多半是并发的刷新已经完成），
-              // 用当前凭证直接重放即可，不必再刷一次。
-              try {
-                final dio.Response<dynamic> retryResponse = await _dio.fetch(
-                  _createRetryRequest(
-                    error.requestOptions,
-                    token: currentToken,
-                  ),
-                );
-                return handler.resolve(retryResponse);
-              } on dio.DioException catch (e) {
-                error = e;
-                shouldLogout = e.response?.statusCode == 401 &&
-                    _tokens.sessionVersion == sessionVersion;
+            if (tokenChanged) {
+              if (_tokens.sessionVersion == requestSessionVersion + 1 &&
+                  _tokens.refreshSessionVersion == _tokens.sessionVersion) {
+                // 请求在飞行途中凭证已经被换掉（多半是并发的刷新已经完成），
+                // 用当前凭证直接重放即可，不必再刷一次。
+                try {
+                  final dio.Response<dynamic> retryResponse = await _dio.fetch(
+                    _createRetryRequest(
+                      error.requestOptions,
+                      token: currentToken,
+                    ),
+                  );
+                  return handler.resolve(retryResponse);
+                } on dio.DioException catch (e) {
+                  error = e;
+                  shouldLogout = e.response?.statusCode == 401 &&
+                      _tokens.sessionVersion == sessionVersion;
+                }
               }
             } else if (refreshToken.isNotEmpty) {
               final bool refreshSuccess = await _tryRefreshToken(
@@ -353,7 +361,7 @@ class RequestDio {
                   _tokens.getRefreshToken() != refreshToken) {
                 return false;
               }
-              final bool saved = await _tokens.setToken(
+              final bool saved = await _tokens.setRefreshedToken(
                 newToken,
                 refreshToken: newRefreshToken,
               );

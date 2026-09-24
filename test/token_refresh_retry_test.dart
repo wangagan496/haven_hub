@@ -22,7 +22,7 @@ class _RecordingAdapter implements HttpClientAdapter {
   /// 用来在「请求已经发出去、响应还没回来」的窗口里改动外部状态——比如凭证
   /// 被并发的刷新换掉。靠请求头是造不出这个状态的：请求拦截器会用当时的凭证
   /// 覆盖调用方传进来的 Authorization。
-  final void Function(int index)? onFetch;
+  final FutureOr<void> Function(int index)? onFetch;
 
   final List<String?> authorizationHeaders = <String?>[];
   final List<String> paths = <String>[];
@@ -36,7 +36,7 @@ class _RecordingAdapter implements HttpClientAdapter {
     paths.add(options.path);
     authorizationHeaders.add(options.headers['Authorization']?.toString());
     final int index = paths.length - 1;
-    onFetch?.call(index);
+    await onFetch?.call(index);
     final ResponseBody Function() response =
         responses[index.clamp(0, responses.length - 1)];
     return response();
@@ -104,13 +104,16 @@ void main() {
   });
 
   test('replay after refresh carries the refreshed token', () async {
-    final _RecordingAdapter business = _RecordingAdapter(<ResponseBody
-        Function()>[
+    final _RecordingAdapter business =
+        _RecordingAdapter(<ResponseBody Function()>[
       () => _json(<String, dynamic>{'code': 401}, status: 401),
-      () => _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{'ok': true}}),
+      () => _json(<String, dynamic>{
+            'code': 10000,
+            'data': <String, dynamic>{'ok': true}
+          }),
     ]);
-    final _RecordingAdapter refresh = _RecordingAdapter(<ResponseBody
-        Function()>[
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
       () => _json(<String, dynamic>{
             'code': 10000,
             'data': <String, dynamic>{
@@ -141,12 +144,12 @@ void main() {
 
   test('failed refresh logs out without replaying under the old request',
       () async {
-    final _RecordingAdapter business = _RecordingAdapter(<ResponseBody
-        Function()>[
+    final _RecordingAdapter business =
+        _RecordingAdapter(<ResponseBody Function()>[
       () => _json(<String, dynamic>{'code': 401}, status: 401),
     ]);
-    final _RecordingAdapter refresh = _RecordingAdapter(<ResponseBody
-        Function()>[
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
       () => _json(<String, dynamic>{'code': 500}, status: 500),
     ]);
 
@@ -174,22 +177,24 @@ void main() {
       <ResponseBody Function()>[
         () => _json(<String, dynamic>{'code': 401}, status: 401),
         () => _json(<String, dynamic>{
-          'code': 10000,
-          'data': <String, dynamic>{'ok': true},
-        }),
+              'code': 10000,
+              'data': <String, dynamic>{'ok': true},
+            }),
       ],
       // 请求带着 old-token 飞出去，返回 401 之前并发的刷新已经换上了新凭证。
-      onFetch: (int index) {
+      onFetch: (int index) async {
         if (index == 0) {
-          storage
-            ..token = 'new-token'
-            ..refreshToken = 'new-refresh';
+          await tokens.setRefreshedToken(
+            'new-token',
+            refreshToken: 'new-refresh',
+          );
         }
       },
     );
-    final _RecordingAdapter refresh = _RecordingAdapter(<ResponseBody
-        Function()>[
-      () => _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
+      () =>
+          _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
     ]);
 
     final Dio dio = Dio()..httpClientAdapter = business;
@@ -206,6 +211,88 @@ void main() {
     // 凭证已经是新的了，不该再刷一次。
     expect(refresh.paths, isEmpty);
     expect(business.authorizationHeaders.last, 'Bearer new-token');
+
+    dio.close();
+  });
+
+  test('does not replay a stale request after switching accounts', () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{'ok': true},
+            }),
+      ],
+      onFetch: (int index) async {
+        if (index == 0) {
+          await tokens.deleteToken();
+          await tokens.setToken(
+            'new-account-token',
+            refreshToken: 'new-account-refresh',
+          );
+        }
+      },
+    );
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
+      () =>
+          _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
+    ]);
+
+    final Dio dio = Dio()..httpClientAdapter = business;
+    final RequestDio client = RequestDio(
+      client: dio,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      tokens: tokens,
+    );
+
+    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
+
+    expect(business.paths.length, 1, reason: '换号后旧请求不能在新账号下重放');
+    expect(refresh.paths, isEmpty);
+    expect(tokens.getToken(), 'new-account-token');
+
+    dio.close();
+  });
+
+  test('does not replay a stale request after a direct login replacement',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{'ok': true},
+            }),
+      ],
+      onFetch: (int index) async {
+        if (index == 0) {
+          await tokens.setToken(
+            'new-login-token',
+            refreshToken: 'new-login-refresh',
+          );
+        }
+      },
+    );
+    final _RecordingAdapter refresh =
+        _RecordingAdapter(<ResponseBody Function()>[
+      () =>
+          _json(<String, dynamic>{'code': 10000, 'data': <String, dynamic>{}}),
+    ]);
+
+    final Dio dio = Dio()..httpClientAdapter = business;
+    final RequestDio client = RequestDio(
+      client: dio,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      tokens: tokens,
+    );
+
+    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
+
+    expect(business.paths.length, 1, reason: '新登录产生的凭证不能重放旧账号请求');
+    expect(refresh.paths, isEmpty);
+    expect(tokens.getToken(), 'new-login-token');
 
     dio.close();
   });

@@ -119,6 +119,23 @@ void main() {
       expect(manager.sessionVersion, before + 1);
       expect(manager.getToken(), 'token-b');
     });
+
+    test('tracks refresh credentials separately from a normal login', () async {
+      final _FakeTokenStorage storage = _FakeTokenStorage();
+      final TokenManager manager = TokenManager(storage: storage);
+
+      expect(
+        await manager.setRefreshedToken(
+          'refreshed-token',
+          refreshToken: 'refreshed-refresh',
+        ),
+        isTrue,
+      );
+      expect(manager.refreshSessionVersion, manager.sessionVersion);
+
+      await manager.setToken('login-token', refreshToken: 'login-refresh');
+      expect(manager.refreshSessionVersion, isNull);
+    });
   });
 
   group('TokenManager.invalidateLocalSession', () {
