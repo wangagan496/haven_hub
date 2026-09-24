@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
 
 enum AvatarSource {
@@ -30,15 +31,30 @@ bool get supportsAvatarCamera {
 }
 
 Future<PickedAvatar?> pickAvatar(AvatarSource source) async {
-  final image_picker.XFile? file = await image_picker.ImagePicker().pickImage(
-    source: switch (source) {
-      AvatarSource.camera => image_picker.ImageSource.camera,
-      AvatarSource.gallery => image_picker.ImageSource.gallery,
-    },
-    maxWidth: 1600,
-    maxHeight: 1600,
-    imageQuality: 85,
-  );
+  final image_picker.XFile? file;
+  try {
+    file = await image_picker.ImagePicker().pickImage(
+      source: switch (source) {
+        AvatarSource.camera => image_picker.ImageSource.camera,
+        AvatarSource.gallery => image_picker.ImageSource.gallery,
+      },
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 85,
+    );
+  } on PlatformException catch (error) {
+    switch (error.code) {
+      case 'camera_access_denied':
+        throw const FormatException('未获得相机权限，请允许后重试或从相册选择图片');
+      case 'camera_unavailable':
+        throw const FormatException('当前设备无法使用系统相机，请从相册选择图片');
+      case 'camera_capture_failed':
+      case 'camera_permission_error':
+        throw const FormatException('相机无法启动，请重试或从相册选择图片');
+      default:
+        rethrow;
+    }
+  }
   if (file == null) {
     return null;
   }
