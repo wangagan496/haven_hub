@@ -37,6 +37,11 @@ migrate_working_dir/
 /tool/dart_defines.local.env
 /tool/dart_defines.web.local.env
 
+# Local editor and tooling artifacts
+.claude/
+ohos/.appanalyzer/
+tool/watch_emulator_crash_signals.ps1
+
 # Symbolication related
 app.*.symbols
 
