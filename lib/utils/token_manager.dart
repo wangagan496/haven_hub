@@ -7,8 +7,15 @@ class TokenManager {
   final TokenStorage _storage;
   Future<void>? _initialization;
   int _sessionVersion = 0;
+  int? _refreshSessionVersion;
 
   int get sessionVersion => _sessionVersion;
+
+  /// Returns the session version most recently created by a token refresh.
+  ///
+  /// A normal login or logout clears this marker so an in-flight request from
+  /// an earlier account can never be mistaken for a refresh replay.
+  int? get refreshSessionVersion => _refreshSessionVersion;
 
   Future<void> init() {
     final Future<void>? initialization = _initialization;
@@ -41,10 +48,27 @@ class TokenManager {
   Future<bool> setToken(
     String token, {
     String refreshToken = '',
+  }) {
+    return _writeToken(token, refreshToken, fromRefresh: false);
+  }
+
+  /// Stores credentials returned by the refresh endpoint.
+  Future<bool> setRefreshedToken(
+    String token, {
+    required String refreshToken,
+  }) {
+    return _writeToken(token, refreshToken, fromRefresh: true);
+  }
+
+  Future<bool> _writeToken(
+    String token,
+    String refreshToken, {
+    required bool fromRefresh,
   }) async {
     final bool saved = await _storage.write(token, refreshToken);
     if (saved) {
       _sessionVersion++;
+      _refreshSessionVersion = fromRefresh ? _sessionVersion : null;
     }
     return saved;
   }
@@ -60,6 +84,7 @@ class TokenManager {
     final bool cleared = await _storage.clear();
     if (cleared) {
       _sessionVersion++;
+      _refreshSessionVersion = null;
     }
     return cleared;
   }
@@ -70,6 +95,7 @@ class TokenManager {
   /// 失败这件事要如实保留，交由调用方重试或提示用户。
   void invalidateLocalSession() {
     _storage.invalidate();
+    _refreshSessionVersion = null;
   }
 }
 
