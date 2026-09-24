@@ -2,13 +2,11 @@
 import common from '@ohos.app.ability.common';
 import { FlutterPage } from '@ohos/flutter_ohos'
 
-let storage = LocalStorage.getShared()
 const EVENT_BACK_PRESS = 'EVENT_BACK_PRESS'
 
-@Entry(storage)
+@Entry({ useSharedStorage: true })
 @Component
 struct Index {
-  private context = getContext(this) as common.UIAbilityContext
   @LocalStorageLink('viewId') viewId: string = "";
 
   build() {
@@ -18,7 +16,9 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    this.context.eventHub.emit(EVENT_BACK_PRESS)
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context === undefined) return false;
+    context.eventHub.emit(EVENT_BACK_PRESS)
     return true
   }
 }
