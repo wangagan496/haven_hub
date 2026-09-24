@@ -117,7 +117,16 @@ lib/
 - ✅ 文档注释：公共API均有详细文档
 - ✅ 代码规范：遵循 Flutter Lints 规则
 - ✅ 静态检查：`flutter analyze --no-pub --no-fatal-infos` 无编译错误
-- ℹ️ 当前仓库不保留自动化测试文件，功能验证通过浏览器真实流程完成
+- 自动化测试位于 `test/`，覆盖基础逻辑、报修交互、路由返回值、提示浮层、通行码下载与平台桥接；真实接口与鸿蒙设备效果单独验收。
+
+## 鸿蒙分享与稳定性改造
+
+访客详情支持通过应用内自定义 MethodChannel 调用鸿蒙系统分享现有 PNG/JPEG 通行码图片。
+非鸿蒙平台显示不可用提示；已访问、已失效或缺少图片的记录不能分享。
+分享面板关闭仅表示本次操作结束，不提示“发送成功”。报修流程补充了提交、取消、失败重试、返回后刷新和异步退出的回归测试。
+
+运行检查：`./tool/flutter_ohos.ps1 analyze --no-pub`、`./tool/flutter_ohos.ps1 test --no-pub`。
+实现调用链、复现命令、验证边界与面试讲解见 [鸿蒙分享与报修稳定性说明](docs/harmony_share_and_reliability.md)。
 
 ## 最近优化 (2026-08-05)
 
@@ -148,8 +157,15 @@ lib/
 dart run tool/web_api_proxy.dart
 flutter run -d web-server --web-port 8767 `
   --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
-  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/ `
+  --dart-define=TENCENT_MAP_KEY=你的腾讯位置服务Key
 ```
+
+`TENCENT_MAP_KEY` 不能省：位置页在发起请求前就要用它，缺失时页面会停在
+“正在获取当前位置”，并提示“未配置腾讯位置服务 Key”，一个 `/tencent-map/`
+请求都不会发出。本机调试通常改用下面「Web 连接课程接口」里的
+`--dart-define-from-file` 写法，把 Key 放在 Git 忽略的
+`tool/dart_defines.local.env` 里。
 
 浏览器验证建议按“登录 → 我的房屋 → 房屋列表/详情/编辑 → 添加房屋 → 位置/楼栋/房间/表单”的顺序执行。Web 环境会优先请求浏览器定位权限，权限不可用或超时会自动切换为腾讯 IP 定位。IP 定位结果可能落在境外；如果没有返回附近社区，这是定位数据没有匹配到社区，不代表楼栋、房间或表单路由异常。
 
@@ -182,17 +198,22 @@ dart run tool/web_api_proxy.dart
 
 ```powershell
 flutter run -d chrome `
-  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
-  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+  --dart-define-from-file=tool/dart_defines.web.local.env `
+  --dart-define-from-file=tool/dart_defines.local.env
 ```
 
 使用内置浏览器或手动打开网址时，也可以启动 Web Server：
 
 ```powershell
 flutter run -d web-server --web-port 56891 `
-  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
-  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+  --dart-define-from-file=tool/dart_defines.web.local.env `
+  --dart-define-from-file=tool/dart_defines.local.env
 ```
+
+两个文件都要传。`dart_defines.web.local.env` 只放两个代理地址，
+`TENCENT_MAP_KEY` 在 `dart_defines.local.env` 里（该文件被 Git 忽略）。
+只传前者时应用能正常启动，但位置页会停在“正在获取当前位置”，并且不会发出
+任何 `/tencent-map/` 请求。
 
 该代理仅监听 `127.0.0.1`，只接受来自 `localhost` 或 `127.0.0.1`
 网页的请求，并分别固定转发到课程接口和腾讯位置服务。它只用于本机开发，不应部署到线上。
@@ -229,6 +250,14 @@ Mock 服务提供以下接口：
 
 ## 鸿蒙构建
 
+当前本机目标版本为 HarmonyOS 6.1.1 / API 24，最低兼容配置为
+HarmonyOS 5.0.0 / API 12。最低版本配置和编译通过不等于已完成 API 12
+设备运行验收；本次验证记录见 [API 24 验证与清理](docs/api24_validation_and_cleanup.md)。
+
+本机 `ohos/build-profile.json5` 带有 Git `skip-worktree` 标记，普通
+`git status` 不显示其本地版本字段变更。换机时需单独检查这两个版本字段，
+不要为了同步版本而提交本机签名材料。
+
 请通过包装脚本执行鸿蒙命令。脚本会自动查找本机的 Flutter OH SDK，
 并使用项目所在 D 盘的依赖缓存，避免 Hvigor 因跨盘插件路径构建失败：
 
@@ -236,7 +265,11 @@ Mock 服务提供以下接口：
 .\tool\flutter_ohos.ps1 doctor -v
 .\tool\flutter_ohos.ps1 pub get
 .\tool\flutter_ohos.ps1 analyze --no-pub
-.\tool\flutter_ohos.ps1 build hap --debug
+.\tool\flutter_ohos.ps1 test --no-pub
+# 手机目标
+.\tool\flutter_ohos.ps1 build hap --debug --no-pub -t lib/main.dart --target-platform ohos-arm64
+# x86_64 模拟器目标
+.\tool\flutter_ohos.ps1 build hap --debug --no-pub -t lib/main.dart --target-platform ohos-x64
 ```
 
 静态分析也必须通过包装脚本执行。项目内的 `analysis_options.yaml` 已排除
@@ -260,6 +293,9 @@ Debug HAP 输出位置：
 ```text
 build\ohos\hap\entry-default-signed.hap
 ```
+
+不同架构和测试入口共用此输出路径，后一轮构建会覆盖前一轮；需要同时保留时，
+每次构建完成后按架构和入口另存。分享测试入口验证结束后应重新安装正常入口包。
 
 ## 腾讯位置服务
 
