@@ -56,7 +56,17 @@ class _TabsPageState extends State<TabsPage> {
 
     _isHandlingLogout = true;
     try {
-      await tokenManager.deleteToken();
+      final bool cleared = await tokenManager.deleteToken();
+      if (!cleared) {
+        // 内存中的凭证已经失效，磁盘上的还在。此时若照常跳到登录页，用户会
+        // 以为已经退出，重启后却被残留凭证自动登录回来。保持当前页面并如实
+        // 报错，让这次失败可见。
+        tokenManager.invalidateLocalSession();
+        if (mounted) {
+          await PromptAction.showError('本地登录信息清除失败，请重试');
+        }
+        return;
+      }
       if (!mounted) {
         return;
       }

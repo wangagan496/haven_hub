@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart' hide FormData, MultipartFile;
 
 import '../../api/user.dart';
+import '../../controller/build_controller.dart';
 import '../../controller/user_info_controller.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
@@ -54,10 +55,11 @@ class _MinePageState extends State<MinePage> {
 
   bool _isLoggedIn = false;
   bool _isLoggingOut = false;
-  bool _isLoadingUserInfo = false;
+  int _userInfoRequestId = 0;
   late final UserInfoController _userInfoController;
   late final StreamSubscription<LoginSuccessEvent> _loginSubscription;
   late final StreamSubscription<RefreshEvent> _refreshSubscription;
+  late final StreamSubscription<LogoutEvent> _logoutSubscription;
 
   @override
   void initState() {
@@ -68,9 +70,10 @@ class _MinePageState extends State<MinePage> {
     _loginSubscription =
         eventBus.on<LoginSuccessEvent>().listen(_onLoginSuccess);
     _refreshSubscription = eventBus.on<RefreshEvent>().listen(_onRefresh);
+    _logoutSubscription = eventBus.on<LogoutEvent>().listen(_onLogout);
     _isLoggedIn = tokenManager.getToken().isNotEmpty;
     if (!_isLoggedIn) {
-      _userInfoController.clearUserInfo();
+      _resetSessionState();
     } else if (widget.activeIndex == 1) {
       unawaited(_loadUserInfo());
     }
@@ -80,7 +83,22 @@ class _MinePageState extends State<MinePage> {
   void dispose() {
     _loginSubscription.cancel();
     _refreshSubscription.cancel();
+    _logoutSubscription.cancel();
     super.dispose();
+  }
+
+  /// 丢弃所有跟「当前登录的是谁」绑定的状态。
+  ///
+  /// [UserInfoController] 是 permanent 的单例，[BuildController] 也从不由任何
+  /// 页面 dispose，两者都不会随登出自动清空。换号之后它们残留的昵称、头像和
+  /// 选楼上下文会直接显示给下一个用户，其中选楼信息还会被带进新增房屋的表单。
+  /// 两条登出路径（主动点退出、token 刷新失败被动登出）都必须走这里。
+  void _resetSessionState() {
+    _userInfoRequestId++;
+    if (Get.isRegistered<UserInfoController>()) {
+      Get.find<UserInfoController>().clearUserInfo();
+    }
+    BuildController.instance().clearBuildingInfo();
   }
 
   void _onLoginSuccess(LoginSuccessEvent event) {
@@ -101,6 +119,17 @@ class _MinePageState extends State<MinePage> {
     unawaited(_loadUserInfo());
   }
 
+  void _onLogout(LogoutEvent event) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isLoggedIn = false;
+    });
+    _resetSessionState();
+  }
+
   @override
   void didUpdateWidget(covariant MinePage oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -119,30 +148,37 @@ class _MinePageState extends State<MinePage> {
 
     _isLoggedIn = isLoggedIn;
     if (!isLoggedIn) {
-      _userInfoController.clearUserInfo();
+      _resetSessionState();
     }
   }
 
   Future<void> _loadUserInfo() async {
-    if (_isLoadingUserInfo || !_isLoggedIn || tokenManager.getToken().isEmpty) {
+    if (!_isLoggedIn || tokenManager.getToken().isEmpty) {
       return;
     }
 
-    _isLoadingUserInfo = true;
+    final int requestId = ++_userInfoRequestId;
+    final int sessionVersion = tokenManager.sessionVersion;
     try {
       final userInfo = await widget.userInfoLoader();
-      if (!mounted || !_isLoggedIn || tokenManager.getToken().isEmpty) {
+      if (!mounted ||
+          requestId != _userInfoRequestId ||
+          sessionVersion != tokenManager.sessionVersion ||
+          !_isLoggedIn ||
+          tokenManager.getToken().isEmpty) {
         return;
       }
       _userInfoController.updateUser(userInfo);
     } on Object catch (error) {
-      if (!mounted || widget.activeIndex != 1 || !_isLoggedIn) {
+      if (!mounted ||
+          requestId != _userInfoRequestId ||
+          sessionVersion != tokenManager.sessionVersion ||
+          widget.activeIndex != 1 ||
+          !_isLoggedIn) {
         return;
       }
       final String msg = describeError(error, fallback: '获取用户信息失败');
       await PromptAction.showError(msg);
-    } finally {
-      _isLoadingUserInfo = false;
     }
   }
 
@@ -177,8 +213,7 @@ class _MinePageState extends State<MinePage> {
   }
 
   bool _hasLoggedInUser() {
-    final String id = _userInfoController.currentUser.id;
-    return id.isNotEmpty;
+    return _isLoggedIn && tokenManager.getToken().isNotEmpty;
   }
 
   void _refreshLoginState() {
@@ -265,7 +300,7 @@ class _MinePageState extends State<MinePage> {
       _isLoggingOut = true;
       _isLoggedIn = false;
     });
-    _userInfoController.clearUserInfo();
+    _resetSessionState();
     try {
       final bool deleted = await tokenManager.deleteToken();
       if (!deleted) {
