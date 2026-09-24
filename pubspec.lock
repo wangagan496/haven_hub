@@ -398,13 +398,11 @@ packages:
     source: hosted
     version: "0.2.2+1"
   image_picker_ohos:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      path: "packages/image_picker/image_picker_ohos"
-      ref: "br_image_picker-v1.2.1_ohos"
-      resolved-ref: "1a027ce4c1739b26356fe30556c027bfad47aa94"
-      url: "https://gitcode.com/openharmony-tpc/flutter_packages.git"
-    source: git
+      path: "third_party/image_picker_ohos"
+      relative: true
+    source: path
     version: "0.8.13+7"
   image_picker_platform_interface:
     dependency: transitive
