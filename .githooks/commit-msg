@@ -1,0 +1,25 @@
+#!/bin/sh
+# Reject assistant/authorship trailers the project did not ask for.
+#
+# Commit messages in this repository carry the author's own description of the
+# change and nothing else. Tooling that appends a signature line inflates the
+# history with a claim about how the commit was produced, which is not the
+# author's and not useful to anyone reading it later.
+#
+# Override for a single commit with: git commit --no-verify
+
+msg_file="$1"
+
+if grep -inE '^[[:space:]]*co-authored-by:.*(claude|anthropic|chatgpt|openai|copilot|gemini|cursor|windsurf|codeium|aider)' "$msg_file"; then
+  echo "commit-msg: rejected an assistant authorship trailer." >&2
+  echo "           Remove it, or pass --no-verify to commit anyway." >&2
+  exit 1
+fi
+
+if grep -inE 'generated (with|by) .*(claude|chatgpt|openai|copilot|gemini)|claude code|claude\.ai' "$msg_file"; then
+  echo "commit-msg: rejected a generated-by marker in the message." >&2
+  echo "           Remove it, or pass --no-verify to commit anyway." >&2
+  exit 1
+fi
+
+exit 0
