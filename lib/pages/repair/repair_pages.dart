@@ -38,17 +38,34 @@ class _RepairListPageState extends State<RepairListPage> {
       _isLoading = true;
       _errorMessage = null;
     });
-    try {
-      final records = await widget.loader();
-      if (!mounted) return;
-      setState(() => _records = records);
-    } on Object catch (error) {
-      final msg = describeError(error, fallback: '获取报修列表失败，请重试');
-      if (!mounted) return;
-      setState(() => _errorMessage = msg);
-      await PromptAction.showError(msg);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+
+    // 自动重试逻辑：最多重试3次
+    int retries = 0;
+    const maxRetries = 3;
+
+    while (retries < maxRetries) {
+      try {
+        final records = await widget.loader();
+        if (!mounted) return;
+        setState(() => _records = records);
+        return; // 成功了就直接返回
+      } on Object catch (error) {
+        retries++;
+        if (retries >= maxRetries) {
+          // 重试3次后还是失败，才显示错误
+          final msg = describeError(error, fallback: '获取报修列表失败，请重试');
+          if (!mounted) return;
+          setState(() => _errorMessage = msg);
+          await PromptAction.showError(msg);
+        } else {
+          // 还没达到最大重试次数，等2秒后再试
+          await Future.delayed(Duration(seconds: 2));
+        }
+      } finally {
+        if (mounted && (retries >= maxRetries || _records.isNotEmpty)) {
+          setState(() => _isLoading = false);
+        }
+      }
     }
   }
 
@@ -79,7 +96,7 @@ class _RepairListPageState extends State<RepairListPage> {
                           size: 52, color: AppColors.divider),
                       SizedBox(height: 12),
                       Center(
-                          child: Text('暂无报修记录',
+                          child: Text('还没有报修记录，点击下方按钮新增吧',
                               style: TextStyle(color: AppColors.textTertiary)))
                     ])
                   : ListView.separated(
