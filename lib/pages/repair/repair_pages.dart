@@ -16,6 +16,51 @@ import '../../utils/toast.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
 
+/// 报修状态筛选枚举
+enum RepairStatusFilter {
+  /// 全部
+  all,
+
+  /// 待处理
+  pending,
+
+  /// 处理中
+  processing,
+
+  /// 已完成
+  completed;
+
+  /// 显示文字
+  String get displayName {
+    switch (this) {
+      case RepairStatusFilter.all:
+        return '全部';
+      case RepairStatusFilter.pending:
+        return '待处理';
+      case RepairStatusFilter.processing:
+        return '处理中';
+      case RepairStatusFilter.completed:
+        return '已完成';
+    }
+  }
+
+  /// 匹配报修记录的状态
+  ///
+  /// 返回 true 表示该记录应该显示
+  bool matches(RepairRecord record) {
+    switch (this) {
+      case RepairStatusFilter.all:
+        return true;
+      case RepairStatusFilter.pending:
+        return record.status == 1;
+      case RepairStatusFilter.processing:
+        return record.status == 2;
+      case RepairStatusFilter.completed:
+        return record.status == 3;
+    }
+  }
+}
+
 class RepairListPage extends StatefulWidget {
   const RepairListPage({this.loader = getRepairListApi, super.key});
   static const String routeName = AppRoutes.repairList;
@@ -28,10 +73,31 @@ class _RepairListPageState extends State<RepairListPage> {
   // 使用统一的状态管理
   DataState<List<RepairRecord>> _state = DataState.idle();
 
+  // 当前选中的筛选条件
+  RepairStatusFilter _currentFilter = RepairStatusFilter.all;
+
+  // 缓存的过滤结果，避免每次 build 都重新过滤
+  List<RepairRecord> _cachedFilteredRecords = const [];
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+  }
+
+  /// 应用筛选逻辑，返回过滤后的列表
+  List<RepairRecord> _applyFilter() {
+    if (!_state.hasData) return const [];
+    return _state.data!.where(_currentFilter.matches).toList();
+  }
+
+  /// 切换筛选条件
+  void _changeFilter(RepairStatusFilter newFilter) {
+    if (_currentFilter == newFilter) return;
+    setState(() {
+      _currentFilter = newFilter;
+      _cachedFilteredRecords = _applyFilter();  // ← 更新缓存
+    });
   }
 
   /// 加载报修列表
@@ -56,7 +122,10 @@ class _RepairListPageState extends State<RepairListPage> {
       );
 
       if (!mounted) return;
-      setState(() => _state = DataState.success(records));
+      setState(() {
+        _state = DataState.success(records);
+        _cachedFilteredRecords = _applyFilter();  // ← 数据加载成功，更新缓存
+      });
     } on Object catch (error) {
       final msg = describeError(error, fallback: '获取报修列表失败，请重试');
       if (!mounted) return;
@@ -69,7 +138,7 @@ class _RepairListPageState extends State<RepairListPage> {
       if (!_state.hasData) {
         await PromptAction.showError(msg);
       } else {
-        showToast(msg);
+        await PromptAction.showToast(msg);
       }
     }
   }
@@ -86,6 +155,24 @@ class _RepairListPageState extends State<RepairListPage> {
         backgroundColor: AppColors.background,
         appBar: AppBar(title: const Text('我的报修')),
         body: Column(children: <Widget>[
+          // 筛选按钮行
+          Container(
+            color: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              children: RepairStatusFilter.values.map((filter) {
+                final isSelected = _currentFilter == filter;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _buildFilterChip(
+                    label: filter.displayName,
+                    isSelected: isSelected,
+                    onTap: () => _changeFilter(filter),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
           Expanded(
               child: AsyncStateView(
             isLoading: _state.isLoading,
@@ -94,22 +181,27 @@ class _RepairListPageState extends State<RepairListPage> {
             hasContent: _state.hasData,
             builder: (BuildContext context) => RefreshIndicator(
               onRefresh: _load,
-              child: _state.data!.isEmpty
-                  ? ListView(children: const <Widget>[
-                      SizedBox(height: 180),
-                      Icon(Icons.build_outlined,
+              child: _cachedFilteredRecords.isEmpty
+                  ? ListView(children: <Widget>[
+                      const SizedBox(height: 180),
+                      const Icon(Icons.build_outlined,
                           size: 52, color: AppColors.divider),
-                      SizedBox(height: 12),
+                      const SizedBox(height: 12),
                       Center(
-                          child: Text('还没有报修记录，点击下方按钮新增吧',
-                              style: TextStyle(color: AppColors.textTertiary)))
+                          child: Text(
+                        _currentFilter == RepairStatusFilter.all
+                            ? '还没有报修记录，点击下方按钮新增吧'
+                            : '没有符合条件的报修记录\n试试切换到"全部"查看',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: AppColors.textTertiary),
+                      ))
                     ])
                   : ListView.separated(
                       padding: const EdgeInsets.all(12),
-                      itemCount: _state.data!.length,
+                      itemCount: _cachedFilteredRecords.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (_, int index) {
-                        final item = _state.data![index];
+                        final item = _cachedFilteredRecords[index];
                         return Card(
                             child: ListTile(
                           title: Text(item.repairItemName.isEmpty
@@ -140,6 +232,36 @@ class _RepairListPageState extends State<RepairListPage> {
                           label: const Text('新增报修'))))),
         ]),
       );
+
+  /// 构建自定义筛选按钮
+  Widget _buildFilterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.accent : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? AppColors.accent : const Color(0xFFE4E7EC),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : AppColors.textSecondary,
+            fontSize: 14,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class RepairDetailPage extends StatefulWidget {
