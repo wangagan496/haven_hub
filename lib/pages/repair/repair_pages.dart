@@ -9,7 +9,9 @@ import '../../models/repair.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
+import '../../utils/data_state.dart';
 import '../../utils/date_utils.dart';
+import '../../utils/retry_strategy.dart';
 import '../../utils/toast.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
@@ -23,48 +25,51 @@ class RepairListPage extends StatefulWidget {
 }
 
 class _RepairListPageState extends State<RepairListPage> {
-  List<RepairRecord> _records = const <RepairRecord>[];
-  bool _isLoading = false;
-  String? _errorMessage;
+  // 使用统一的状态管理
+  DataState<List<RepairRecord>> _state = DataState.idle();
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
   }
 
-  Future<void> _load() async {
-    if (_isLoading) return;
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+  /// 加载报修列表
+  ///
+  /// [isManualRetry] 是否是用户手动点击重试按钮触发的
+  Future<void> _load({bool isManualRetry = false}) async {
+    // 如果正在加载，不重复加载
+    if (_state.isLoading) return;
 
-    // 自动重试逻辑：最多重试3次
-    int retries = 0;
-    const maxRetries = 3;
+    // 开始加载，保留旧数据
+    setState(() => _state = DataState.loading(_state.data));
 
-    while (retries < maxRetries) {
-      try {
-        final records = await widget.loader();
-        if (!mounted) return;
-        setState(() => _records = records);
-        return; // 成功了就直接返回
-      } on Object catch (error) {
-        retries++;
-        if (retries >= maxRetries) {
-          // 重试3次后还是失败，才显示错误
-          final msg = describeError(error, fallback: '获取报修列表失败，请重试');
-          if (!mounted) return;
-          setState(() => _errorMessage = msg);
-          await PromptAction.showError(msg);
-        } else {
-          // 还没达到最大重试次数，等2秒后再试
-          await Future.delayed(Duration(seconds: 2));
-        }
-      } finally {
-        if (mounted && (retries >= maxRetries || _records.isNotEmpty)) {
-          setState(() => _isLoading = false);
-        }
+    try {
+      // 使用智能重试策略加载数据
+      final records = await retryAsync(
+        action: () => widget.loader(),
+        strategy: isManualRetry ? RetryStrategy.manual : RetryStrategy.auto,
+        onRetry: (attempt, error) {
+          // 调试日志：记录重试次数和错误
+          print('[RepairList] 第 $attempt 次重试: $error');
+        },
+      );
+
+      if (!mounted) return;
+      setState(() => _state = DataState.success(records));
+    } on Object catch (error) {
+      final msg = describeError(error, fallback: '获取报修列表失败，请重试');
+      if (!mounted) return;
+
+      // 加载失败，保留旧数据
+      setState(() => _state = DataState.error(msg, _state.data));
+
+      // 如果是第一次加载失败（没有旧数据），显示错误提示
+      // 如果是刷新失败（有旧数据），只在底部toast提示
+      if (!_state.hasData) {
+        await PromptAction.showError(msg);
+      } else {
+        showToast(msg);
       }
     }
   }
@@ -83,13 +88,13 @@ class _RepairListPageState extends State<RepairListPage> {
         body: Column(children: <Widget>[
           Expanded(
               child: AsyncStateView(
-            isLoading: _isLoading,
-            errorMessage: _errorMessage,
-            onRetry: _load,
-            hasContent: _records.isNotEmpty,
+            isLoading: _state.isLoading,
+            errorMessage: _state.errorMessage,
+            onRetry: () => _load(isManualRetry: true), // 手动重试标记
+            hasContent: _state.hasData,
             builder: (BuildContext context) => RefreshIndicator(
               onRefresh: _load,
-              child: _records.isEmpty
+              child: _state.data!.isEmpty
                   ? ListView(children: const <Widget>[
                       SizedBox(height: 180),
                       Icon(Icons.build_outlined,
@@ -101,10 +106,10 @@ class _RepairListPageState extends State<RepairListPage> {
                     ])
                   : ListView.separated(
                       padding: const EdgeInsets.all(12),
-                      itemCount: _records.length,
+                      itemCount: _state.data!.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (_, int index) {
-                        final item = _records[index];
+                        final item = _state.data![index];
                         return Card(
                             child: ListTile(
                           title: Text(item.repairItemName.isEmpty

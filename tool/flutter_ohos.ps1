@@ -19,7 +19,7 @@ $dartDefinesPath = if ([string]::IsNullOrWhiteSpace($DartDefinesFile)) {
 $devecoHome = if ($env:DEVECO_HOME) {
   $env:DEVECO_HOME
 } else {
-  'C:\Huawei\DevEco Studio'
+  'C:\Program Files\Huawei\DevEco Studio'
 }
 
 function Get-DartDefineValue {
