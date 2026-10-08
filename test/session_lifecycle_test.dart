@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:haven_hub/utils/token_storage.dart';
@@ -21,12 +23,14 @@ class _FakeTokenStorage implements TokenStorage {
 
   int clearCalls = 0;
   int invalidateCalls = 0;
+  Future<void> Function()? beforeWrite;
 
   @override
   Future<void> load() async {}
 
   @override
   Future<bool> write(String token, String refreshToken) async {
+    await beforeWrite?.call();
     this.token = token;
     this.refreshToken = refreshToken;
     return true;
@@ -50,6 +54,74 @@ class _FakeTokenStorage implements TokenStorage {
 }
 
 void main() {
+  test('queued old refresh cannot overwrite a newer login', () async {
+    final _FakeTokenStorage storage =
+        _FakeTokenStorage(token: 'a', refreshToken: 'ra');
+    final TokenManager manager = TokenManager(storage: storage);
+    final int oldSessionId = manager.sessionId;
+    final int oldVersion = manager.sessionVersion;
+    final Completer<void> writing = Completer<void>();
+    final Completer<void> release = Completer<void>();
+    storage.beforeWrite = () async {
+      if (!writing.isCompleted) writing.complete();
+      await release.future;
+    };
+    final Future<bool> login = manager.setToken('b', refreshToken: 'rb');
+    await writing.future;
+    final Future<bool> staleRefresh = manager.setRefreshedToken('refreshed-a',
+        refreshToken: 'refreshed-ra',
+        expectedSessionId: oldSessionId,
+        expectedSessionVersion: oldVersion);
+    release.complete();
+    expect(await login, isTrue);
+    expect(await staleRefresh, isFalse);
+    expect(manager.getToken(), 'b');
+    expect(manager.getRefreshToken(), 'rb');
+  });
+
+  test('queued old cleanup cannot erase a newer login', () async {
+    final _FakeTokenStorage storage =
+        _FakeTokenStorage(token: 'a', refreshToken: 'ra');
+    final TokenManager manager = TokenManager(storage: storage);
+    final int oldSessionId = manager.sessionId;
+    final Completer<void> writing = Completer<void>();
+    final Completer<void> release = Completer<void>();
+    storage.beforeWrite = () async {
+      if (!writing.isCompleted) writing.complete();
+      await release.future;
+    };
+    final Future<bool> login = manager.setToken('b', refreshToken: 'rb');
+    await writing.future;
+    final Future<bool> oldCleanup =
+        manager.deleteToken(expectedSessionId: oldSessionId);
+    release.complete();
+    expect(await login, isTrue);
+    expect(await oldCleanup, isFalse);
+    expect(manager.getToken(), 'b');
+    expect(storage.clearCalls, 0);
+  });
+
+  test('invalidation while saving credentials cannot restore local login',
+      () async {
+    final _FakeTokenStorage storage =
+        _FakeTokenStorage(token: 'a', refreshToken: 'ra');
+    final TokenManager manager = TokenManager(storage: storage);
+    final Completer<void> writing = Completer<void>();
+    final Completer<void> release = Completer<void>();
+    storage.beforeWrite = () async {
+      writing.complete();
+      await release.future;
+    };
+    final Future<bool> refresh =
+        manager.setRefreshedToken('new-a', refreshToken: 'new-ra');
+    await writing.future;
+    manager.invalidateLocalSession();
+    release.complete();
+    expect(await refresh, isFalse);
+    expect(manager.getToken(), isEmpty);
+    expect(manager.getRefreshToken(), isEmpty);
+  });
+
   group('TokenManager.deleteToken', () {
     test('clears stored credentials and reports success', () async {
       final _FakeTokenStorage storage = _FakeTokenStorage(
@@ -89,6 +161,20 @@ void main() {
       // 版本号代表存储中凭证的代次。清理失败时存储内容没变，推进它会让正在
       // 进行的重放判定以为凭证已经换过一代。
       expect(manager.sessionVersion, before);
+    });
+
+    test('failed disk cleanup still ends the in-memory session', () async {
+      final _FakeTokenStorage storage = _FakeTokenStorage(
+        token: 'token-a',
+        refreshToken: 'refresh-a',
+        clearSucceeds: false,
+      );
+      final TokenManager manager = TokenManager(storage: storage);
+      final int sessionId = manager.sessionId;
+      expect(await manager.deleteToken(), isFalse);
+      expect(manager.sessionId, sessionId + 1);
+      expect(manager.getToken(), isEmpty);
+      expect(manager.refreshSessionVersion, isNull);
     });
 
     test('advances the session version when clearing succeeds', () async {

@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart';
+import 'app_exception.dart';
+import 'token_manager.dart';
 
 /// 重试策略配置
 class RetryStrategy {
@@ -16,7 +17,7 @@ class RetryStrategy {
   /// 自动加载策略：渐进式延迟 [0ms, 500ms, 1s, 2s]
   ///
   /// 适用于：页面初始化、自动刷新
-  /// 总耗时：最多 3.5秒
+  /// 累计等待：最多 3.5 秒，不含请求耗时
   static const auto = RetryStrategy._(
     delays: [0, 500, 1000, 2000],
     name: 'auto',
@@ -25,7 +26,7 @@ class RetryStrategy {
   /// 手动重试策略：快速延迟 [0ms, 1s, 2s]
   ///
   /// 适用于：用户点击重试按钮
-  /// 总耗时：最多 3秒
+  /// 累计等待：最多 3 秒，不含请求耗时
   /// 原因：用户在等待，需要更快的反馈
   static const manual = RetryStrategy._(
     delays: [0, 1000, 2000],
@@ -51,31 +52,14 @@ class RetryStrategy {
 ///
 /// 用于决定是否应该重试
 extension ErrorTypeChecker on Object {
-  /// 是否是网络未连接错误
-  ///
-  /// 这种错误不应该重试，因为重试也不会成功
-  bool get isNoConnection {
-    final msg = toString().toLowerCase();
-    return msg.contains('network') && msg.contains('unavailable') ||
-        msg.contains('no connection') ||
-        msg.contains('connection failed') ||
-        msg.contains('unreachable');
-  }
-
   /// 是否是超时或临时错误
   ///
   /// 这种错误可以重试
   bool get isRetryable {
-    if (isNoConnection) return false;
-
-    final msg = toString().toLowerCase();
-    return msg.contains('timeout') ||
-        msg.contains('timed out') ||
-        msg.contains('connection reset') ||
-        msg.contains('temporarily unavailable') ||
-        msg.contains('503') ||
-        msg.contains('502') ||
-        msg.contains('504');
+    final error = this;
+    if (error is! NetworkException) return false;
+    return error.isTimeout ||
+        const <int>{502, 503, 504}.contains(error.statusCode);
   }
 
   /// 是否应该立即失败（不重试）
@@ -89,54 +73,44 @@ extension ErrorTypeChecker on Object {
 /// final result = await retryAsync(
 ///   action: () => getRepairListApi(),
 ///   strategy: RetryStrategy.auto,
-///   onRetry: (attempt, error) => print('第 $attempt 次重试: $error'),
 /// );
 /// ```
+/// [shouldRetry] 在失败后及等待结束后检查；返回 false 时停止后续请求。
+/// 会话或凭证更新后也停止整个操作；用户手动重试会捕获新的会话快照。
 Future<T> retryAsync<T>({
   required Future<T> Function() action,
   RetryStrategy strategy = RetryStrategy.auto,
   void Function(int attempt, Object error)? onRetry,
+  bool Function()? shouldRetry,
+  TokenManager? tokens,
 }) async {
-  Object? lastError;
-
+  final TokenManager session = tokens ?? tokenManager;
+  final int sessionId = session.sessionId;
+  final int sessionVersion = session.sessionVersion;
+  bool sessionChanged() =>
+      session.sessionId != sessionId ||
+      session.sessionVersion != sessionVersion;
   for (int i = 0; i < strategy.maxAttempts; i++) {
-    // 如果不是第一次，先延迟
-    if (i > 0) {
-      final delay = strategy.getDelay(i);
-      if (delay > 0) {
-        await Future.delayed(Duration(milliseconds: delay));
-      }
-      onRetry?.call(i, lastError!);
-    }
-
     try {
+      if (sessionChanged()) throw const SessionChangedException();
       return await action();
-    } catch (error) {
-      lastError = error;
-
-      // 如果应该快速失败，不继续重试
-      if (error.shouldFailFast) {
-        if (kDebugMode) {
-          print('[RetryStrategy] 快速失败: $error');
-        }
+    } on Object catch (error) {
+      if (sessionChanged()) throw const SessionChangedException();
+      if (error.shouldFailFast ||
+          i == strategy.maxAttempts - 1 ||
+          !(shouldRetry?.call() ?? true)) {
         rethrow;
       }
-
-      // 如果是最后一次尝试，抛出错误
-      if (i == strategy.maxAttempts - 1) {
-        if (kDebugMode) {
-          print('[RetryStrategy] 重试 ${i + 1} 次后失败: $error');
-        }
+      await Future<void>.delayed(
+          Duration(milliseconds: strategy.getDelay(i + 1)));
+      if (sessionChanged()) throw const SessionChangedException();
+      if (!(shouldRetry?.call() ?? true)) {
         rethrow;
       }
-
-      // 否则继续下一次重试
-      if (kDebugMode) {
-        print('[RetryStrategy] 第 ${i + 1} 次尝试失败，将在 ${strategy.getDelay(i + 1)}ms 后重试');
-      }
+      onRetry?.call(i + 1, error);
     }
   }
 
   // 理论上不会到这里，但为了类型安全
-  throw lastError!;
+  throw StateError('Retry strategy must allow at least one attempt');
 }

@@ -8,7 +8,8 @@
 /// throw const NetworkException('未授权', statusCode: 401);
 /// ```
 class NetworkException implements Exception {
-  const NetworkException(this.message, {this.statusCode});
+  const NetworkException(this.message,
+      {this.statusCode, this.isTimeout = false});
 
   /// 用户友好的错误描述。
   final String message;
@@ -16,8 +17,16 @@ class NetworkException implements Exception {
   /// HTTP 状态码；网络连接类错误（超时、断网等）为 null。
   final int? statusCode;
 
+  /// 保留底层超时类型，重试判断不依赖提示文案。
+  final bool isTimeout;
+
   @override
   String toString() => 'NetworkException($statusCode): $message';
+}
+
+/// 会话或凭证发生变化，旧操作停止；不表示当前登录已经过期。
+class SessionChangedException extends NetworkException {
+  const SessionChangedException() : super('登录状态或凭证已更新，本次请求已停止，请手动重试');
 }
 
 /// 业务层错误：HTTP 200 但服务端 code != 10000。

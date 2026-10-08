@@ -8,12 +8,13 @@ class TokenManager {
   Future<void>? _initialization;
   int _sessionVersion = 0;
   int? _refreshSessionVersion;
+  Future<void> _pendingMutation = Future<void>.value();
 
   /// 会话身份。只在**登录、登出**时变化，刷新不动它。
   ///
   /// 与 [sessionVersion] 分开是必要的：版本号回答「凭证换到第几代了」，这个
   /// 回答「现在是谁的会话」。两者混用会让「同一会话内刷新两次」和「换了账号
-  /// 又刷新」变得无法区分——前者该重放，后者绝不能重放。
+  /// 又刷新」变得无法区分。两者都停止旧请求，但只有后者换了账号身份。
   int _sessionId = 0;
 
   int get sessionVersion => _sessionVersion;
@@ -59,15 +60,36 @@ class TokenManager {
     String token, {
     String refreshToken = '',
   }) {
-    return _writeToken(token, refreshToken, fromRefresh: false);
+    return _serializeMutation(
+      () => _writeToken(token, refreshToken, fromRefresh: false),
+    );
   }
 
   /// Stores credentials returned by the refresh endpoint.
   Future<bool> setRefreshedToken(
     String token, {
     required String refreshToken,
+    int? expectedSessionId,
+    int? expectedSessionVersion,
   }) {
-    return _writeToken(token, refreshToken, fromRefresh: true);
+    return _serializeMutation(() async {
+      if ((expectedSessionId != null && _sessionId != expectedSessionId) ||
+          (expectedSessionVersion != null &&
+              _sessionVersion != expectedSessionVersion)) {
+        return false;
+      }
+      return _writeToken(token, refreshToken, fromRefresh: true);
+    });
+  }
+
+  // 串行落盘，避免旧刷新/清理与新登录的两组凭证交错写入。
+  Future<bool> _serializeMutation(Future<bool> Function() action) {
+    final Future<bool> operation = _pendingMutation.then((_) => action());
+    _pendingMutation = operation.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return operation;
   }
 
   Future<bool> _writeToken(
@@ -75,7 +97,13 @@ class TokenManager {
     String refreshToken, {
     required bool fromRefresh,
   }) async {
+    final int writingSessionId = _sessionId;
     final bool saved = await _storage.write(token, refreshToken);
+    if (_sessionId != writingSessionId) {
+      // 等待落盘期间内存会话被作废，不能让迟到的写入恢复登录态。
+      _storage.invalidate();
+      return false;
+    }
     if (saved) {
       _sessionVersion++;
       _refreshSessionVersion = fromRefresh ? _sessionVersion : null;
@@ -92,16 +120,22 @@ class TokenManager {
   /// 返回 false 表示磁盘上的凭证**可能仍然存在**：此时内存已被清空，但重启后
   /// 它们会被重新读回。调用方必须处理这个结果，不能当作登出已完成。
   ///
-  /// 会话版本只在真正清除成功时推进。版本号代表存储中凭证的代次，清除失败
-  /// 时存储内容未变，推进它会让并发中的重放判定以为「凭证已经换过一代」。
-  Future<bool> deleteToken() async {
-    final bool cleared = await _storage.clear();
-    if (cleared) {
-      _sessionVersion++;
-      _refreshSessionVersion = null;
+  /// 会话版本只在落盘清理成功时推进；会话 ID 在内存凭证作废时立即推进。
+  /// 即使磁盘清理失败，旧请求也不能继续按已经结束的内存会话自动重试。
+  Future<bool> deleteToken({int? expectedSessionId}) {
+    return _serializeMutation(() async {
+      if (expectedSessionId != null && _sessionId != expectedSessionId) {
+        return false;
+      }
+      _storage.invalidate();
       _sessionId++;
-    }
-    return cleared;
+      _refreshSessionVersion = null;
+      final bool cleared = await _storage.clear();
+      if (cleared) {
+        _sessionVersion++;
+      }
+      return cleared;
+    });
   }
 
   /// 只让本进程立刻失去可用凭证，不触碰持久化存储，也不推进会话版本。

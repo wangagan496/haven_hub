@@ -67,6 +67,20 @@ class RequestDio {
           dio.Response<dynamic> response,
           dio.ResponseInterceptorHandler handler,
         ) {
+          final int? requestSessionId =
+              response.requestOptions.extra['sessionId'] as int?;
+          if (response.requestOptions.extra['skipAuthorization'] != true &&
+              requestSessionId != null &&
+              requestSessionId != _tokens.sessionId) {
+            const NetworkException appError = SessionChangedException();
+            handler.reject(dio.DioException(
+              requestOptions: response.requestOptions,
+              response: response,
+              error: appError,
+              message: appError.message,
+            ));
+            return;
+          }
           handler.next(response);
         },
         // 错误拦截器：将所有网络/HTTP 错误统一转换为 NetworkException，
@@ -75,93 +89,39 @@ class RequestDio {
           dio.DioException error,
           dio.ErrorInterceptorHandler handler,
         ) async {
-          final bool isRetry = error.requestOptions.extra['isRetry'] == true;
-
-          if (error.response?.statusCode == 401 &&
-              !isRetry &&
-              error.requestOptions.extra['skipAuthorization'] != true) {
-            final String refreshToken = _tokens.getRefreshToken();
-            final int sessionVersion = _tokens.sessionVersion;
+          NetworkException? stoppedError;
+          if (error.requestOptions.extra['skipAuthorization'] != true) {
             final int requestSessionVersion =
                 error.requestOptions.extra['sessionVersion'] as int? ??
-                    sessionVersion;
+                    _tokens.sessionVersion;
             final int requestSessionId =
                 error.requestOptions.extra['sessionId'] as int? ??
                     _tokens.sessionId;
-            final String failedToken =
-                error.requestOptions.headers['Authorization']?.toString() ?? '';
-            final String currentToken = _tokens.getToken();
-            final bool tokenChanged = failedToken.isNotEmpty &&
-                currentToken.isNotEmpty &&
-                failedToken != 'Bearer $currentToken';
-            bool shouldLogout = refreshToken.isEmpty;
+            bool sessionChanged() =>
+                _tokens.sessionId != requestSessionId ||
+                _tokens.sessionVersion != requestSessionVersion;
 
-            if (tokenChanged) {
-              // 三个条件缺一不可：
-              //
-              // 1. 同一个会话。会话 ID 只在登录/登出时变，刷新不动它。这一条
-              //    挡住跨账号重放——A 的请求在 B 登录并刷新之后，版本号是
-              //    「推进过」的，只比对版本会让它带着 B 的凭证重放出去。
-              // 2. 凭证确实换过代。用「不等于原值」而不是「恰好 +1」：并发
-              //    的刷新失败重试会把版本推进不止一次，+1 会把本该放行的常规
-              //    重放挡掉，让偶发的 401 直接冒到用户面前。
-              // 3. 这次推进来自刷新，而不是别的写入。
-              if (_tokens.sessionId == requestSessionId &&
-                  _tokens.sessionVersion != requestSessionVersion &&
-                  _tokens.refreshSessionVersion == _tokens.sessionVersion) {
-                // 请求在飞行途中凭证已经被换掉（多半是并发的刷新已经完成），
-                // 用当前凭证直接重放即可，不必再刷一次。
-                try {
-                  final dio.Response<dynamic> retryResponse = await _dio.fetch(
-                    _createRetryRequest(
-                      error.requestOptions,
-                      token: currentToken,
-                    ),
+            if (sessionChanged()) {
+              stoppedError = const SessionChangedException();
+            } else if (error.response?.statusCode == 401) {
+              final String refreshToken = _tokens.getRefreshToken();
+              final bool refreshSuccess = refreshToken.isNotEmpty &&
+                  await _tryRefreshToken(
+                    refreshToken,
+                    sessionId: requestSessionId,
+                    sessionVersion: requestSessionVersion,
                   );
-                  return handler.resolve(retryResponse);
-                } on dio.DioException catch (e) {
-                  error = e;
-                  shouldLogout = e.response?.statusCode == 401 &&
-                      _tokens.sessionVersion == sessionVersion;
-                }
+              if (sessionChanged()) {
+                // 刷新成功只更新凭证，不重放任何旧 GET/POST/PUT/DELETE。
+                // 换账号时同样停止，且绝不清理新账号的登录态。
+                stoppedError = const SessionChangedException();
+              } else if (!refreshSuccess) {
+                await _clearSessionAndNotify();
               }
-            } else if (refreshToken.isNotEmpty) {
-              final bool refreshSuccess = await _tryRefreshToken(
-                refreshToken,
-                sessionVersion: sessionVersion,
-              );
-              // 只有刷新确实成功、且期间凭证真的换了代才重放。走这条路时请求
-              // 本身没带上可用凭证变化，所以不比对会话 ID——那是上面那条分支
-              // 的事；这里的凭证就是本次刷新刚写进去的。
-              final String refreshedToken = _tokens.getToken();
-              if (refreshSuccess &&
-                  refreshedToken.isNotEmpty &&
-                  _tokens.sessionVersion != sessionVersion) {
-                try {
-                  final dio.Response<dynamic> retryResponse = await _dio.fetch(
-                    _createRetryRequest(
-                      error.requestOptions,
-                      token: refreshedToken,
-                    ),
-                  );
-                  return handler.resolve(retryResponse);
-                } on dio.DioException catch (e) {
-                  error = e;
-                  shouldLogout = e.response?.statusCode == 401 &&
-                      _tokens.sessionVersion != sessionVersion;
-                }
-              } else {
-                shouldLogout = _tokens.sessionVersion == sessionVersion &&
-                    _tokens.getRefreshToken() == refreshToken;
-              }
-            }
-
-            if (shouldLogout) {
-              await _clearSessionAndNotify();
             }
           }
 
-          final NetworkException appError = _mapDioError(error);
+          final NetworkException appError = stoppedError ?? _mapDioError(error);
           handler.reject(
             dio.DioException(
               requestOptions: error.requestOptions,
@@ -180,10 +140,12 @@ class RequestDio {
   final dio.Dio _dio;
   final RefreshDioFactory _refreshDioFactory;
 
-  /// 凭证来源。构造时可替换，测试据此驱动「401 → 刷新 → 重放」这条链路，
+  /// 凭证来源。构造时可替换，测试据此驱动「401 → 刷新 → 停止」这条链路，
   /// 不必去改全局单例。
   final TokenManager _tokens;
   Future<bool>? _refreshTokenFuture;
+  int? _refreshSessionId;
+  int? _refreshSessionVersion;
 
   static void _configureDio(dio.Dio client) {
     client.options
@@ -292,18 +254,15 @@ class RequestDio {
 
     // 逐段处理原始 query，而不是走 queryParameters 映射：映射会把重复键合并，
     // 也会让所有值经过一次 encode，`***` 就变成 `%2A%2A%2A` 了。
-    final String query = uri.query
-        .split('&')
-        .map((String segment) {
-          final int separator = segment.indexOf('=');
-          if (separator < 0) return segment;
-          final String rawKey = segment.substring(0, separator);
-          final String decodedKey = Uri.decodeQueryComponent(rawKey);
-          return _isSensitiveLogKey(decodedKey, requestSide: true)
-              ? '$rawKey=***'
-              : segment;
-        })
-        .join('&');
+    final String query = uri.query.split('&').map((String segment) {
+      final int separator = segment.indexOf('=');
+      if (separator < 0) return segment;
+      final String rawKey = segment.substring(0, separator);
+      final String decodedKey = Uri.decodeQueryComponent(rawKey);
+      return _isSensitiveLogKey(decodedKey, requestSide: true)
+          ? '$rawKey=***'
+          : segment;
+    }).join('&');
     return uri.replace(query: query);
   }
 
@@ -358,8 +317,7 @@ class RequestDio {
     required bool requestSide,
     int depth = 0,
   }) {
-    final String normalized =
-        key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
+    final String normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
     if (_sensitiveLogKeys.contains(normalized)) return true;
     for (final String fragment in _sensitiveLogKeyFragments) {
       if (normalized.contains(fragment)) return true;
@@ -372,8 +330,7 @@ class RequestDio {
     // 根值本身以 depth 0 进入，它的直接子键因此是 depth 1——那正是响应信封
     // （`{"code":..., "data":...}`）那一层，`code` 在那里是业务状态码，要留。
     // 再往里（`data.code`、`data.verificationCode`）才是验证码，depth ≥ 2。
-    final bool isCodeLike =
-        normalized == 'code' || normalized.endsWith('code');
+    final bool isCodeLike = normalized == 'code' || normalized.endsWith('code');
     if (isCodeLike && (requestSide || depth > 1)) return true;
     return false;
   }
@@ -401,56 +358,40 @@ class RequestDio {
     return log;
   }
 
-  /// 用在 [token] 下的凭证重建一次请求。
-  ///
-  /// [token] 由调用处显式传入，重放不自己去读全局凭证：重放的前提是「凭证
-  /// 确实已经更新」，而调用处正好知道这一点。若这里隐式读取，刷新失败却仍
-  /// 走到重放分支时，就会把当前 token（可能是刚换上的另一个账号的）套到旧
-  /// 请求体上重发。
-  dio.RequestOptions _createRetryRequest(
-    dio.RequestOptions requestOptions, {
-    required String token,
-  }) {
-    final dynamic requestData = requestOptions.data;
-    final dynamic retryData =
-        requestData is dio.FormData ? requestData.clone() : requestData;
-    return requestOptions.copyWith(
-      data: retryData,
-      headers: <String, dynamic>{
-        ...requestOptions.headers,
-        'Authorization': 'Bearer $token',
-      },
-      extra: <String, dynamic>{
-        ...requestOptions.extra,
-        'isRetry': true,
-      },
-    );
-  }
-
   Future<void> _clearSessionAndNotify() async {
     // 被动登出（凭证已失效）不因为磁盘没删干净就把用户留在原地：先把内存
     // 凭证作废，界面必须退出登录态，磁盘残留留待下次登录覆盖。
     _tokens.invalidateLocalSession();
+    final int logoutSessionId = _tokens.sessionId;
     try {
-      await _tokens.deleteToken();
+      await _tokens.deleteToken(expectedSessionId: logoutSessionId);
     } on Object {
       // 即使本地持久化清理失败，也必须通知界面退出当前登录态。
     }
-    eventBus.fire(const LogoutEvent());
+    if (_tokens.sessionId == logoutSessionId + 1 &&
+        _tokens.getToken().isEmpty) {
+      eventBus.fire(const LogoutEvent());
+    }
   }
 
   Future<bool> _tryRefreshToken(
     String refreshToken, {
+    required int sessionId,
     required int sessionVersion,
   }) {
-    if (_refreshTokenFuture != null) {
+    if (_refreshTokenFuture != null &&
+        _refreshSessionId == sessionId &&
+        _refreshSessionVersion == sessionVersion) {
       return _refreshTokenFuture!;
     }
 
+    _refreshSessionId = sessionId;
+    _refreshSessionVersion = sessionVersion;
     Future<bool>? refresh;
     refresh = _refreshTokenFuture = () async {
+      dio.Dio? tokenDio;
       try {
-        final dio.Dio tokenDio = _refreshDioFactory();
+        tokenDio = _refreshDioFactory();
         _configureDio(tokenDio);
         final dio.Response<dynamic> response = await tokenDio.post<dynamic>(
           HttpPath.refreshToken,
@@ -472,6 +413,7 @@ class RequestDio {
                   data['refreshToken']?.toString() ?? '';
               if (newToken.isEmpty ||
                   newRefreshToken.isEmpty ||
+                  _tokens.sessionId != sessionId ||
                   _tokens.sessionVersion != sessionVersion ||
                   _tokens.getRefreshToken() != refreshToken) {
                 return false;
@@ -479,11 +421,17 @@ class RequestDio {
               final bool saved = await _tokens.setRefreshedToken(
                 newToken,
                 refreshToken: newRefreshToken,
+                expectedSessionId: sessionId,
+                expectedSessionVersion: sessionVersion,
               );
-              if (saved) {
+              if (saved &&
+                  _tokens.sessionId == sessionId &&
+                  _tokens.sessionVersion == sessionVersion + 1 &&
+                  _tokens.getToken() == newToken) {
                 eventBus.fire(const RefreshEvent());
+                return true;
               }
-              return saved;
+              return false;
             }
           }
         }
@@ -491,11 +439,12 @@ class RequestDio {
       } on Object catch (_) {
         return false;
       } finally {
-        // 只清掉自己的那次。finally 在返回值送达调用方之前执行，直接置空会
-        // 留下一个窗口：已经在 await 这次刷新的调用方还没醒，新来的 401 却
-        // 看到「当前没有刷新在进行」，于是并发发起第二次刷新。
+        tokenDio?.close(force: true);
+        // 换会话后可以有新刷新；迟到的 finally 只清理自己的 Future。
         if (identical(_refreshTokenFuture, refresh)) {
           _refreshTokenFuture = null;
+          _refreshSessionId = null;
+          _refreshSessionVersion = null;
         }
       }
     }();
@@ -507,13 +456,13 @@ class RequestDio {
   static NetworkException _mapDioError(dio.DioException error) {
     switch (error.type) {
       case dio.DioExceptionType.connectionTimeout:
-        return const NetworkException('连接服务器超时，请检查网络');
+        return const NetworkException('连接服务器超时，请检查网络', isTimeout: true);
       case dio.DioExceptionType.sendTimeout:
-        return const NetworkException('数据发送超时，请检查网络');
+        return const NetworkException('数据发送超时，请检查网络', isTimeout: true);
       case dio.DioExceptionType.receiveTimeout:
-        return const NetworkException('数据接收超时，请检查网络');
+        return const NetworkException('数据接收超时，请检查网络', isTimeout: true);
       case dio.DioExceptionType.transformTimeout:
-        return const NetworkException('响应数据解析超时，请稍后重试');
+        return const NetworkException('响应数据解析超时，请稍后重试', isTimeout: true);
       case dio.DioExceptionType.connectionError:
         return const NetworkException('网络连接失败，请检查网络设置');
       case dio.DioExceptionType.badCertificate:

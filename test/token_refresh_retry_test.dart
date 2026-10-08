@@ -26,6 +26,7 @@ class _RecordingAdapter implements HttpClientAdapter {
 
   final List<String?> authorizationHeaders = <String?>[];
   final List<String> paths = <String>[];
+  final List<String> methods = <String>[];
 
   @override
   Future<ResponseBody> fetch(
@@ -34,6 +35,7 @@ class _RecordingAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     paths.add(options.path);
+    methods.add(options.method);
     authorizationHeaders.add(options.headers['Authorization']?.toString());
     final int index = paths.length - 1;
     await onFetch?.call(index);
@@ -103,7 +105,8 @@ void main() {
     tokens = TokenManager(storage: storage);
   });
 
-  test('replay after refresh carries the refreshed token', () async {
+  test('refresh keeps login but stops the old request until manual retry',
+      () async {
     final _RecordingAdapter business =
         _RecordingAdapter(<ResponseBody Function()>[
       () => _json(<String, dynamic>{'code': 401}, status: 401),
@@ -130,14 +133,22 @@ void main() {
       tokens: tokens,
     );
 
-    final dynamic data = await client.get('userInfo');
-
-    expect(data, <String, dynamic>{'ok': true});
-    expect(business.paths.length, 2, reason: '首次 401 后应重放一次');
+    await expectLater(
+      client.get('userInfo'),
+      throwsA(isA<NetworkException>().having(
+        (error) => error.message,
+        'message',
+        isNot(contains('登录已过期')),
+      )),
+    );
+    expect(business.paths.length, 1, reason: '刷新后旧请求不自动重放');
     expect(business.authorizationHeaders.first, 'Bearer old-token');
-    // 关键：重放带的是刷新后的凭证，不是重放时才去读的旧值。
-    expect(business.authorizationHeaders.last, 'Bearer new-token');
     expect(tokens.getToken(), 'new-token');
+    expect(tokens.getRefreshToken(), 'new-refresh');
+    final dynamic data = await client.get('userInfo');
+    expect(data, <String, dynamic>{'ok': true});
+    expect(business.authorizationHeaders.last, 'Bearer new-token');
+    expect(refresh.paths, hasLength(1));
 
     dio.close();
   });
@@ -171,7 +182,7 @@ void main() {
     dio.close();
   });
 
-  test('a request whose token was already replaced replays without refreshing',
+  test('a request whose token was already replaced stops without refreshing',
       () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -204,21 +215,18 @@ void main() {
       tokens: tokens,
     );
 
-    final dynamic data = await client.get('userInfo');
-
-    expect(data, <String, dynamic>{'ok': true});
+    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
+    expect(business.paths, hasLength(1));
     expect(business.authorizationHeaders.first, 'Bearer old-token');
     // 凭证已经是新的了，不该再刷一次。
     expect(refresh.paths, isEmpty);
-    expect(business.authorizationHeaders.last, 'Bearer new-token');
+    expect(tokens.getToken(), 'new-token');
 
     dio.close();
   });
 
-  // 版本号推进不止一次时仍然要重放。并发的刷新失败重试会各写一次凭证，把
-  // 版本从 1 推到 3。若判定要求「恰好 +1」，这种请求会被判成不可重放，于
-  // 是一次偶发的 401 直接冒到用户面前——明明手上已经有一份可用的新凭证。
-  test('replays when concurrent refreshes advanced the version more than once',
+  // 同一会话更新一次或多次凭证，都应停止旧请求。
+  test('stops when concurrent refreshes advanced the version more than once',
       () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -255,13 +263,12 @@ void main() {
       tokens: tokens,
     );
 
-    final dynamic data = await client.get('userInfo');
-
-    expect(data, <String, dynamic>{'ok': true});
+    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
+    expect(business.paths, hasLength(1));
     expect(business.authorizationHeaders.first, 'Bearer old-token');
     // 凭证已经是最新的了，不该再刷一次。
     expect(refresh.paths, isEmpty);
-    expect(business.authorizationHeaders.last, 'Bearer second-new-token');
+    expect(tokens.getToken(), 'second-new-token');
 
     dio.close();
   });
@@ -396,5 +403,234 @@ void main() {
     expect(tokens.getToken(), 'new-login-token');
 
     dio.close();
+  });
+
+  for (final String method in <String>['POST', 'PUT', 'DELETE']) {
+    test('$method is sent once even when token refresh succeeds', () async {
+      final _RecordingAdapter business = _RecordingAdapter(
+        <ResponseBody Function()>[
+          () => _json(<String, dynamic>{'code': 401}, status: 401),
+        ],
+      );
+      final _RecordingAdapter refresh = _RecordingAdapter(
+        <ResponseBody Function()>[
+          () => _json(<String, dynamic>{
+                'code': 10000,
+                'data': <String, dynamic>{
+                  'token': 'new-token',
+                  'refreshToken': 'new-refresh'
+                },
+              }),
+        ],
+      );
+      final Dio dio = Dio()..httpClientAdapter = business;
+      addTearDown(() => dio.close(force: true));
+      final RequestDio client = RequestDio(
+        client: dio,
+        tokens: tokens,
+        refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      );
+      final Future<dynamic> request = switch (method) {
+        'POST' =>
+          client.post('repair', data: <String, String>{'description': 'test'}),
+        'PUT' => client.put('repair/1'),
+        _ => client.delete('repair/1'),
+      };
+      await expectLater(request, throwsA(isA<NetworkException>()));
+      expect(business.methods, <String>[method]);
+      expect(refresh.paths, hasLength(1));
+      expect(tokens.getToken(), 'new-token');
+    });
+  }
+
+  test('concurrent 401 responses share one refresh and neither is replayed',
+      () async {
+    final Completer<void> refreshing = Completer<void>();
+    final Completer<void> releaseRefresh = Completer<void>();
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+      ],
+    );
+    final _RecordingAdapter refresh = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{
+                'token': 'new-token',
+                'refreshToken': 'new-refresh'
+              },
+            }),
+      ],
+      onFetch: (_) async {
+        if (!refreshing.isCompleted) refreshing.complete();
+        await releaseRefresh.future;
+      },
+    );
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(
+      client: dio,
+      tokens: tokens,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+    );
+    final Future<void> first =
+        expectLater(client.get('repair'), throwsA(isA<NetworkException>()));
+    final Future<void> second =
+        expectLater(client.post('repair'), throwsA(isA<NetworkException>()));
+    await refreshing.future;
+    releaseRefresh.complete();
+    await Future.wait(<Future<void>>[first, second]);
+    expect(business.methods, <String>['GET', 'POST']);
+    expect(refresh.paths, hasLength(1));
+    expect(tokens.getToken(), 'new-token');
+  });
+
+  test('a late failed refresh cannot log out the new account', () async {
+    int logouts = 0;
+    final StreamSubscription<LogoutEvent> subscription =
+        eventBus.on<LogoutEvent>().listen((_) => logouts++);
+    addTearDown(subscription.cancel);
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401)
+      ],
+    );
+    final _RecordingAdapter refresh = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 500}, status: 500)
+      ],
+      onFetch: (_) =>
+          tokens.setToken('account-b-token', refreshToken: 'account-b-refresh'),
+    );
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(
+      client: dio,
+      tokens: tokens,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+    );
+    await expectLater(client.get('repair'), throwsA(isA<NetworkException>()));
+    await Future<void>.delayed(Duration.zero);
+    expect(tokens.getToken(), 'account-b-token');
+    expect(logouts, 0);
+    expect(business.paths, hasLength(1));
+  });
+
+  test('session replacement stops old 401 even if token text is unchanged',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401)
+      ],
+      onFetch: (_) => tokens.setToken('old-token', refreshToken: 'old-refresh'),
+    );
+    final _RecordingAdapter refresh = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 500}, status: 500)
+      ],
+    );
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(
+      client: dio,
+      tokens: tokens,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+    );
+    await expectLater(client.get('repair'), throwsA(isA<NetworkException>()));
+    expect(refresh.paths, isEmpty);
+    expect(tokens.getToken(), 'old-token');
+  });
+
+  test('late successful response from the previous account is not published',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 10000, 'data': 'account-a-data'}),
+      ],
+      onFetch: (_) => tokens.setToken('account-b', refreshToken: 'refresh-b'),
+    );
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(client: dio, tokens: tokens);
+    await expectLater(
+        client.get('repair'), throwsA(isA<SessionChangedException>()));
+    expect(tokens.getToken(), 'account-b');
+    expect(business.paths, hasLength(1));
+  });
+
+  test('public external fetch remains independent of account changes',
+      () async {
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'public': true})
+      ],
+      onFetch: (_) => tokens.setToken('account-b', refreshToken: 'refresh-b'),
+    );
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(client: dio, tokens: tokens);
+    expect(await client.getExternal('https://example.com/public'),
+        <String, dynamic>{'public': true});
+    expect(business.authorizationHeaders, <String?>[null]);
+  });
+
+  test('new account refresh does not wait for the old account refresh',
+      () async {
+    final Completer<void> oldRefreshStarted = Completer<void>();
+    final Completer<void> releaseOldRefresh = Completer<void>();
+    final _RecordingAdapter business = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+      ],
+    );
+    final _RecordingAdapter oldRefresh = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{
+                'token': 'refreshed-a',
+                'refreshToken': 'refreshed-ra',
+              }
+            }),
+      ],
+      onFetch: (_) async {
+        oldRefreshStarted.complete();
+        await releaseOldRefresh.future;
+      },
+    );
+    final _RecordingAdapter newRefresh = _RecordingAdapter(
+      <ResponseBody Function()>[
+        () => _json(<String, dynamic>{
+              'code': 10000,
+              'data': <String, dynamic>{
+                'token': 'refreshed-b',
+                'refreshToken': 'refreshed-rb',
+              }
+            }),
+      ],
+    );
+    int refreshClients = 0;
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    final RequestDio client = RequestDio(
+        client: dio,
+        tokens: tokens,
+        refreshDioFactory: () => Dio()
+          ..httpClientAdapter =
+              refreshClients++ == 0 ? oldRefresh : newRefresh);
+    final Future<void> oldRequest = expectLater(
+        client.get('repair-a'), throwsA(isA<SessionChangedException>()));
+    await oldRefreshStarted.future;
+    await tokens.setToken('account-b', refreshToken: 'refresh-b');
+    await expectLater(
+        client.get('repair-b'), throwsA(isA<SessionChangedException>()));
+    expect(refreshClients, 2);
+    expect(tokens.getToken(), 'refreshed-b');
+    releaseOldRefresh.complete();
+    await oldRequest;
+    expect(tokens.getToken(), 'refreshed-b');
+    expect(tokens.getRefreshToken(), 'refreshed-rb');
+    expect(business.paths, <String>['repair-a', 'repair-b']);
   });
 }
