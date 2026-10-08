@@ -1,9 +1,11 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// 带缓存的网络图片组件。
 ///
-/// 封装 [CachedNetworkImage]，提供统一的加载、错误处理和占位符样式。
+/// 鸿蒙使用 Flutter 内存缓存，其他平台沿用 [CachedNetworkImage] 磁盘缓存。
+/// 统一加载、错误处理和占位符样式。
 class CachedImage extends StatelessWidget {
   /// 创建带缓存的网络图片。
   const CachedImage({
@@ -40,27 +42,43 @@ class CachedImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget image = CachedNetworkImage(
-      imageUrl: imageUrl,
-      width: width,
-      height: height,
-      fit: fit,
-      placeholder: (BuildContext context, String url) {
-        return placeholder ??
-            _buildDefaultPlaceholder(context);
-      },
-      errorWidget: (BuildContext context, String url, Object error) {
-        return errorWidget ??
-            _buildDefaultErrorWidget(context);
-      },
-      // 配置缓存策略
-      cacheKey: imageUrl,
-      maxWidthDiskCache: 1000,
-      maxHeightDiskCache: 1000,
-      // 内存缓存配置（使用默认值）
-      memCacheWidth: width?.toInt(),
-      memCacheHeight: height?.toInt(),
-    );
+    // 当前 path_provider 依赖没有 OHOS 实现。磁盘缓存初始化会失败，
+    // 并使 flutter_cache_manager 的加载 Future 一直不结束。
+    // NetworkImage 使用 Flutter 内存缓存，无需新增原生插件或权限。
+    Widget image = !kIsWeb && defaultTargetPlatform == TargetPlatform.ohos
+        ? Image.network(
+            imageUrl,
+            width: width,
+            height: height,
+            fit: fit,
+            cacheWidth: width?.toInt(),
+            cacheHeight: height?.toInt(),
+            frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+              if (wasSynchronouslyLoaded || frame != null) return child;
+              return placeholder ?? _buildDefaultPlaceholder(context);
+            },
+            errorBuilder: (context, error, stackTrace) =>
+                errorWidget ?? _buildDefaultErrorWidget(context),
+          )
+        : CachedNetworkImage(
+            imageUrl: imageUrl,
+            width: width,
+            height: height,
+            fit: fit,
+            placeholder: (BuildContext context, String url) {
+              return placeholder ?? _buildDefaultPlaceholder(context);
+            },
+            errorWidget: (BuildContext context, String url, Object error) {
+              return errorWidget ?? _buildDefaultErrorWidget(context);
+            },
+            // 配置缓存策略
+            cacheKey: imageUrl,
+            maxWidthDiskCache: 1000,
+            maxHeightDiskCache: 1000,
+            // 内存缓存配置（使用默认值）
+            memCacheWidth: width?.toInt(),
+            memCacheHeight: height?.toInt(),
+          );
 
     if (borderRadius != null) {
       image = ClipRRect(
