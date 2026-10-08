@@ -13,9 +13,19 @@
 
 ## 验证入口和边界
 
+### 复审后的生产身份回归（2026-10-08）
+
+新增 `test/repair_identity_test.dart` 的 11 条 widget 测试，未注入 `draftUserKey`，实际经过 `UserInfoController` 与 `tokenManager` 的生产身份解析分支。覆盖资料在选项加载期间/之后到达、已有输入保护、未确认状态合并、草稿读取失败后重试、真实会话编号变化后的隔离，以及离开页面后的监听清理。网络加载器和 SharedPreferences 后端仍为测试替身。
+
+新增 `test/token_persistence_race_test.dart` 的 4 条测试，使用实际 `SharedPreferencesTokenStorage` 加 mock 偏好设置后端，控制写入完成与返回之间的时序：排队清理成功后重新加载为空；仅清内存或清理失败时仍能读回残留；清理重试能移除残留；后续新登录不会被旧清理覆盖。本轮未修改凭证管理器的生产逻辑，也未模拟设备断电或原生存储故障。
+
+本轮全量测试为 131 条通过（此前 116 条，本轮新增 15 条）。以下模拟器记录对应上一批代码；本次身份晚到修复尚未重新安装到模拟器，也未完成真实账号登录与服务端联调，不能把新增 widget 测试等同于设备验收。
+
+### 原设备验证入口
+
 `tool/repair_lifecycle_smoke.dart` 复用正式的 `RepairFormPage`、`RepairDraftStore` 和真实 SharedPreferences 插件。它用专用的 `repair-lifecycle-smoke:A/B` 用户标识隔离测试草稿，通过内存会话变化模拟账号替换，不读写正式登录凭证。房屋和维修项目使用固定数据；提交只计数、等待 20 秒并抛出超时，不调用服务端。
 
-这能验证设备上的页面、插件存储、切后台与进程重启。它不能证明真实登录、401 刷新接口或服务端创建结果；这些需要另做联调。测试入口与正式应用使用同一个 bundle，安装后会暂时替换启动入口，完成后应重新构建并安装 `lib/main.dart`。安装更新保留应用数据，不要卸载或清空存储。
+这能验证设备上的页面、插件存储、切后台与进程重启。入口注入了 `draftUserKey`，绕过正式页面基于 `UserInfoController` 和登录会话派生用户 ID 的分支，因此不能证明生产身份解析、用户资料晚到时的草稿行为、真实登录、401 刷新接口或服务端创建结果；这些需要另做联调。测试入口与正式应用使用同一个 bundle，安装后会暂时替换启动入口，完成后应重新构建并安装 `lib/main.dart`。安装更新保留应用数据，不要卸载或清空存储。
 
 ```powershell
 .\tool\flutter_ohos.ps1 build hap --debug --no-pub --target-platform ohos-x64 -t tool/repair_lifecycle_smoke.dart

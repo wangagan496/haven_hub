@@ -47,10 +47,12 @@ RepairFormPage form(
   Future<void> Function(RepairRecord) submitter, {
   RepairDraftStore? draftStore,
   String Function()? draftUserKey,
+  bool productionIdentity = false,
 }) =>
     RepairFormPage(
-      draftStore: draftStore,
-      draftUserKey: draftUserKey,
+      draftStore: draftStore ?? RepairDraftStore(),
+      // 通用表单测试有明确的测试账号；生产身份时序由专门用例覆盖。
+      draftUserKey: productionIdentity ? null : draftUserKey ?? () => 'test-user',
       houseLoader: () async => const <House>[
         House(id: 'house-test', point: '测试小区', building: '1栋', room: '101'),
       ],
@@ -65,6 +67,8 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     await tokenManager.init();
   });
+
+  setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
   testWidgets('submit success returns to list and fetches the new record',
       (WidgetTester tester) async {
@@ -93,6 +97,7 @@ void main() {
   testWidgets('leaving during submission ignores late success and failure',
       (WidgetTester tester) async {
     for (final bool fail in <bool>[true, false]) {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
       final Completer<void> response = Completer<void>();
       await pumpPage(tester, const Scaffold(body: Text('其他页面')),
           routes: <String, WidgetBuilder>{
@@ -472,7 +477,8 @@ void main() {
     // 新账号已登录，但用户信息加载尚未完成。
     await tester.runAsync(
         () => tokenManager.setToken('account-b', refreshToken: 'refresh-b'));
-    await pumpPage(tester, form((_) async {}, draftStore: store));
+    await pumpPage(tester,
+        form((_) async {}, draftStore: store, productionIdentity: true));
     expect(find.text('private account-a draft'), findsNothing);
     expect(find.text('已恢复当前账号的报修草稿'), findsNothing);
     await finishPage(tester);

@@ -445,13 +445,18 @@ class _RepairFormPageState extends State<RepairFormPage>
   bool _submitting = false;
   bool _waitingForConfirmation = false;
   bool _resultUnconfirmed = false;
+  bool _optionsLoaded = false;
+  bool _draftLoading = false;
+  bool _formEdited = false;
+  bool _restoringDraft = false;
   bool _draftLoaded = false;
   bool _draftRestored = false;
   bool _draftSaveFailed = false;
   bool _submitted = false;
   RepairDraft? _lastOwnedDraft;
   Timer? _draftTimer;
-  late final String _draftUserKey;
+  VoidCallback? _removeUserListener;
+  late String _draftUserKey;
   late final int _formSessionId;
   RepairDraftStore get _draftStore => widget.draftStore ?? repairDraftStore;
   String? _error;
@@ -460,6 +465,12 @@ class _RepairFormPageState extends State<RepairFormPage>
     super.initState();
     _draftUserKey = _currentUserKey();
     _formSessionId = tokenManager.sessionId;
+    if (widget.draftUserKey == null) {
+      final UserInfoController users = Get.isRegistered<UserInfoController>()
+          ? Get.find<UserInfoController>()
+          : Get.put(UserInfoController(), permanent: true);
+      _removeUserListener = users.addListener(_onUserInfoChanged);
+    }
     WidgetsBinding.instance.addObserver(this);
     _mobile.addListener(_scheduleDraftSave);
     _description.addListener(_scheduleDraftSave);
@@ -469,6 +480,7 @@ class _RepairFormPageState extends State<RepairFormPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _removeUserListener?.call();
     _draftTimer?.cancel();
     // 快照在控制器销毁前读取；离开页面也保留尚未确认的提交。
     unawaited(_saveDraft());
@@ -501,7 +513,16 @@ class _RepairFormPageState extends State<RepairFormPage>
 
   bool get _sameOwner =>
       tokenManager.sessionId == _formSessionId &&
-      _currentUserKey() == _draftUserKey;
+      (_draftUserKey.isEmpty || _currentUserKey() == _draftUserKey);
+
+  void _onUserInfoChanged() {
+    // 用户资料也可能在其他组件构建时更新；不在其构建过程中更新本页。
+    scheduleMicrotask(() {
+      if (mounted && _optionsLoaded && !_loading) {
+        unawaited(_restoreDraft());
+      }
+    });
+  }
 
   RepairRecord _formRecord() => RepairRecord(
         houseId: _houseId ?? '',
@@ -512,7 +533,9 @@ class _RepairFormPageState extends State<RepairFormPage>
       );
 
   void _scheduleDraftSave() {
-    if (!_draftLoaded || _submitted || !_sameOwner) return;
+    if (_restoringDraft || !_sameOwner) return;
+    _formEdited = true;
+    if (!_draftLoaded || _submitted) return;
     _lastOwnedDraft = RepairDraft(
       record: _formRecord(),
       resultUnconfirmed: _resultUnconfirmed,
@@ -541,13 +564,59 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
   }
 
-  Future<RepairDraft?> _loadDraft() async {
-    if (_draftLoaded || _draftUserKey.isEmpty) return null;
+  Future<void> _restoreDraft() async {
+    if (_draftLoaded || _draftLoading || _submitted || !_sameOwner) return;
+    // 未知身份只能在原会话内绑定一次，不能用进程内 sessionId 做持久化键。
+    if (_draftUserKey.isEmpty) _draftUserKey = _currentUserKey();
+    if (_draftUserKey.isEmpty) return;
+    setState(() => _draftLoading = true);
     try {
-      return await _draftStore.load(_draftUserKey);
+      final RepairDraft? draft = await _draftStore.load(_draftUserKey);
+      if (!mounted || !_sameOwner) return;
+      setState(() {
+        if (draft != null) {
+          // 即使已有新输入，也不能丢掉旧草稿的未确认提交记录。
+          _resultUnconfirmed = _resultUnconfirmed || draft.resultUnconfirmed;
+          if (!_formEdited) {
+            _restoringDraft = true;
+            try {
+              _houseId =
+                  _houses.any((house) => house.id == draft.record.houseId)
+                      ? draft.record.houseId
+                      : null;
+              _itemId =
+                  _items.any((item) => item.id == draft.record.repairItemId)
+                      ? draft.record.repairItemId
+                      : null;
+              _mobile.text = draft.record.mobile;
+              _description.text = draft.record.description;
+              final DateTime today = DateUtils.dateOnly(DateTime.now());
+              final DateTime? date =
+                  DateTime.tryParse(draft.record.appointment);
+              _date = date != null &&
+                      !date.isBefore(today) &&
+                      !date.isAfter(today.add(const Duration(days: 365)))
+                  ? date
+                  : null;
+              _draftRestored = true;
+            } finally {
+              _restoringDraft = false;
+            }
+          }
+        }
+        _draftLoaded = true;
+        _draftSaveFailed = false;
+        _lastOwnedDraft = RepairDraft(
+          record: _formRecord(),
+          resultUnconfirmed: _resultUnconfirmed,
+        );
+      });
+      if (_formEdited) await _saveDraft();
     } on Object {
-      _draftSaveFailed = true;
-      return null;
+      // 未能读取时不覆盖磁盘草稿，也不允许跳过可能存在的二次确认。
+      if (mounted && _sameOwner) setState(() => _draftSaveFailed = true);
+    } finally {
+      if (mounted) setState(() => _draftLoading = false);
     }
   }
 
@@ -558,40 +627,16 @@ class _RepairFormPageState extends State<RepairFormPage>
       _error = null;
     });
     try {
-      final Future<RepairDraft?> draftTask = _loadDraft();
       final values = await Future.wait(
           <Future<Object>>[widget.houseLoader(), widget.itemLoader()]);
-      final RepairDraft? draft = await draftTask;
       if (!mounted) return;
       if (!_sameOwner) throw const SessionChangedException();
       setState(() {
         _houses = values[0] as List<House>;
         _items = values[1] as List<RepairItem>;
-        if (draft != null) {
-          _houseId = _houses.any((house) => house.id == draft.record.houseId)
-              ? draft.record.houseId
-              : null;
-          _itemId = _items.any((item) => item.id == draft.record.repairItemId)
-              ? draft.record.repairItemId
-              : null;
-          _mobile.text = draft.record.mobile;
-          _description.text = draft.record.description;
-          final DateTime today = DateUtils.dateOnly(DateTime.now());
-          final DateTime? date = DateTime.tryParse(draft.record.appointment);
-          _date = date != null &&
-                  !date.isBefore(today) &&
-                  !date.isAfter(today.add(const Duration(days: 365)))
-              ? date
-              : null;
-          _resultUnconfirmed = draft.resultUnconfirmed;
-          _draftRestored = true;
-        }
-        _draftLoaded = true;
-        _lastOwnedDraft = RepairDraft(
-          record: _formRecord(),
-          resultUnconfirmed: _resultUnconfirmed,
-        );
+        _optionsLoaded = true;
       });
+      await _restoreDraft();
     } on Object catch (error) {
       final msg = describeError(error, fallback: '加载报修选项失败，请重试');
       if (mounted) {
@@ -600,6 +645,8 @@ class _RepairFormPageState extends State<RepairFormPage>
       }
     } finally {
       if (mounted) setState(() => _loading = false);
+      // 覆盖资料恰好在上面的 await 与 finally 之间到达的情况。
+      if (mounted && !_draftSaveFailed) _onUserInfoChanged();
     }
   }
 
@@ -620,6 +667,22 @@ class _RepairFormPageState extends State<RepairFormPage>
     if (!_sameOwner) {
       await PromptAction.showWarning('登录账号已变化，请返回后重新打开报修页面');
       return;
+    }
+    if (!_draftLoaded) {
+      await _restoreDraft();
+      if (!mounted) return;
+      if (!_sameOwner) {
+        await PromptAction.showWarning('登录账号已变化，请返回后重新打开报修页面');
+        return;
+      }
+      if (!_draftLoaded) {
+        await PromptAction.showWarning(_draftUserKey.isEmpty
+            ? '账号信息尚未就绪，请保留当前页面，稍后再提交'
+            : '草稿尚未读取完成，请保留当前页面，稍后再提交');
+        return;
+      }
+      // 读取草稿期间其他点击可能已经开始提交。
+      if (_submitting || _submitted) return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_date == null) {
@@ -722,6 +785,16 @@ class _RepairFormPageState extends State<RepairFormPage>
                   child: ListView(
                       padding: const EdgeInsets.all(16),
                       children: <Widget>[
+                        if (_draftUserKey.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('账号信息尚未就绪，草稿暂未保存；请保留当前页面，待账号信息加载后再提交'),
+                          ),
+                        if (_draftLoading)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('正在读取当前账号的草稿，请稍后提交'),
+                          ),
                         if (_resultUnconfirmed && !_submitting)
                           const Padding(
                             padding: EdgeInsets.only(bottom: 16),
@@ -739,6 +812,7 @@ class _RepairFormPageState extends State<RepairFormPage>
                             child: Text('本机草稿保存不可用，请保留当前页面的填写内容'),
                           ),
                         DropdownButtonFormField<String>(
+                            key: ValueKey('house:$_draftRestored'),
                             initialValue: _houseId,
                             decoration:
                                 const InputDecoration(labelText: '报修房屋'),
@@ -754,6 +828,7 @@ class _RepairFormPageState extends State<RepairFormPage>
                             }),
                         const SizedBox(height: 14),
                         DropdownButtonFormField<String>(
+                            key: ValueKey('item:$_draftRestored'),
                             initialValue: _itemId,
                             decoration:
                                 const InputDecoration(labelText: '维修项目'),
