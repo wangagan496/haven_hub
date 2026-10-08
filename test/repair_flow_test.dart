@@ -2,11 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:get/get.dart' show Get, Inst;
 import 'package:haven_hub/constant/index.dart';
+import 'package:haven_hub/controller/user_info_controller.dart';
 import 'package:haven_hub/models/house.dart';
 import 'package:haven_hub/models/repair.dart';
+import 'package:haven_hub/models/user_info.dart';
 import 'package:haven_hub/pages/repair/repair_pages.dart';
 import 'package:haven_hub/utils/app_exception.dart';
+import 'package:haven_hub/utils/repair_draft_store.dart';
+import 'package:haven_hub/utils/token_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers/widget_harness.dart';
 
@@ -37,8 +43,14 @@ Future<void> fillRepair(WidgetTester tester) async {
   await tester.ensureVisible(find.text('提交报修'));
 }
 
-RepairFormPage form(Future<void> Function(RepairRecord) submitter) =>
+RepairFormPage form(
+  Future<void> Function(RepairRecord) submitter, {
+  RepairDraftStore? draftStore,
+  String Function()? draftUserKey,
+}) =>
     RepairFormPage(
+      draftStore: draftStore,
+      draftUserKey: draftUserKey,
       houseLoader: () async => const <House>[
         House(id: 'house-test', point: '测试小区', building: '1栋', room: '101'),
       ],
@@ -48,6 +60,12 @@ RepairFormPage form(Future<void> Function(RepairRecord) submitter) =>
     );
 
 void main() {
+  setUpAll(() async {
+    // 全局凭证队列在真实异步区域初始化，避免绑定到前一用例的 FakeAsync。
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await tokenManager.init();
+  });
+
   testWidgets('submit success returns to list and fetches the new record',
       (WidgetTester tester) async {
     bool submitted = false;
@@ -60,7 +78,7 @@ void main() {
             submitted = true;
           }),
     });
-    expect(find.text('暂无报修记录'), findsOneWidget);
+    expect(find.text('还没有报修记录，点击下方按钮新增吧'), findsOneWidget);
     await tester.tap(find.text('新增报修'));
     await tester.pumpAndSettle();
     await fillRepair(tester);
@@ -68,7 +86,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(loads, 2);
     expect(find.text('水管维修'), findsOneWidget);
-    expect(find.text('暂无报修记录'), findsNothing);
+    expect(find.text('还没有报修记录，点击下方按钮新增吧'), findsNothing);
     await finishPage(tester);
   });
 
@@ -161,7 +179,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(loads, 2);
     expect(find.text('已取消'), findsOneWidget);
-    expect(find.text('待处理'), findsNothing);
+    expect(
+        find.descendant(of: find.byType(ListTile), matching: find.text('待处理')),
+        findsNothing);
     await finishPage(tester);
   });
 
@@ -291,5 +311,172 @@ void main() {
         arguments: 'done');
     expect(find.text('取消报修'), findsNothing);
     await finishPage(tester);
+  });
+
+  testWidgets(
+      'timeout keeps the form and requires confirmation before resubmission',
+      (WidgetTester tester) async {
+    int calls = 0;
+    await pumpPage(tester, form((_) async {
+      calls++;
+      throw const NetworkException('数据接收超时', isTimeout: true);
+    }));
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(calls, 1);
+    expect(find.text('水管漏水'), findsOneWidget);
+    expect(find.text('13800138000'), findsOneWidget);
+    expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+    await tester.ensureVisible(find.text('提交报修'));
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(find.text('上次提交结果未确认'), findsOneWidget);
+    expect(calls, 1);
+    await tester.tap(find.text('先不提交'));
+    await tester.pumpAndSettle();
+    expect(calls, 1);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('仍然提交'));
+    await tester.pumpAndSettle();
+    expect(calls, 2);
+    await finishPage(tester);
+  });
+
+  for (final int status in <int>[500, 503]) {
+    testWidgets('HTTP $status does not prove that the repair was not created',
+        (WidgetTester tester) async {
+      int calls = 0;
+      await pumpPage(tester, form((_) async {
+        calls++;
+        throw NetworkException('服务器错误', statusCode: status);
+      }));
+      await fillRepair(tester);
+      await tester.tap(find.text('提交报修'));
+      await tester.pumpAndSettle();
+      expect(calls, 1);
+      expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+      await tester.ensureVisible(find.text('提交报修'));
+      await tester.tap(find.text('提交报修'));
+      await tester.pumpAndSettle();
+      expect(find.text('上次提交结果未确认'), findsOneWidget);
+      expect(calls, 1);
+      await tester.tap(find.text('先不提交'));
+      await tester.pumpAndSettle();
+      expect(calls, 1);
+      await finishPage(tester);
+    });
+  }
+
+  testWidgets('saved draft restores selections and fields only for its owner',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final RepairDraftStore store = RepairDraftStore();
+    await pumpPage(tester,
+        form((_) async {}, draftStore: store, draftUserKey: () => 'user-a'));
+    await fillRepair(tester);
+    await finishPage(tester);
+    expect((await store.load('user-a'))!.record.description, '水管漏水');
+    await pumpPage(
+        tester,
+        form((_) async {},
+            draftStore: RepairDraftStore(), draftUserKey: () => 'user-a'));
+    expect(find.text('已恢复当前账号的报修草稿'), findsOneWidget);
+    expect(find.text('水管漏水'), findsOneWidget);
+    expect(find.text('13800138000'), findsOneWidget);
+    expect(find.text('测试小区 1栋 101'), findsOneWidget);
+    await finishPage(tester);
+    await pumpPage(tester,
+        form((_) async {}, draftStore: store, draftUserKey: () => 'user-b'));
+    expect(find.text('水管漏水'), findsNothing);
+    expect(find.text('13800138000'), findsNothing);
+    expect(find.text('已恢复当前账号的报修草稿'), findsNothing);
+    await finishPage(tester);
+  });
+
+  testWidgets(
+      'pending submission stays unconfirmed after leaving and reopening',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final RepairDraftStore store = RepairDraftStore();
+    final Completer<void> response = Completer<void>();
+    await pumpPage(
+        tester,
+        form((_) => response.future,
+            draftStore: store, draftUserKey: () => 'user-a'));
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pump();
+    await finishPage(tester);
+    expect((await store.load('user-a'))!.resultUnconfirmed, isTrue);
+    response.completeError(const NetworkException('迟到的提交错误', isTimeout: true));
+    await tester.pumpAndSettle();
+    await pumpPage(tester,
+        form((_) async {}, draftStore: store, draftUserKey: () => 'user-a'));
+    expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+    await finishPage(tester);
+  });
+
+  testWidgets('successful submission clears the saved draft',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final RepairDraftStore store = RepairDraftStore();
+    await pumpPage(tester,
+        form((_) async {}, draftStore: store, draftUserKey: () => 'user-a'));
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    await finishPage(tester);
+    expect(await store.load('user-a'), isNull);
+  });
+
+  testWidgets(
+      'changing account cannot submit the old form or overwrite its draft',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final RepairDraftStore store = RepairDraftStore();
+    String owner = 'user-a';
+    int calls = 0;
+    await pumpPage(
+        tester,
+        form((_) async {
+          calls++;
+        }, draftStore: store, draftUserKey: () => owner));
+    await fillRepair(tester);
+    await tester.pump(const Duration(milliseconds: 350));
+    owner = 'user-b';
+    await tester.enterText(find.byType(TextFormField).last, 'user-b text');
+    await tester.ensureVisible(find.text('提交报修'));
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(calls, 0);
+    await finishPage(tester);
+    expect((await store.load('user-a'))!.record.description, '水管漏水');
+    expect(await store.load('user-b'), isNull);
+  });
+
+  testWidgets('stale profile id from previous login cannot restore its draft',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final RepairDraftStore store = RepairDraftStore();
+    await tester.runAsync(
+        () => tokenManager.setToken('account-a', refreshToken: 'refresh-a'));
+    Get.put(UserInfoController())
+        .updateUser(const UserInfo(id: 'user-a', avatarUrl: '', nickName: 'A'));
+    await store.save(
+        'user-a',
+        const RepairDraft(
+          record: RepairRecord(description: 'private account-a draft'),
+        ));
+    // 新账号已登录，但用户信息加载尚未完成。
+    await tester.runAsync(
+        () => tokenManager.setToken('account-b', refreshToken: 'refresh-b'));
+    await pumpPage(tester, form((_) async {}, draftStore: store));
+    expect(find.text('private account-a draft'), findsNothing);
+    expect(find.text('已恢复当前账号的报修草稿'), findsNothing);
+    await finishPage(tester);
+    await Get.delete<UserInfoController>(force: true);
+    tokenManager.invalidateLocalSession();
   });
 }

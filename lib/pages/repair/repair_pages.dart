@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:get/get.dart' show Get, Inst;
 
 import '../../api/house.dart';
 import '../../api/repair.dart';
+import '../../controller/user_info_controller.dart';
 import '../../models/house.dart';
 import '../../models/repair.dart';
 import '../../router/app_routes.dart';
@@ -11,8 +13,11 @@ import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/data_state.dart';
 import '../../utils/date_utils.dart';
+import '../../utils/logger.dart';
+import '../../utils/repair_draft_store.dart';
 import '../../utils/retry_strategy.dart';
 import '../../utils/toast.dart';
+import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
 
@@ -52,7 +57,7 @@ enum RepairStatusFilter {
       case RepairStatusFilter.all:
         return true;
       case RepairStatusFilter.pending:
-        return record.status == 1;
+        return record.status == 0 || record.status == 1;
       case RepairStatusFilter.processing:
         return record.status == 2;
       case RepairStatusFilter.completed:
@@ -96,7 +101,7 @@ class _RepairListPageState extends State<RepairListPage> {
     if (_currentFilter == newFilter) return;
     setState(() {
       _currentFilter = newFilter;
-      _cachedFilteredRecords = _applyFilter();  // ← 更新缓存
+      _cachedFilteredRecords = _applyFilter();
     });
   }
 
@@ -105,7 +110,8 @@ class _RepairListPageState extends State<RepairListPage> {
   /// [isManualRetry] 是否是用户手动点击重试按钮触发的
   Future<void> _load({bool isManualRetry = false}) async {
     // 如果正在加载，不重复加载
-    if (_state.isLoading) return;
+    if (!mounted || _state.isLoading) return;
+    final int sessionId = tokenManager.sessionId;
 
     // 开始加载，保留旧数据
     setState(() => _state = DataState.loading(_state.data));
@@ -115,23 +121,32 @@ class _RepairListPageState extends State<RepairListPage> {
       final records = await retryAsync(
         action: () => widget.loader(),
         strategy: isManualRetry ? RetryStrategy.manual : RetryStrategy.auto,
+        shouldRetry: () => mounted,
         onRetry: (attempt, error) {
-          // 调试日志：记录重试次数和错误
-          print('[RepairList] 第 $attempt 次重试: $error');
+          Logger.debug('[RepairList] 第 $attempt 次重试');
         },
       );
 
       if (!mounted) return;
+      if (tokenManager.sessionId != sessionId) {
+        throw const SessionChangedException();
+      }
       setState(() {
         _state = DataState.success(records);
-        _cachedFilteredRecords = _applyFilter();  // ← 数据加载成功，更新缓存
+        _cachedFilteredRecords = _applyFilter();
       });
     } on Object catch (error) {
       final msg = describeError(error, fallback: '获取报修列表失败，请重试');
       if (!mounted) return;
 
       // 加载失败，保留旧数据
-      setState(() => _state = DataState.error(msg, _state.data));
+      setState(() {
+        _state = DataState.error(
+          msg,
+          tokenManager.sessionId == sessionId ? _state.data : null,
+        );
+        _cachedFilteredRecords = _applyFilter();
+      });
 
       // 如果是第一次加载失败（没有旧数据），显示错误提示
       // 如果是刷新失败（有旧数据），只在底部toast提示
@@ -157,18 +172,18 @@ class _RepairListPageState extends State<RepairListPage> {
         body: Column(children: <Widget>[
           // 筛选按钮行
           Container(
+            width: double.infinity,
             color: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: RepairStatusFilter.values.map((filter) {
                 final isSelected = _currentFilter == filter;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: _buildFilterChip(
-                    label: filter.displayName,
-                    isSelected: isSelected,
-                    onTap: () => _changeFilter(filter),
-                  ),
+                return _buildFilterChip(
+                  label: filter.displayName,
+                  isSelected: isSelected,
+                  onTap: () => _changeFilter(filter),
                 );
               }).toList(),
             ),
@@ -248,7 +263,6 @@ class _RepairListPageState extends State<RepairListPage> {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isSelected ? AppColors.accent : const Color(0xFFE4E7EC),
-            width: 1,
           ),
         ),
         child: Text(
@@ -404,16 +418,21 @@ class RepairFormPage extends StatefulWidget {
       {this.houseLoader = getHouseListApi,
       this.itemLoader = getRepairItemsApi,
       this.submitter = submitRepairApi,
+      this.draftStore,
+      this.draftUserKey,
       super.key});
   static const String routeName = AppRoutes.repairForm;
   final HouseListLoader houseLoader;
   final RepairItemLoader itemLoader;
   final SubmitRepairLoader submitter;
+  final RepairDraftStore? draftStore;
+  final String Function()? draftUserKey;
   @override
   State<RepairFormPage> createState() => _RepairFormPageState();
 }
 
-class _RepairFormPageState extends State<RepairFormPage> {
+class _RepairFormPageState extends State<RepairFormPage>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _mobile = TextEditingController();
   final _description = TextEditingController();
@@ -424,18 +443,112 @@ class _RepairFormPageState extends State<RepairFormPage> {
   DateTime? _date;
   bool _loading = false;
   bool _submitting = false;
+  bool _waitingForConfirmation = false;
+  bool _resultUnconfirmed = false;
+  bool _draftLoaded = false;
+  bool _draftRestored = false;
+  bool _draftSaveFailed = false;
+  bool _submitted = false;
+  RepairDraft? _lastOwnedDraft;
+  Timer? _draftTimer;
+  late final String _draftUserKey;
+  late final int _formSessionId;
+  RepairDraftStore get _draftStore => widget.draftStore ?? repairDraftStore;
   String? _error;
   @override
   void initState() {
     super.initState();
+    _draftUserKey = _currentUserKey();
+    _formSessionId = tokenManager.sessionId;
+    WidgetsBinding.instance.addObserver(this);
+    _mobile.addListener(_scheduleDraftSave);
+    _description.addListener(_scheduleDraftSave);
     unawaited(_loadOptions());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _draftTimer?.cancel();
+    // 快照在控制器销毁前读取；离开页面也保留尚未确认的提交。
+    unawaited(_saveDraft());
     _mobile.dispose();
     _description.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _draftTimer?.cancel();
+      unawaited(_saveDraft());
+    }
+  }
+
+  String _currentUserKey() {
+    final String Function()? resolver = widget.draftUserKey;
+    if (resolver != null) return resolver().trim();
+    if (tokenManager.getToken().isEmpty ||
+        !Get.isRegistered<UserInfoController>()) {
+      return '';
+    }
+    final UserInfoController controller = Get.find<UserInfoController>();
+    return controller.currentUserSessionId == tokenManager.sessionId
+        ? controller.currentUser.id.trim()
+        : '';
+  }
+
+  bool get _sameOwner =>
+      tokenManager.sessionId == _formSessionId &&
+      _currentUserKey() == _draftUserKey;
+
+  RepairRecord _formRecord() => RepairRecord(
+        houseId: _houseId ?? '',
+        repairItemId: _itemId ?? '',
+        mobile: _mobile.text.trim(),
+        appointment: _date == null ? '' : formatDate(_date!),
+        description: _description.text.trim(),
+      );
+
+  void _scheduleDraftSave() {
+    if (!_draftLoaded || _submitted || !_sameOwner) return;
+    _lastOwnedDraft = RepairDraft(
+      record: _formRecord(),
+      resultUnconfirmed: _resultUnconfirmed,
+    );
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 300), () {
+      unawaited(_saveDraft());
+    });
+  }
+
+  Future<void> _saveDraft() async {
+    if (!_draftLoaded || _submitted || _draftUserKey.isEmpty) return;
+    final RepairRecord? record =
+        _sameOwner ? _formRecord() : _lastOwnedDraft?.record;
+    if (record == null) return;
+    final RepairDraft draft = RepairDraft(
+      record: record,
+      resultUnconfirmed: _resultUnconfirmed,
+    );
+    _lastOwnedDraft = draft;
+    try {
+      final bool saved = await _draftStore.save(_draftUserKey, draft);
+      if (mounted && _sameOwner) setState(() => _draftSaveFailed = !saved);
+    } on Object {
+      if (mounted && _sameOwner) setState(() => _draftSaveFailed = true);
+    }
+  }
+
+  Future<RepairDraft?> _loadDraft() async {
+    if (_draftLoaded || _draftUserKey.isEmpty) return null;
+    try {
+      return await _draftStore.load(_draftUserKey);
+    } on Object {
+      _draftSaveFailed = true;
+      return null;
+    }
   }
 
   Future<void> _loadOptions() async {
@@ -445,12 +558,39 @@ class _RepairFormPageState extends State<RepairFormPage> {
       _error = null;
     });
     try {
+      final Future<RepairDraft?> draftTask = _loadDraft();
       final values = await Future.wait(
           <Future<Object>>[widget.houseLoader(), widget.itemLoader()]);
+      final RepairDraft? draft = await draftTask;
       if (!mounted) return;
+      if (!_sameOwner) throw const SessionChangedException();
       setState(() {
         _houses = values[0] as List<House>;
         _items = values[1] as List<RepairItem>;
+        if (draft != null) {
+          _houseId = _houses.any((house) => house.id == draft.record.houseId)
+              ? draft.record.houseId
+              : null;
+          _itemId = _items.any((item) => item.id == draft.record.repairItemId)
+              ? draft.record.repairItemId
+              : null;
+          _mobile.text = draft.record.mobile;
+          _description.text = draft.record.description;
+          final DateTime today = DateUtils.dateOnly(DateTime.now());
+          final DateTime? date = DateTime.tryParse(draft.record.appointment);
+          _date = date != null &&
+                  !date.isBefore(today) &&
+                  !date.isAfter(today.add(const Duration(days: 365)))
+              ? date
+              : null;
+          _resultUnconfirmed = draft.resultUnconfirmed;
+          _draftRestored = true;
+        }
+        _draftLoaded = true;
+        _lastOwnedDraft = RepairDraft(
+          record: _formRecord(),
+          resultUnconfirmed: _resultUnconfirmed,
+        );
       });
     } on Object catch (error) {
       final msg = describeError(error, fallback: '加载报修选项失败，请重试');
@@ -469,33 +609,100 @@ class _RepairFormPageState extends State<RepairFormPage> {
         initialDate: _date ?? DateTime.now(),
         firstDate: DateTime.now(),
         lastDate: DateTime.now().add(const Duration(days: 365)));
-    if (selected != null && mounted) setState(() => _date = selected);
+    if (selected != null && mounted) {
+      setState(() => _date = selected);
+      _scheduleDraftSave();
+    }
   }
 
   Future<void> _submit() async {
-    if (_submitting) return;
+    if (_submitting || _submitted) return;
+    if (!_sameOwner) {
+      await PromptAction.showWarning('登录账号已变化，请返回后重新打开报修页面');
+      return;
+    }
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_date == null) {
       await PromptAction.showWarning('请选择预约日期');
       return;
     }
     setState(() => _submitting = true);
+    final bool wasUnconfirmed = _resultUnconfirmed;
+    bool requestSent = false;
     try {
-      await widget.submitter(RepairRecord(
-          houseId: _houseId!,
-          repairItemId: _itemId!,
-          mobile: _mobile.text.trim(),
-          appointment: formatDate(_date!),
-          description: _description.text.trim()));
+      if (wasUnconfirmed) {
+        setState(() => _waitingForConfirmation = true);
+        final bool confirmed = await showDialog<bool>(
+              context: context,
+              builder: (BuildContext context) => AlertDialog(
+                title: const Text('上次提交结果未确认'),
+                content: const Text('服务器可能已经创建报修记录。建议先查看“我的报修”；再次提交可能产生重复记录。'),
+                actions: <Widget>[
+                  TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('先不提交')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('仍然提交')),
+                ],
+              ),
+            ) ??
+            false;
+        if (!mounted || !confirmed) return;
+        setState(() => _waitingForConfirmation = false);
+      }
+      if (!_sameOwner) throw const SessionChangedException();
+      _draftTimer?.cancel();
+      _resultUnconfirmed = true;
+      await _saveDraft();
       if (!mounted) return;
+      if (!_sameOwner) throw const SessionChangedException();
+      requestSent = true;
+      await widget.submitter(_formRecord());
+      if (!mounted) return;
+      if (!_sameOwner) throw const SessionChangedException();
+      _submitted = true;
+      if (_draftUserKey.isNotEmpty) {
+        try {
+          final bool removed = await _draftStore.remove(_draftUserKey);
+          if (!mounted) return;
+          if (!removed) {
+            await PromptAction.showWarning('报修已提交，但本机草稿清理失败，请勿重复提交');
+          }
+        } on Object {
+          if (!mounted) return;
+          await PromptAction.showWarning('报修已提交，但本机草稿清理失败，请勿重复提交');
+        }
+      }
+      if (!mounted || !_sameOwner) return;
       await PromptAction.showSuccess('报修提交成功');
       if (mounted) Navigator.pop(context, true);
     } on Object catch (error) {
       if (!mounted) return;
-      await PromptAction.showError(
-          describeError(error, fallback: '报修提交失败，请重试'));
+      final bool uncertain = requestSent &&
+          error is NetworkException &&
+          (error.isTimeout ||
+              error is SessionChangedException ||
+              const <int?>{null, 408}.contains(error.statusCode) ||
+              (error.statusCode != null && error.statusCode! >= 500));
+      setState(() => _resultUnconfirmed = wasUnconfirmed || uncertain);
+      await _saveDraft();
+      if (!mounted) return;
+      if (uncertain) {
+        await PromptAction.showWarning(error is SessionChangedException
+            ? '${error.message}；提交结果请先查看“我的报修”'
+            : '提交结果未确认，服务器可能已收到，请先查看“我的报修”，避免重复提交');
+      } else {
+        await PromptAction.showError(
+            describeError(error, fallback: '报修提交失败，请重试'));
+      }
     } finally {
-      if (mounted) setState(() => _submitting = false);
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+          _waitingForConfirmation = false;
+        });
+      }
     }
   }
 
@@ -508,57 +715,86 @@ class _RepairFormPageState extends State<RepairFormPage> {
           errorMessage: _error,
           onRetry: _loadOptions,
           hasContent: _houses.isNotEmpty && _items.isNotEmpty,
-          builder: (_) => Form(
-              key: _formKey,
-              child: ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: <Widget>[
-                    DropdownButtonFormField<String>(
-                        initialValue: _houseId,
-                        decoration: const InputDecoration(labelText: '报修房屋'),
-                        validator: (v) => v == null ? '请选择报修房屋' : null,
-                        items: _houses
-                            .map((house) => DropdownMenuItem(
-                                value: house.id, child: Text(house.fullName)))
-                            .toList(),
-                        onChanged: (value) => setState(() => _houseId = value)),
-                    const SizedBox(height: 14),
-                    DropdownButtonFormField<String>(
-                        initialValue: _itemId,
-                        decoration: const InputDecoration(labelText: '维修项目'),
-                        validator: (v) => v == null ? '请选择维修项目' : null,
-                        items: _items
-                            .map((item) => DropdownMenuItem(
-                                value: item.id, child: Text(item.name)))
-                            .toList(),
-                        onChanged: (value) => setState(() => _itemId = value)),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                        controller: _mobile,
-                        keyboardType: TextInputType.phone,
-                        decoration: const InputDecoration(labelText: '联系电话'),
-                        validator: Validators.required('请输入联系电话')
-                            .chain(Validators.mobile())
-                            .validate),
-                    const SizedBox(height: 14),
-                    ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(
-                            _date == null ? '请选择预约日期' : formatDate(_date!)),
-                        trailing: const Icon(Icons.calendar_today_outlined),
-                        onTap: _pickDate),
-                    TextFormField(
-                        controller: _description,
-                        decoration:
-                            const InputDecoration(labelText: '故障描述（选填）'),
-                        maxLines: 4),
-                    const SizedBox(height: 28),
-                    FilledButton(
-                        onPressed: _submitting ? null : _submit,
-                        child: _submitting
-                            ? const CircularProgressIndicator()
-                            : const Text('提交报修'))
-                  ]))));
+          builder: (_) => AbsorbPointer(
+              absorbing: _submitting || _submitted,
+              child: Form(
+                  key: _formKey,
+                  child: ListView(
+                      padding: const EdgeInsets.all(16),
+                      children: <Widget>[
+                        if (_resultUnconfirmed && !_submitting)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 16),
+                            child: Text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。',
+                                style: TextStyle(color: AppColors.danger)),
+                          ),
+                        if (_draftRestored)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('已恢复当前账号的报修草稿'),
+                          ),
+                        if (_draftSaveFailed)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('本机草稿保存不可用，请保留当前页面的填写内容'),
+                          ),
+                        DropdownButtonFormField<String>(
+                            initialValue: _houseId,
+                            decoration:
+                                const InputDecoration(labelText: '报修房屋'),
+                            validator: (v) => v == null ? '请选择报修房屋' : null,
+                            items: _houses
+                                .map((house) => DropdownMenuItem(
+                                    value: house.id,
+                                    child: Text(house.fullName)))
+                                .toList(),
+                            onChanged: (value) {
+                              setState(() => _houseId = value);
+                              _scheduleDraftSave();
+                            }),
+                        const SizedBox(height: 14),
+                        DropdownButtonFormField<String>(
+                            initialValue: _itemId,
+                            decoration:
+                                const InputDecoration(labelText: '维修项目'),
+                            validator: (v) => v == null ? '请选择维修项目' : null,
+                            items: _items
+                                .map((item) => DropdownMenuItem(
+                                    value: item.id, child: Text(item.name)))
+                                .toList(),
+                            onChanged: (value) {
+                              setState(() => _itemId = value);
+                              _scheduleDraftSave();
+                            }),
+                        const SizedBox(height: 14),
+                        TextFormField(
+                            controller: _mobile,
+                            keyboardType: TextInputType.phone,
+                            decoration:
+                                const InputDecoration(labelText: '联系电话'),
+                            validator: Validators.required('请输入联系电话')
+                                .chain(Validators.mobile())
+                                .validate),
+                        const SizedBox(height: 14),
+                        ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                                _date == null ? '请选择预约日期' : formatDate(_date!)),
+                            trailing: const Icon(Icons.calendar_today_outlined),
+                            onTap: _pickDate),
+                        TextFormField(
+                            controller: _description,
+                            decoration:
+                                const InputDecoration(labelText: '故障描述（选填）'),
+                            maxLines: 4),
+                        const SizedBox(height: 28),
+                        FilledButton(
+                            onPressed:
+                                _submitting || _submitted ? null : _submit,
+                            child: _submitting && !_waitingForConfirmation
+                                ? const CircularProgressIndicator()
+                                : const Text('提交报修'))
+                      ])))));
 }
 
 class _Section extends StatelessWidget {

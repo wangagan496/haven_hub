@@ -40,12 +40,6 @@ class DataState<T> {
   /// 错误信息（仅在 state == error 时有值）
   final String? errorMessage;
 
-  const DataState._({
-    required this.state,
-    this.data,
-    this.errorMessage,
-  });
-
   /// 初始状态：还未开始加载
   DataState.idle()
       : state = LoadState.idle,
@@ -61,9 +55,8 @@ class DataState<T> {
         errorMessage = null;
 
   /// 加载成功状态
-  DataState.success(T data)
+  DataState.success(T this.data)
       : state = LoadState.success,
-        data = data,
         errorMessage = null;
 
   /// 加载失败状态
