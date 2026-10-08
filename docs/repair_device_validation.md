@@ -48,4 +48,29 @@
 
 ## 当前设备结果
 
-待模拟器连接后记录。现有 widget test 与 mock 存储结果不充当设备验收。
+2026-10-08，在 HDC `127.0.0.1:5555` 上完成验证。设备为 x86_64 模拟器，API 24，系统版本 `emulator 6.1.0.126(SP1DEVC00E120R4P11)`。使用 `1c78cb3` 对应的验证入口和真实 SharedPreferences 插件；通过设备 `uitest`、界面树与截图核对。
+
+| 场景 | 实际结果 |
+| --- | --- |
+| A 的旧表单切到 B 后尝试提交 | 提示“登录账号已变化，请返回后重新打开报修页面”；发送次数保持 0 |
+| B 重新打开表单 | 没有 A 的描述、电话或已选房屋，没有恢复 A 草稿 |
+| 切回 A 后重新打开 | 恢复编辑后的 `draft-Adraft-A-edited`、电话、房屋和日期 |
+| 保存后切后台、force-stop、重启 | 进程从 5720 变为 7885，原进程已退出；A 的编辑内容完整恢复 |
+| 提交后在 20 秒延迟结束前返回、重开 | 出现“提交结果未确认”，输入仍在 |
+| 再次提交并选择“先不提交” | 出现重复创建风险确认；取消后发送次数保持 1 |
+| 迟到超时及再次进程重启 | A 草稿仍保留 `resultUnconfirmed=true`，未被迟到结果清除 |
+
+边界检查：对 B 执行输入 `rapid-stop` 后立即调用 `aa force-stop`，重启只恢复原有 `draft-B`。输入命令返回成功，用时 1329 毫秒；从输入命令返回至停止命令结束约 338 毫秒。该次没有额外截取停止前输入画面，因此不据此精确归因输入完成时刻或存储插件时序。对照操作输入 `rapid-check` 后先取得界面树，确认显示 `draft-Brapid-check`，再结束进程；重启后能恢复该内容。
+
+验收边界：已保存的草稿及未确认状态能够跨进程恢复；不能保证最近一次输入在立即杀进程时不丢失，300 毫秒防抖及异步落盘窗口仍存在。本次不将它改写成“完全防丢失”，也不声称完成了真机、真实账号登录或服务端幂等验收。
+
+本地证据保存在忽略提交的 `build/` 下：
+
+- `repair-account-blocked.jpeg`：换账号后旧表单提交被拦截，发送次数为 0。
+- `repair-b-empty.json`、`repair-a-restored.json`：B 空表单与 A 内容恢复。
+- `repair-after-restart.json`、`repair-after-restart.jpeg`：进程重启后的恢复。
+- `repair-pending-reopened.json`、`repair-confirmation.jpeg`：未确认状态与二次确认。
+- `repair-final-drafts.jpeg`：取消再次提交后计数仍为 1，A 未确认状态仍在。
+- `repair-rapid-restart.jpeg`、`repair-rapid-before.json`、`repair-rapid-control.jpeg`：快速停止与对照。
+
+验证结束后，已用 `lib/main.dart` 重新构建已签名 x64 Debug HAP，并以 `hdc install -r` 更新安装、启动正式 `EntryAbility`。设备界面树和截图确认回到“社区”首页，出现“我的房屋 / 我的报修 / 访客登记”和公告；测试入口已替换，未卸载或清空应用数据。恢复证据：`build/repair-main-restored.json`、`build/repair-main-restored.jpeg`。
