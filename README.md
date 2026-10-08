@@ -125,6 +125,12 @@ lib/
 非鸿蒙平台显示不可用提示；已访问、已失效或缺少图片的记录不能分享。
 分享面板关闭仅表示本次操作结束，不提示“发送成功”。报修流程补充了提交、取消、失败重试、返回后刷新和异步退出的回归测试。
 
+前端请求采用保守恢复规则：会话或凭证更新后，旧请求及其外层自动重试停止。401 刷新成功保留登录，但不会重放旧 GET/POST/PUT/DELETE；用户手动重试才发起新操作。刷新失败只清理对应的旧会话，迟到的响应不能覆盖新账号数据。
+
+报修草稿按已识别的用户 ID 保存在当前设备，离开页面或切到后台时保存，再次进入时恢复；用户 ID 缺失时仅保留本页输入，不使用匿名共享草稿。提交成功清理草稿。超时、响应不确定或提交途中离开时保留“结果未确认”状态，再次提交需确认重复创建的风险。
+
+草稿和再次提交确认不能保证服务端只创建一次。本仓库尚未实现自建后端的幂等键与按提交标识查询结果，服务端结果仍需单独确认。
+
 运行检查：`./tool/flutter_ohos.ps1 analyze --no-pub`、`./tool/flutter_ohos.ps1 test --no-pub`。
 实现调用链、复现命令、验证边界与面试讲解见 [鸿蒙分享与报修稳定性说明](docs/harmony_share_and_reliability.md)。
 
@@ -257,6 +263,15 @@ HarmonyOS 5.0.0 / API 12。最低版本配置和编译通过不等于已完成 A
 本机 `ohos/build-profile.json5` 带有 Git `skip-worktree` 标记，普通
 `git status` 不显示其本地版本字段变更。换机时需单独检查这两个版本字段，
 不要为了同步版本而提交本机签名材料。
+
+`ohos/build-profile.json5` 的 `app.products` 中，构建使用的 product 还需设置
+`buildOption.strictMode.useNormalizedOHMUrl: true`。这样 ArkTS 模块引用使用
+包名和版本，而不是 `.ohpm` 缓存目录标识，避免在命令行 x64 构建与 DevEco
+默认 arm64/x64 构建之间切换后，增量产物混用 Flutter 嵌入包路径，启动时报
+`ReferenceError: cannot find record ... @ohos/flutter_ohos/index`。
+首次启用后先执行一次 DevEco 的 Clean Project，再重新构建；无需删除
+`.pub-cache`、卸载 App 或重建模拟器。该配置也受上述 `skip-worktree` 影响，
+换机时需手动同步，不要连同本机签名信息一起提交。
 
 请通过包装脚本执行鸿蒙命令。脚本会自动查找本机的 Flutter OH SDK，
 并使用项目所在 D 盘的依赖缓存，避免 Hvigor 因跨盘插件路径构建失败：

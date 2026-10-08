@@ -137,6 +137,13 @@ if (
 }
 $env:PUB_CACHE = Join-Path $projectRoot '.pub-cache'
 
+# Git dependencies contain paths longer than Windows' legacy MAX_PATH limit.
+# Pass this setting to pub's Git subprocesses without changing global Git config.
+$gitConfigIndex = if ($env:GIT_CONFIG_COUNT) { [int]$env:GIT_CONFIG_COUNT } else { 0 }
+[Environment]::SetEnvironmentVariable("GIT_CONFIG_KEY_$gitConfigIndex", 'core.longpaths', 'Process')
+[Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$gitConfigIndex", 'true', 'Process')
+$env:GIT_CONFIG_COUNT = [string]($gitConfigIndex + 1)
+
 if ($FlutterArguments.Count -gt 0 -and $FlutterArguments[0] -in @('run', 'build')) {
   $tencentMapKey = Get-DartDefineValue `
     -Name 'TENCENT_MAP_KEY' `
