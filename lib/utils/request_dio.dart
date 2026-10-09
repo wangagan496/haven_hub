@@ -30,6 +30,15 @@ class RequestDio {
     'secret',
   };
 
+  static final RegExp _authorizationText =
+      RegExp(r'\b(Bearer|Basic)\s+[a-zA-Z0-9._~+/=-]+', caseSensitive: false);
+  static final RegExp _credentialAssignmentText = RegExp(
+    r'''(["']?)([a-zA-Z][\w-]*)(\1\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}\]]+)''',
+  );
+  static final RegExp _jwtText =
+      RegExp(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b');
+  static final RegExp _mobileText = RegExp(r'\b1[3-9]\d{9}\b');
+
   RequestDio({
     dio.Dio? client,
     RefreshDioFactory? refreshDioFactory,
@@ -202,10 +211,17 @@ class RequestDio {
           handler.next(error);
           return;
         }
+        final dio.Response<dynamic>? response = error.response;
         Logger.error(
           '✖ ${error.requestOptions.method} '
           '${_redactUri(error.requestOptions.uri)}',
-          error.message,
+          <String, dynamic>{
+            // 区分「服务端返回了错误状态」与「压根没连上」：后者没有响应。
+            'type': error.type.name,
+            'message': _redactLogValue(error.message, requestSide: true),
+            // 失败响应体只在错误分支可见；onResponse 拦截器不会经过这里。
+            if (response != null) ..._buildResponseLog(response),
+          },
         );
         handler.next(error);
       },
@@ -304,7 +320,28 @@ class RequestDio {
           ),
       ];
     }
-    return value;
+    return value is String ? _redactLogText(value) : value;
+  }
+
+  /// 处理服务端在说明文字中回显的明确凭证模式，不改变实际请求或响应。
+  /// 无标签的任意秘密无法可靠识别；非结构化响应体另行默认省略。
+  static String _redactLogText(String value) {
+    final String safeAuthorization = value.replaceAllMapped(
+      _authorizationText,
+      (Match match) => '${match.group(1)} ***',
+    );
+    final String safeAssignments = safeAuthorization.replaceAllMapped(
+      _credentialAssignmentText,
+      (Match match) {
+        if (!_isSensitiveLogKey(match.group(2)!, requestSide: true)) {
+          return match.group(0)!;
+        }
+        return '${match.group(1)}${match.group(2)}${match.group(3)}***';
+      },
+    );
+    return safeAssignments
+        .replaceAll(_jwtText, '***')
+        .replaceAll(_mobileText, '***');
   }
 
   /// 判断键名是否敏感。
@@ -343,9 +380,16 @@ class RequestDio {
     };
 
     if (response.data != null) {
+      final dynamic body = response.data;
+      if (body is String) {
+        // 纯文本、HTML 和 JSON 字符串没有可递归判断的字段边界，默认不输出原文。
+        log['body'] = '<omitted: unstructured text>';
+        log['bodyLength'] = body.length;
+        return log;
+      }
       // 限制响应体日志长度，避免过大的数据污染日志
       final dynamic safeData = _redactLogValue(
-        response.data,
+        body,
         requestSide: false,
       );
       final String dataStr = safeData.toString();
