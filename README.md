@@ -131,6 +131,8 @@ lib/
 
 草稿和再次提交确认不能保证服务端只创建一次。本仓库尚未实现自建后端的幂等键与按提交标识查询结果，服务端结果仍需单独确认。
 
+报修列表按服务端 `current` / `pageSize` / `pageTotal` 读取全部页，任一页失败时不将部分结果当作完整列表。无附件报修显式提交 `attachment: []`。课程后端取消接口的实际拼写是 `cancel/repaire/{id}`，返回状态 `0` 表示已取消，不进入待处理筛选，也不再显示取消操作；状态缺失或无法解析时显示“状态未知”，同样不进入任何状态筛选，不猜成某个具体状态。2026-10-09 已通过现有测试账号验证正式应用创建、成功后清理草稿及该记录的接口取消；范围和设备证据见 [报修设备验证](docs/repair_device_validation.md)。
+
 运行检查：`./tool/flutter_ohos.ps1 analyze --no-pub`、`./tool/flutter_ohos.ps1 test --no-pub`。
 实现调用链、复现命令、验证边界与面试讲解见 [鸿蒙分享与报修稳定性说明](docs/harmony_share_and_reliability.md)。
 

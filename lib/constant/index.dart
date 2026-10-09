@@ -112,7 +112,8 @@ class HttpPath {
   static String repairDetail(String id) => '$repair/${Uri.encodeComponent(id)}';
 
   static String cancelRepair(String id) =>
-      'cancel/repair/${Uri.encodeComponent(id)}';
+      // 课程服务端的实际路由拼写为 repaire，不是 repair。
+      'cancel/repaire/${Uri.encodeComponent(id)}';
 
   static String visitorDetail(String id) =>
       '$visitor/${Uri.encodeComponent(id)}';

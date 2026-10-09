@@ -58,7 +58,7 @@ enum RepairStatusFilter {
       case RepairStatusFilter.all:
         return true;
       case RepairStatusFilter.pending:
-        return record.status == 0 || record.status == 1;
+        return record.status == 1;
       case RepairStatusFilter.processing:
         return record.status == 2;
       case RepairStatusFilter.completed:

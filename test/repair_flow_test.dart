@@ -167,7 +167,7 @@ void main() {
       return <RepairRecord>[
         if (cancelled)
           const RepairRecord(
-              id: 'repair-test', repairItemName: '水管维修', status: 4)
+              id: 'repair-test', repairItemName: '水管维修', status: 0)
         else
           pendingRepair,
       ];

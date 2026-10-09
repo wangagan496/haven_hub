@@ -15,7 +15,8 @@ const List<RepairRecord> records = <RepairRecord>[
   RepairRecord(
       id: 'processing', repairItemName: 'Processing repair', status: 2),
   RepairRecord(id: 'completed', repairItemName: 'Completed repair', status: 3),
-  RepairRecord(id: 'cancelled', repairItemName: 'Cancelled repair', status: 4),
+  // 服务端用 0 表示已取消，这里显式给出而不是依赖默认值。
+  RepairRecord(id: 'cancelled', repairItemName: 'Cancelled repair', status: 0),
 ];
 
 Finder filter(RepairStatusFilter value) => find
@@ -93,17 +94,74 @@ void main() {
     await finishPage(tester);
   });
 
-  testWidgets('records displayed as pending remain in the pending filter',
+  testWidgets('server status zero is cancelled and excluded from pending',
       (WidgetTester tester) async {
-    const RepairRecord legacy =
-        RepairRecord(id: 'legacy', repairItemName: 'Legacy pending repair');
-    expect(legacy.statusText, RepairStatusFilter.pending.displayName);
-    await pumpPage(tester,
-        RepairListPage(loader: () async => const <RepairRecord>[legacy]));
+    final RepairRecord legacy = RepairRecord.fromJson(<String, dynamic>{
+      'id': 'legacy',
+      'repairItemName': 'Cancelled repair',
+      'status': 0,
+    });
+    expect(legacy.statusText, '已取消');
+    expect(legacy.canCancel, isFalse);
+    await pumpPage(
+        tester, RepairListPage(loader: () async => <RepairRecord>[legacy]));
     expect(find.text(legacy.repairItemName), findsOneWidget);
     await tester.tap(filter(RepairStatusFilter.pending));
     await tester.pumpAndSettle();
-    expect(find.text(legacy.repairItemName), findsOneWidget);
+    expect(find.text(legacy.repairItemName), findsNothing);
+    await finishPage(tester);
+  });
+
+  // 显式的 0 表示服务端已取消（见上一条用例）。缺字段或无法解析的 status 属于
+  // 未知，不能落进 0 而显示成「已取消」——那是在告诉用户一件没发生的事。
+  test('missing or unparseable status is unknown, not cancelled', () {
+    for (final Object? raw in <Object?>[null, '', 'abc', <String>[]]) {
+      final RepairRecord record = RepairRecord.fromJson(<String, dynamic>{
+        'id': 'unknown',
+        'repairItemName': 'Unknown repair',
+        'status': raw,
+      });
+      expect(record.statusText, '状态未知', reason: 'status=$raw');
+      expect(record.canCancel, isFalse, reason: 'status=$raw');
+      expect(record.statusText, isNot('已取消'), reason: 'status=$raw');
+    }
+  });
+
+  testWidgets('unknown status stays out of every status filter',
+      (WidgetTester tester) async {
+    final RepairRecord unknown = RepairRecord.fromJson(<String, dynamic>{
+      'id': 'unknown',
+      'repairItemName': 'Unknown repair',
+    });
+    await pumpPage(
+        tester, RepairListPage(loader: () async => <RepairRecord>[unknown]));
+    // 「全部」应当展示它，且显示未知而不是已取消。
+    expect(find.text(unknown.repairItemName), findsOneWidget);
+    expect(find.text('状态未知'), findsOneWidget);
+    expect(find.text('已取消'), findsNothing);
+    for (final RepairStatusFilter value in <RepairStatusFilter>[
+      RepairStatusFilter.pending,
+      RepairStatusFilter.processing,
+      RepairStatusFilter.completed,
+    ]) {
+      await tester.tap(filter(value));
+      await tester.pumpAndSettle();
+      expect(find.text(unknown.repairItemName), findsNothing,
+          reason: '${value.displayName} 不应包含未知状态');
+    }
+    await finishPage(tester);
+  });
+
+  testWidgets('cancelled detail does not offer another cancellation',
+      (WidgetTester tester) async {
+    await pumpPage(
+        tester,
+        RepairDetailPage(
+          loader: (_) async => const RepairRecord(id: 'cancelled', status: 0),
+        ),
+        arguments: 'cancelled');
+    expect(find.text('已取消'), findsOneWidget);
+    expect(find.text('取消报修'), findsNothing);
     await finishPage(tester);
   });
 

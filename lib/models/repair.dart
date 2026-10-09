@@ -20,8 +20,14 @@ class RepairRecord {
     this.mobile = '',
     this.appointment = '',
     this.description = '',
-    this.status = 0,
+    this.status = unknownStatus,
   });
+
+  /// 服务端未给出或无法解析 [status] 时使用。
+  ///
+  /// 不能用 0 代替：0 是服务端「已取消」的真实取值，把缺失当成 0 会把一条
+  /// 状态未知的记录显示成「已取消」。
+  static const int unknownStatus = -1;
 
   factory RepairRecord.fromJson(Map<String, dynamic> json) => RepairRecord(
         id: json['id']?.toString().trim() ?? '',
@@ -45,13 +51,15 @@ class RepairRecord {
   final String description;
   final int status;
 
-  bool get canCancel => status == 1 || status == 0;
+  bool get canCancel => status == 1;
   String get statusText => switch (status) {
+        0 => '已取消',
         1 => '待处理',
         2 => '处理中',
         3 => '已完成',
         4 => '已取消',
-        _ => '待处理',
+        // 未识别或缺失的状态如实显示，不猜成某一个具体状态。
+        _ => '状态未知',
       };
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -66,4 +74,5 @@ class RepairRecord {
 
 int _toInt(Object? value) => value is num
     ? value.toInt()
-    : int.tryParse(value?.toString().trim() ?? '') ?? 0;
+    : int.tryParse(value?.toString().trim() ?? '') ??
+        RepairRecord.unknownStatus;
