@@ -26,9 +26,11 @@ const _unsaved = '账号信息尚未就绪，草稿暂未保存；请保留当�
 
 RepairFormPage _form(RepairDraftStore store,
         {Future<List<House>> Function()? houseLoader,
+        Future<UserInfo> Function()? userInfoLoader,
         Future<void> Function(RepairRecord)? submitter}) =>
     RepairFormPage(
       draftStore: store,
+      userInfoLoader: userInfoLoader ?? () async => const UserInfo.empty(),
       houseLoader: houseLoader ?? () async => _houses,
       itemLoader: () async => _items,
       submitter: submitter ?? (_) async {},
@@ -75,6 +77,247 @@ void main() {
   tearDown(() async {
     await Get.delete<UserInfoController>(force: true);
     tokenManager.invalidateLocalSession();
+  });
+
+  testWidgets('cold start fetches identity restores draft and allows submit',
+      (tester) async {
+    await prepare(tester);
+    await store.save('user-a',
+        const RepairDraft(record: RepairRecord(description: 'saved A draft')));
+    int loads = 0;
+    int requests = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () async {
+          loads++;
+          return _userA;
+        }, submitter: (_) async {
+          requests++;
+        }));
+    expect(loads, 1);
+    expect(find.text('saved A draft'), findsOneWidget);
+    expect(find.text(_unsaved), findsNothing);
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(requests, 1);
+    expect(await store.load('user-a'), isNull);
+    await finishPage(tester);
+  });
+
+  testWidgets('identity failure can retry in place and keeps confirmation',
+      (tester) async {
+    await prepare(tester);
+    await store.save(
+        'user-a',
+        const RepairDraft(
+            record: RepairRecord(description: 'old draft'),
+            resultUnconfirmed: true));
+    int loads = 0;
+    int requests = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () async {
+          if (++loads == 1) throw const NetworkException('账号资料加载失败，请检查网络');
+          return _userA;
+        }, submitter: (_) async {
+          requests++;
+        }));
+    expect(find.text('账号资料加载失败，请检查网络'), findsOneWidget);
+    await fillRepair(tester);
+    await tester.ensureVisible(find.text('重试加载账号信息'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重试加载账号信息'));
+    await tester.pumpAndSettle();
+    expect(loads, 2);
+    expect(find.text('水管漏水'), findsOneWidget);
+    expect((await store.load('user-a'))!.resultUnconfirmed, isTrue);
+    await tester.ensureVisible(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(find.text('上次提交结果未确认'), findsOneWidget);
+    expect(requests, 0);
+    await tester.tap(find.text('先不提交'));
+    await tester.pumpAndSettle();
+    await finishPage(tester);
+  });
+
+  testWidgets('empty profile id remains blocked and submit retries identity',
+      (tester) async {
+    await prepare(tester);
+    int loads = 0;
+    int requests = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () async {
+          return ++loads <= 2
+              ? const UserInfo(id: ' ', avatarUrl: '', nickName: '')
+              : _userA;
+        }, submitter: (_) async {
+          requests++;
+        }));
+    expect(find.text('账号信息缺少用户 ID，请重试加载'), findsOneWidget);
+    expect(users.currentUser.id, isEmpty);
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(loads, 2);
+    expect(requests, 0);
+    expect(await store.load('user-a'), isNull);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(loads, 3);
+    expect(requests, 1);
+    await finishPage(tester);
+  });
+
+  testWidgets(
+      'pending identity is deduplicated and survives same session refresh',
+      (tester) async {
+    await prepare(tester);
+    final response = Completer<UserInfo>();
+    int loads = 0;
+    final requests = <RepairRecord>[];
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () {
+          loads++;
+          return response.future;
+        }, submitter: (record) async {
+          requests.add(record);
+        }));
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(loads, 1);
+    expect(requests, isEmpty);
+    await tester.runAsync(() => tokenManager.setRefreshedToken('refreshed-a',
+        refreshToken: 'refreshed-ra'));
+    response.complete(_userA);
+    await tester.pumpAndSettle();
+    expect(requests, hasLength(1));
+    expect(requests.single.description, '水管漏水');
+    expect(await store.load('user-a'), isNull);
+    await finishPage(tester);
+  });
+
+  testWidgets('late fetched identity cannot update a replacement account',
+      (tester) async {
+    await prepare(tester);
+    final response = Completer<UserInfo>();
+    int loads = 0;
+    int requests = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () {
+          loads++;
+          return response.future;
+        }, submitter: (_) async {
+          requests++;
+        }));
+    await fillRepair(tester);
+    await tester.runAsync(() => tokenManager.setToken('account-b'));
+    users.updateUser(_userB);
+    response.complete(_userA);
+    await tester.pumpAndSettle();
+    expect(users.currentUser.id, 'user-b');
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(loads, 1);
+    expect(requests, 0);
+    expect(await store.load('user-a'), isNull);
+    expect(await store.load('user-b'), isNull);
+    await finishPage(tester);
+  });
+
+  testWidgets('leaving during identity fetch ignores late profile',
+      (tester) async {
+    await prepare(tester);
+    final response = Completer<UserInfo>();
+    await pumpPage(tester, _form(store, userInfoLoader: () => response.future));
+    await tester.pumpWidget(const SizedBox.shrink());
+    response.complete(_userA);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(users.currentUser.id, isEmpty);
+    expect(users.listeners, 0);
+    expect(await store.load('user-a'), isNull);
+  });
+
+  testWidgets('missing token does not fetch identity or submit',
+      (tester) async {
+    await prepare(tester);
+    tokenManager.invalidateLocalSession();
+    int loads = 0;
+    int requests = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () async {
+          loads++;
+          return _userA;
+        }, submitter: (_) async {
+          requests++;
+        }));
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pumpAndSettle();
+    expect(loads, 0);
+    expect(requests, 0);
+    await finishPage(tester);
+  });
+
+  testWidgets('ready identity avoids redundant fetch', (tester) async {
+    await prepare(tester);
+    users.updateUser(_userA);
+    int loads = 0;
+    await pumpPage(
+        tester,
+        _form(store, userInfoLoader: () async {
+          loads++;
+          return _userB;
+        }));
+    expect(loads, 0);
+    expect(users.currentUser.id, 'user-a');
+    await finishPage(tester);
+  });
+
+  testWidgets('profile published elsewhere wins over a late empty response',
+      (tester) async {
+    await prepare(tester);
+    final response = Completer<UserInfo>();
+    final delayedDrafts = _DelayedDraftStore();
+    int loads = 0;
+    final requests = <RepairRecord>[];
+    await pumpPage(
+        tester,
+        _form(delayedDrafts, userInfoLoader: () {
+          loads++;
+          return response.future;
+        }, submitter: (record) async {
+          requests.add(record);
+        }));
+    users.updateUser(_userA);
+    await tester.pump();
+    expect(delayedDrafts.started.isCompleted, isTrue);
+    expect(loads, 1);
+    expect(users.currentUser.id, 'user-a');
+    await fillRepair(tester);
+    await tester.tap(find.text('提交报修'));
+    await tester.pump();
+    expect(requests, isEmpty);
+    delayedDrafts.response.complete(null);
+    await tester.pumpAndSettle();
+    expect(requests, hasLength(1));
+    expect(requests.single.description, '水管漏水');
+    response.complete(const UserInfo.empty());
+    await tester.pumpAndSettle();
+    expect(users.currentUser.id, 'user-a');
+    expect(loads, 1);
+    expect(requests, hasLength(1));
+    expect(find.text(_unsaved), findsNothing);
+    await finishPage(tester);
   });
 
   testWidgets(
@@ -212,10 +455,13 @@ void main() {
     expect(calls, 0);
     expect((await store.load('user-a'))!.record.description,
         'unconfirmed on disk');
+    expect(find.text('本机草稿读取失败，请保留当前页面，点击提交可重试'), findsOneWidget);
+    expect(find.text('本机草稿保存不可用，请保留当前页面的填写内容'), findsNothing);
     failing.fail = false;
     await tester.tap(find.text('提交报修'));
     await tester.pumpAndSettle();
     expect(find.text('上次提交结果未确认'), findsOneWidget);
+    expect(find.text('本机草稿读取失败，请保留当前页面，点击提交可重试'), findsNothing);
     expect(find.text('本机草稿保存不可用，请保留当前页面的填写内容'), findsNothing);
     expect(calls, 0);
     await tester.tap(find.text('先不提交'));

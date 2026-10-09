@@ -5,6 +5,7 @@ import 'package:get/get.dart' show Get, Inst;
 
 import '../../api/house.dart';
 import '../../api/repair.dart';
+import '../../api/user.dart';
 import '../../controller/user_info_controller.dart';
 import '../../models/house.dart';
 import '../../models/repair.dart';
@@ -418,6 +419,7 @@ class RepairFormPage extends StatefulWidget {
       {this.houseLoader = getHouseListApi,
       this.itemLoader = getRepairItemsApi,
       this.submitter = submitRepairApi,
+      this.userInfoLoader = getUserInfoApi,
       this.draftStore,
       this.draftUserKey,
       super.key});
@@ -425,6 +427,7 @@ class RepairFormPage extends StatefulWidget {
   final HouseListLoader houseLoader;
   final RepairItemLoader itemLoader;
   final SubmitRepairLoader submitter;
+  final UserInfoLoader userInfoLoader;
   final RepairDraftStore? draftStore;
   final String Function()? draftUserKey;
   @override
@@ -451,11 +454,16 @@ class _RepairFormPageState extends State<RepairFormPage>
   bool _restoringDraft = false;
   bool _draftLoaded = false;
   bool _draftRestored = false;
+  bool _draftReadFailed = false;
   bool _draftSaveFailed = false;
+  bool _identityLoading = false;
+  String? _identityError;
   bool _submitted = false;
   RepairDraft? _lastOwnedDraft;
   Timer? _draftTimer;
   VoidCallback? _removeUserListener;
+  Future<void>? _identityRequest;
+  Future<void>? _draftRestoreRequest;
   late String _draftUserKey;
   late final int _formSessionId;
   RepairDraftStore get _draftStore => widget.draftStore ?? repairDraftStore;
@@ -475,6 +483,7 @@ class _RepairFormPageState extends State<RepairFormPage>
     _mobile.addListener(_scheduleDraftSave);
     _description.addListener(_scheduleDraftSave);
     unawaited(_loadOptions());
+    unawaited(_prepareDraft());
   }
 
   @override
@@ -514,6 +523,53 @@ class _RepairFormPageState extends State<RepairFormPage>
   bool get _sameOwner =>
       tokenManager.sessionId == _formSessionId &&
       (_draftUserKey.isEmpty || _currentUserKey() == _draftUserKey);
+
+  Future<void> _ensureIdentity() {
+    if (!mounted ||
+        !_sameOwner ||
+        widget.draftUserKey != null ||
+        _currentUserKey().isNotEmpty ||
+        tokenManager.getToken().isEmpty) {
+      return Future<void>.value();
+    }
+    final Future<void>? pending = _identityRequest;
+    if (pending != null) return pending;
+    final Future<void> request = _loadIdentity();
+    _identityRequest = request;
+    return request.whenComplete(() {
+      if (identical(_identityRequest, request)) _identityRequest = null;
+    });
+  }
+
+  Future<void> _loadIdentity() async {
+    setState(() {
+      _identityLoading = true;
+      _identityError = null;
+    });
+    try {
+      // 冷启动直接进入报修时，“我的”尚未加载资料，需要本页主动补取。
+      final info = await widget.userInfoLoader();
+      if (!mounted || !_sameOwner || tokenManager.getToken().isEmpty) return;
+      // 同会话的其他页面可能已经取得资料，不用迟到结果覆盖它。
+      if (_currentUserKey().isNotEmpty) return;
+      if (info.id.trim().isEmpty) {
+        throw const FormatException('账号信息缺少用户 ID，请重试加载');
+      }
+      Get.find<UserInfoController>().updateUser(info);
+    } on Object catch (error) {
+      if (!mounted || !_sameOwner || _currentUserKey().isNotEmpty) return;
+      setState(() =>
+          _identityError = describeError(error, fallback: '无法获取账号信息，请稍后重试'));
+    } finally {
+      if (mounted) setState(() => _identityLoading = false);
+    }
+  }
+
+  Future<void> _prepareDraft() async {
+    await _ensureIdentity();
+    if (!mounted || !_optionsLoaded || _loading) return;
+    await _restoreDraft();
+  }
 
   void _onUserInfoChanged() {
     // 用户资料也可能在其他组件构建时更新；不在其构建过程中更新本页。
@@ -564,11 +620,25 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
   }
 
-  Future<void> _restoreDraft() async {
-    if (_draftLoaded || _draftLoading || _submitted || !_sameOwner) return;
-    // 未知身份只能在原会话内绑定一次，不能用进程内 sessionId 做持久化键。
+  Future<void> _restoreDraft() {
+    final Future<void>? pending = _draftRestoreRequest;
+    if (pending != null) return pending;
+    if (!mounted || _draftLoaded || _submitted || !_sameOwner) {
+      return Future<void>.value();
+    }
+    // 未知身份时不登记一个已完成的恢复任务，避免它挡住稍后到达资料的恢复。
     if (_draftUserKey.isEmpty) _draftUserKey = _currentUserKey();
-    if (_draftUserKey.isEmpty) return;
+    if (_draftUserKey.isEmpty) return Future<void>.value();
+    final Future<void> request = _readDraft();
+    _draftRestoreRequest = request;
+    return request.whenComplete(() {
+      if (identical(_draftRestoreRequest, request)) {
+        _draftRestoreRequest = null;
+      }
+    });
+  }
+
+  Future<void> _readDraft() async {
     setState(() => _draftLoading = true);
     try {
       final RepairDraft? draft = await _draftStore.load(_draftUserKey);
@@ -605,7 +675,7 @@ class _RepairFormPageState extends State<RepairFormPage>
           }
         }
         _draftLoaded = true;
-        _draftSaveFailed = false;
+        _draftReadFailed = false;
         _lastOwnedDraft = RepairDraft(
           record: _formRecord(),
           resultUnconfirmed: _resultUnconfirmed,
@@ -614,7 +684,7 @@ class _RepairFormPageState extends State<RepairFormPage>
       if (_formEdited) await _saveDraft();
     } on Object {
       // 未能读取时不覆盖磁盘草稿，也不允许跳过可能存在的二次确认。
-      if (mounted && _sameOwner) setState(() => _draftSaveFailed = true);
+      if (mounted && _sameOwner) setState(() => _draftReadFailed = true);
     } finally {
       if (mounted) setState(() => _draftLoading = false);
     }
@@ -646,7 +716,7 @@ class _RepairFormPageState extends State<RepairFormPage>
     } finally {
       if (mounted) setState(() => _loading = false);
       // 覆盖资料恰好在上面的 await 与 finally 之间到达的情况。
-      if (mounted && !_draftSaveFailed) _onUserInfoChanged();
+      if (mounted && !_draftReadFailed) _onUserInfoChanged();
     }
   }
 
@@ -669,6 +739,8 @@ class _RepairFormPageState extends State<RepairFormPage>
       return;
     }
     if (!_draftLoaded) {
+      await _ensureIdentity();
+      if (!mounted) return;
       await _restoreDraft();
       if (!mounted) return;
       if (!_sameOwner) {
@@ -677,8 +749,10 @@ class _RepairFormPageState extends State<RepairFormPage>
       }
       if (!_draftLoaded) {
         await PromptAction.showWarning(_draftUserKey.isEmpty
-            ? '账号信息尚未就绪，请保留当前页面，稍后再提交'
-            : '草稿尚未读取完成，请保留当前页面，稍后再提交');
+            ? _identityError ?? '账号信息尚未就绪，请保留当前页面，稍后再提交'
+            : _draftReadFailed
+                ? '本机草稿读取失败，请保留当前页面并重试'
+                : '草稿尚未读取完成，请保留当前页面，稍后再提交');
         return;
       }
       // 读取草稿期间其他点击可能已经开始提交。
@@ -786,9 +860,25 @@ class _RepairFormPageState extends State<RepairFormPage>
                       padding: const EdgeInsets.all(16),
                       children: <Widget>[
                         if (_draftUserKey.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('账号信息尚未就绪，草稿暂未保存；请保留当前页面，待账号信息加载后再提交'),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                const Text(
+                                    '账号信息尚未就绪，草稿暂未保存；请保留当前页面，待账号信息加载后再提交'),
+                                if (_identityError != null)
+                                  Text(_identityError!),
+                                if (widget.draftUserKey == null)
+                                  TextButton(
+                                    onPressed:
+                                        _identityLoading ? null : _prepareDraft,
+                                    child: Text(_identityLoading
+                                        ? '正在加载账号信息…'
+                                        : '重试加载账号信息'),
+                                  ),
+                              ],
+                            ),
                           ),
                         if (_draftLoading)
                           const Padding(
@@ -810,6 +900,11 @@ class _RepairFormPageState extends State<RepairFormPage>
                           const Padding(
                             padding: EdgeInsets.only(bottom: 12),
                             child: Text('本机草稿保存不可用，请保留当前页面的填写内容'),
+                          ),
+                        if (_draftReadFailed)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('本机草稿读取失败，请保留当前页面，点击提交可重试'),
                           ),
                         DropdownButtonFormField<String>(
                             key: ValueKey('house:$_draftRestored'),

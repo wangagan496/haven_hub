@@ -41,6 +41,7 @@ Future<void> fillRepair(WidgetTester tester) async {
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextFormField).last, '水管漏水');
   await tester.ensureVisible(find.text('提交报修'));
+  await tester.pumpAndSettle();
 }
 
 RepairFormPage form(
@@ -51,8 +52,10 @@ RepairFormPage form(
 }) =>
     RepairFormPage(
       draftStore: draftStore ?? RepairDraftStore(),
+      userInfoLoader: () async => const UserInfo.empty(),
       // 通用表单测试有明确的测试账号；生产身份时序由专门用例覆盖。
-      draftUserKey: productionIdentity ? null : draftUserKey ?? () => 'test-user',
+      draftUserKey:
+          productionIdentity ? null : draftUserKey ?? () => 'test-user',
       houseLoader: () async => const <House>[
         House(id: 'house-test', point: '测试小区', building: '1栋', room: '101'),
       ],
