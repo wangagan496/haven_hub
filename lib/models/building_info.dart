@@ -7,6 +7,10 @@ class BuildingInfo {
     this.address = '',
     this.building = '',
     this.room = '',
+    this.floor = '',
+    this.communityId = '',
+    this.latitude,
+    this.longitude,
   });
 
   /// 小区名称。
@@ -21,18 +25,34 @@ class BuildingInfo {
   /// 已选择的房间。
   final String room;
 
+  /// 用户填写的楼层，空值表示未填写；地下楼层使用 B1 等形式。
+  final String floor;
+
+  /// 腾讯小区地点及其 GCJ-02 坐标，用于围绕所选小区查询。
+  final String communityId;
+  final double? latitude;
+  final double? longitude;
+
   /// 返回一个新的 [BuildingInfo]，仅更新指定字段。
   BuildingInfo copyWith({
     String? name,
     String? address,
     String? building,
     String? room,
+    String? floor,
+    String? communityId,
+    double? latitude,
+    double? longitude,
   }) {
     return BuildingInfo(
       name: name ?? this.name,
       address: address ?? this.address,
       building: building ?? this.building,
       room: room ?? this.room,
+      floor: floor ?? this.floor,
+      communityId: communityId ?? this.communityId,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
     );
   }
 
@@ -55,6 +75,10 @@ class BuildingInfo {
       'address': address,
       'build': building,
       'room': room,
+      'floor': floor,
+      'communityId': communityId,
+      'latitude': latitude,
+      'longitude': longitude,
     };
   }
 
@@ -65,6 +89,10 @@ class BuildingInfo {
       address: json['address']?.toString().trim() ?? '',
       building: json['build']?.toString().trim() ?? '',
       room: json['room']?.toString().trim() ?? '',
+      floor: json['floor']?.toString().trim() ?? '',
+      communityId: json['communityId']?.toString().trim() ?? '',
+      latitude: double.tryParse(json['latitude']?.toString() ?? ''),
+      longitude: double.tryParse(json['longitude']?.toString() ?? ''),
     );
   }
 
@@ -75,11 +103,16 @@ class BuildingInfo {
         other.name == name &&
         other.address == address &&
         other.building == building &&
-        other.room == room;
+        other.room == room &&
+        other.floor == floor &&
+        other.communityId == communityId &&
+        other.latitude == latitude &&
+        other.longitude == longitude;
   }
 
   @override
-  int get hashCode => Object.hash(name, address, building, room);
+  int get hashCode => Object.hash(
+      name, address, building, room, floor, communityId, latitude, longitude);
 
   @override
   String toString() {

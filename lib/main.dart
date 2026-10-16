@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'api/home.dart';
@@ -47,6 +50,18 @@ class HavenHubApp extends StatelessWidget {
             AppLocalizations.of(context)?.appTitle ?? 'Haven Hub',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
+        builder: (context, child) => CallbackShortcuts(
+          bindings: <ShortcutActivator, VoidCallback>{
+            const SingleActivator(LogicalKeyboardKey.escape,
+                includeRepeats: false): () {
+              final navigator = GlobalVariable.navigatorKey.currentState;
+              if (navigator != null && navigator.canPop()) {
+                unawaited(navigator.maybePop());
+              }
+            },
+          },
+          child: child ?? const SizedBox.shrink(),
+        ),
 
         // 国际化配置
         localizationsDelegates: const [

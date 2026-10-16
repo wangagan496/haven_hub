@@ -40,7 +40,8 @@ Future<void> fillRepair(WidgetTester tester) async {
   await tester.tap(find.text('确定'));
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextFormField).last, '水管漏水');
-  await tester.ensureVisible(find.text('提交报修'));
+  await tester.scrollUntilVisible(find.text('提交报修'), 200,
+      scrollable: find.byType(Scrollable).first);
   await tester.pumpAndSettle();
 }
 
@@ -390,7 +391,7 @@ void main() {
         tester,
         form((_) async {},
             draftStore: RepairDraftStore(), draftUserKey: () => 'user-a'));
-    expect(find.text('已恢复当前账号的报修草稿'), findsOneWidget);
+    expect(find.text('已恢复之前未完成的内容'), findsOneWidget);
     expect(find.text('水管漏水'), findsOneWidget);
     expect(find.text('13800138000'), findsOneWidget);
     expect(find.text('测试小区 1栋 101'), findsOneWidget);
@@ -399,7 +400,7 @@ void main() {
         form((_) async {}, draftStore: store, draftUserKey: () => 'user-b'));
     expect(find.text('水管漏水'), findsNothing);
     expect(find.text('13800138000'), findsNothing);
-    expect(find.text('已恢复当前账号的报修草稿'), findsNothing);
+    expect(find.text('已恢复之前未完成的内容'), findsNothing);
     await finishPage(tester);
   });
 
@@ -483,7 +484,7 @@ void main() {
     await pumpPage(tester,
         form((_) async {}, draftStore: store, productionIdentity: true));
     expect(find.text('private account-a draft'), findsNothing);
-    expect(find.text('已恢复当前账号的报修草稿'), findsNothing);
+    expect(find.text('已恢复之前未完成的内容'), findsNothing);
     await finishPage(tester);
     await Get.delete<UserInfoController>(force: true);
     tokenManager.invalidateLocalSession();

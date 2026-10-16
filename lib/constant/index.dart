@@ -12,10 +12,14 @@ class GlobalVariable {
       GlobalKey<NavigatorState>();
 
   /// 本地存储的 Token 键名。
-  static const String tokenKey = 'flutter_enjoy_plus';
+  static const bool localBackend = bool.fromEnvironment('LOCAL_BACKEND');
+  static const String tokenKey =
+      localBackend ? 'flutter_enjoy_plus_local' : 'flutter_enjoy_plus';
 
   /// 本地存储的 Refresh Token 键名。
-  static const String refreshTokenKey = 'flutter_enjoy_plus_refresh';
+  static const String refreshTokenKey = localBackend
+      ? 'flutter_enjoy_plus_local_refresh'
+      : 'flutter_enjoy_plus_refresh';
 
   /// API 基础地址。
   ///
@@ -53,6 +57,15 @@ class GlobalVariable {
     defaultValue: 'https://apis.map.qq.com/',
   );
 
+  /// 可选的高德 Web 服务 Key。未配置时仅使用腾讯地图。
+  static const String amapWebKey = String.fromEnvironment('AMAP_WEB_KEY');
+
+  /// 高德 Web 服务基础地址；Web 调试时可指向本地代理。
+  static const String amapApiBaseUrl = String.fromEnvironment(
+    'AMAP_API_BASE_URL',
+    defaultValue: 'https://restapi.amap.com/',
+  );
+
   /// 定位坐标系类型。
   ///
   /// 支持的值：
@@ -82,6 +95,9 @@ class HttpPath {
   static const String repair = 'repair';
   static const String repairItem = 'repairItem';
   static const String visitor = 'visitor';
+  static const String workerRepairs = 'worker/repairs';
+  static String workerRepair(String id) => '$workerRepairs/${Uri.encodeComponent(id)}';
+  static String workerRepairAction(String id, String action) => '${workerRepair(id)}/$action';
 
   // 腾讯地图服务接口（相对于可配置的 tencentMapApiBaseUrl）
   static final String tencentCoordinateTranslate =
@@ -90,8 +106,15 @@ class HttpPath {
   static final String tencentPlaceSearch = _tencentMapUrl('ws/place/v1/search');
   static final String tencentIpLocation = _tencentMapUrl('ws/location/v1/ip');
 
+  static final String amapPlaceAround = _amapUrl('v5/place/around');
+
   static String _tencentMapUrl(String path) {
     const String baseUrl = GlobalVariable.tencentMapApiBaseUrl;
+    return '${baseUrl.endsWith('/') ? baseUrl : '$baseUrl/'}$path';
+  }
+
+  static String _amapUrl(String path) {
+    const String baseUrl = GlobalVariable.amapApiBaseUrl;
     return '${baseUrl.endsWith('/') ? baseUrl : '$baseUrl/'}$path';
   }
 

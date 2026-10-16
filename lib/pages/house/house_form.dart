@@ -17,6 +17,7 @@ import '../../utils/toast.dart';
 import '../../utils/validators.dart';
 import '../../widgets/cached_image.dart';
 import '../../widgets/camera_dialog.dart';
+import '../../widgets/image_preview.dart';
 import '../../widgets/section_title.dart';
 import 'house_list.dart';
 
@@ -44,33 +45,44 @@ House createHouseFormData(BuildController controller) {
     point: buildingInfo.name,
     building: buildingInfo.building,
     room: buildingInfo.room,
+    floor: buildingInfo.floor,
   );
 }
 
-/// 校验房屋表单，返回第一条错误提示；全部通过时返回 null。
-String? validateHouseFormData(House house) {
-  // 逐项 trim：选楼流程和详情接口都可能带回只含空白的字段。
+String? _validateHouseSelection(House house) {
   if (house.point.trim().isEmpty ||
       house.building.trim().isEmpty ||
       house.room.trim().isEmpty) {
     return '小区、楼栋、房间不能为空';
   }
+  return null;
+}
 
-  final String name = house.name.trim();
-  if (name.isEmpty) {
-    return '业主姓名不能为空';
-  }
-  if (!Validators.ownerNamePattern.hasMatch(name)) {
-    return '业主姓名须为2-15位中文';
-  }
+String? _validateOwnerName(String? value) {
+  final String name = value?.trim() ?? '';
+  if (name.isEmpty) return '请输入姓名';
+  if (!Validators.ownerNamePattern.hasMatch(name)) return '姓名格式不正确';
+  return null;
+}
 
-  final String mobile = house.mobile.trim();
-  if (mobile.isEmpty) {
-    return '手机号不能为空';
-  }
-  if (!_mobilePattern.hasMatch(mobile)) {
-    return '手机号格式不正确';
-  }
+String? _validateMobile(String? value) {
+  final String mobile = value?.trim() ?? '';
+  if (mobile.isEmpty) return '请输入手机号';
+  if (!_mobilePattern.hasMatch(mobile)) return '手机号格式不正确';
+  return null;
+}
+
+/// 校验房屋表单，返回第一条错误提示；全部通过时返回 null。
+String? validateHouseFormData(House house) {
+  // 逐项 trim：选楼流程和详情接口都可能带回只含空白的字段。
+  final String? selectionError = _validateHouseSelection(house);
+  if (selectionError != null) return selectionError;
+
+  final String? nameError = _validateOwnerName(house.name);
+  if (nameError != null) return nameError;
+
+  final String? mobileError = _validateMobile(house.mobile);
+  if (mobileError != null) return mobileError;
 
   if (house.idcardFrontUrl.trim().isEmpty ||
       house.idcardBackUrl.trim().isEmpty) {
@@ -103,6 +115,7 @@ class HouseForm extends StatefulWidget {
 class _HouseFormState extends State<HouseForm> {
   late final BuildController _controller;
   late House _house;
+  final ScrollController _scrollController = ScrollController();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _mobileController = TextEditingController();
   String _idcardFrontPhotoPath = '';
@@ -110,9 +123,18 @@ class _HouseFormState extends State<HouseForm> {
   bool _isPickingImage = false;
   bool _isLoading = false;
   bool _isLoadingDetail = false;
+  bool _showValidationErrors = false;
   bool _didReadRouteArguments = false;
   String _houseId = '';
   String? _detailErrorMessage;
+  String? _ownerNameServerError;
+  String? _rejectedOwnerName;
+
+  String? _validateOwnerNameField(String? value) {
+    final String? formatError = _validateOwnerName(value);
+    if (formatError != null) return formatError;
+    return value?.trim() == _rejectedOwnerName ? _ownerNameServerError : null;
+  }
 
   @override
   void initState() {
@@ -148,6 +170,7 @@ class _HouseFormState extends State<HouseForm> {
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _nameController.dispose();
     _mobileController.dispose();
     super.dispose();
@@ -188,6 +211,18 @@ class _HouseFormState extends State<HouseForm> {
   Future<void> _submit() async {
     if (_isLoading) return;
 
+    final String? selectionError = _validateHouseSelection(_house);
+    if (selectionError != null) {
+      await PromptAction.showWarning(selectionError);
+      return;
+    }
+    if (_validateOwnerNameField(_house.name) != null ||
+        _validateMobile(_house.mobile) != null) {
+      setState(() => _showValidationErrors = true);
+      if (_scrollController.hasClients) _scrollController.jumpTo(0);
+      return;
+    }
+
     final String? validationMessage = validateHouseFormData(_house);
     if (validationMessage != null) {
       await PromptAction.showWarning(validationMessage);
@@ -195,13 +230,12 @@ class _HouseFormState extends State<HouseForm> {
     }
 
     setState(() => _isLoading = true);
+    final House submittingHouse = _house.copyWith(
+      name: _house.name.trim(),
+      mobile: _house.mobile.trim(),
+    );
     try {
-      await widget.submitHouseLoader(
-        _house.copyWith(
-          name: _house.name.trim(),
-          mobile: _house.mobile.trim(),
-        ),
-      );
+      await widget.submitHouseLoader(submittingHouse);
       if (!mounted) return;
 
       await PromptAction.showSuccess(
@@ -230,10 +264,30 @@ class _HouseFormState extends State<HouseForm> {
         error,
         fallback: _houseId.isEmpty ? '添加房屋失败，请重试' : '修改房屋失败，请重试',
       );
+      if (error is BusinessException && error.code == 40002) {
+        if (mounted && _nameController.text.trim() == submittingHouse.name) {
+          setState(() {
+            _ownerNameServerError = msg;
+            _rejectedOwnerName = submittingHouse.name;
+            _showValidationErrors = true;
+          });
+          if (_scrollController.hasClients) _scrollController.jumpTo(0);
+        }
+        return;
+      }
       await PromptAction.showError(msg);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _goToHouseSelection() async {
+    if (!mounted) return;
+    // 直达房屋表单时替换当前空表单，避免完成选择后又返回到这份无效页面。
+    await Navigator.pushReplacementNamed<void, void>(
+      context,
+      AppRoutes.locationList,
+    );
   }
 
   Future<void> _showIdcardPhotoOptions(_IdcardSide side) async {
@@ -357,13 +411,16 @@ class _HouseFormState extends State<HouseForm> {
   Widget _buildIdcardPhoto(_IdcardSide side, String photoPath) {
     return Stack(
       children: <Widget>[
-        SizedBox(
-          width: double.infinity,
-          height: 300,
-          // Web 端 buildLocalImage 本身就是 Image.network，无需再判断 kIsWeb。
-          child: _isNetworkPhotoPath(photoPath)
-              ? _buildNetworkPhoto(photoPath)
-              : buildLocalImage(photoPath, fit: BoxFit.contain),
+        Semantics(
+          button: true,
+          label: '点击查看大图',
+          child: InkWell(
+            onTap: () => showDialog<void>(
+              context: context,
+              builder: (_) => ImagePreview(child: _buildPhoto(photoPath)),
+            ),
+            child: _buildPhoto(photoPath),
+          ),
         ),
         Positioned(
           right: 0,
@@ -375,6 +432,34 @@ class _HouseFormState extends State<HouseForm> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildPhoto(String photoPath) {
+    return _isNetworkPhotoPath(photoPath)
+        ? _buildNetworkPhoto(photoPath)
+        : buildLocalImage(photoPath, fit: BoxFit.contain);
+  }
+
+  Widget _buildIdcardPhotoSection(
+    _IdcardSide side,
+    String info,
+    String photoPath,
+  ) {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.all(10),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 560),
+          child: photoPath.isEmpty
+              ? AspectRatio(
+                  aspectRatio: 4 / 3,
+                  child: _buildAddIdcardPhoto(side, info),
+                )
+              : _buildIdcardPhoto(side, photoPath),
+        ),
+      ),
     );
   }
 
@@ -400,7 +485,13 @@ class _HouseFormState extends State<HouseForm> {
       appBar: AppBar(
         title: Text(_houseId.isEmpty ? '添加房屋信息' : '修改房屋信息'),
       ),
-      body: _buildBody(),
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: _buildBody(),
+        ),
+      ),
     );
   }
 
@@ -437,53 +528,82 @@ class _HouseFormState extends State<HouseForm> {
 
     final String houseLabel = <String>[
       _house.building,
+      _house.floorLabel,
       _house.room,
     ].where((String value) => value.isNotEmpty).join(' ');
+    final bool hasCompleteHouseSelection = _house.point.trim().isNotEmpty &&
+        _house.building.trim().isNotEmpty &&
+        _house.room.trim().isNotEmpty;
+    final bool canSelectHouse = _houseId.isEmpty && !hasCompleteHouseSelection;
 
     return ListView(
+      controller: _scrollController,
       padding: const EdgeInsets.only(top: 10, bottom: 10),
       children: <Widget>[
         const SectionTitle('房屋信息'),
-        Container(
+        Material(
           color: Colors.white,
-          padding: const EdgeInsets.symmetric(
-            horizontal: 10,
-            vertical: 15,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                _house.point.isEmpty ? '尚未选择小区' : _house.point,
-                style: const TextStyle(fontSize: 16),
+          child: InkWell(
+            onTap: canSelectHouse ? _goToHouseSelection : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 15,
               ),
-              if (houseLabel.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 6),
-                Text(
-                  houseLabel,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 14,
-                  ),
-                ),
-              ],
-            ],
+              child: SizedBox(
+                width: double.infinity,
+                child: hasCompleteHouseSelection
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            _house.point,
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            houseLabel,
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      )
+                    : const Text(
+                        '未选择房屋',
+                        style: TextStyle(fontSize: 16),
+                      ),
+              ),
+            ),
           ),
         ),
         const SectionTitle('业主信息'),
         Container(
           color: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: TextField(
+          child: TextFormField(
             controller: _nameController,
             maxLength: 15,
-            onChanged: (String value) => _house = _house.copyWith(name: value),
+            onChanged: (String value) {
+              _house = _house.copyWith(name: value);
+              if (_ownerNameServerError != null) {
+                setState(() {
+                  _ownerNameServerError = null;
+                  _rejectedOwnerName = null;
+                });
+              }
+            },
             decoration: const InputDecoration(
               labelText: '姓名',
-              hintText: '请输入业主姓名',
+              hintText: '请输入姓名',
               hintStyle: TextStyle(color: Colors.grey),
               border: InputBorder.none,
             ),
+            autovalidateMode: _showValidationErrors
+                ? AutovalidateMode.always
+                : AutovalidateMode.onUnfocus,
+            validator: _validateOwnerNameField,
             inputFormatters: <TextInputFormatter>[
               LengthLimitingTextInputFormatter(15),
             ],
@@ -514,7 +634,7 @@ class _HouseFormState extends State<HouseForm> {
         Container(
           color: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: TextField(
+          child: TextFormField(
             controller: _mobileController,
             keyboardType: TextInputType.phone,
             maxLength: 11,
@@ -522,10 +642,14 @@ class _HouseFormState extends State<HouseForm> {
                 _house = _house.copyWith(mobile: value),
             decoration: const InputDecoration(
               labelText: '手机号',
-              hintText: '请输入您的手机号',
+              hintText: '请输入手机号',
               hintStyle: TextStyle(color: Colors.grey),
               border: InputBorder.none,
             ),
+            autovalidateMode: _showValidationErrors
+                ? AutovalidateMode.always
+                : AutovalidateMode.onUnfocus,
+            validator: _validateMobile,
             inputFormatters: <TextInputFormatter>[
               FilteringTextInputFormatter.digitsOnly,
               LengthLimitingTextInputFormatter(11),
@@ -540,34 +664,16 @@ class _HouseFormState extends State<HouseForm> {
             style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
           ),
         ),
-        Container(
-          color: Colors.white,
-          height: 320,
-          padding: const EdgeInsets.all(10),
-          child: _idcardFrontPhotoPath.isEmpty
-              ? _buildAddIdcardPhoto(
-                  _IdcardSide.front,
-                  '上传人像面照片',
-                )
-              : _buildIdcardPhoto(
-                  _IdcardSide.front,
-                  _idcardFrontPhotoPath,
-                ),
+        _buildIdcardPhotoSection(
+          _IdcardSide.front,
+          '上传人像面照片',
+          _idcardFrontPhotoPath,
         ),
         const SizedBox(height: 20),
-        Container(
-          color: Colors.white,
-          height: 320,
-          padding: const EdgeInsets.all(10),
-          child: _idcardBackPhotoPath.isEmpty
-              ? _buildAddIdcardPhoto(
-                  _IdcardSide.back,
-                  '上传国徽面照片',
-                )
-              : _buildIdcardPhoto(
-                  _IdcardSide.back,
-                  _idcardBackPhotoPath,
-                ),
+        _buildIdcardPhotoSection(
+          _IdcardSide.back,
+          '上传国徽面照片',
+          _idcardBackPhotoPath,
         ),
         const SizedBox(height: 20),
         Padding(

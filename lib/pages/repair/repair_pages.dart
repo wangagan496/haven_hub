@@ -6,9 +6,12 @@ import 'package:get/get.dart' show Get, Inst;
 import '../../api/house.dart';
 import '../../api/repair.dart';
 import '../../api/user.dart';
+import '../../constant/index.dart';
 import '../../controller/user_info_controller.dart';
 import '../../models/house.dart';
 import '../../models/repair.dart';
+import '../../platform/avatar_picker.dart';
+import '../../platform/repair_photo_picker.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
@@ -21,6 +24,8 @@ import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
+import '../../widgets/repair_photos.dart';
+import '../../widgets/repair_progress.dart';
 
 /// 报修状态筛选枚举
 enum RepairStatusFilter {
@@ -29,6 +34,7 @@ enum RepairStatusFilter {
 
   /// 待处理
   pending,
+  waiting,
 
   /// 处理中
   processing,
@@ -42,7 +48,9 @@ enum RepairStatusFilter {
       case RepairStatusFilter.all:
         return '全部';
       case RepairStatusFilter.pending:
-        return '待处理';
+        return GlobalVariable.localBackend ? '待派单' : '待处理';
+      case RepairStatusFilter.waiting:
+        return '待接单';
       case RepairStatusFilter.processing:
         return '处理中';
       case RepairStatusFilter.completed:
@@ -59,6 +67,8 @@ enum RepairStatusFilter {
         return true;
       case RepairStatusFilter.pending:
         return record.status == 1;
+      case RepairStatusFilter.waiting:
+        return record.status == 5;
       case RepairStatusFilter.processing:
         return record.status == 2;
       case RepairStatusFilter.completed:
@@ -68,7 +78,7 @@ enum RepairStatusFilter {
 }
 
 class RepairListPage extends StatefulWidget {
-  const RepairListPage({this.loader = getRepairListApi, super.key});
+  const RepairListPage({this.loader = getPreloadedRepairListApi, super.key});
   static const String routeName = AppRoutes.repairList;
   final RepairListLoader loader;
   @override
@@ -163,7 +173,7 @@ class _RepairListPageState extends State<RepairListPage> {
     final bool result =
         await Navigator.pushNamed<bool>(context, route, arguments: arguments) ??
             false;
-    if (mounted && result) await _load();
+    if (mounted && (result || route == AppRoutes.repairDetail)) await _load();
   }
 
   @override
@@ -375,7 +385,12 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
     final RepairRecord? record = _record;
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(title: const Text('报修详情')),
+      appBar: AppBar(title: const Text('报修详情'), actions: <Widget>[
+        IconButton(
+            tooltip: '刷新进度',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh)),
+      ]),
       body: AsyncStateView(
         isLoading: _loading,
         errorMessage: _error,
@@ -384,6 +399,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
         builder: (_) => record == null
             ? const SizedBox.shrink()
             : ListView(children: <Widget>[
+                if (record.workflowVersion == 1) RepairProgress(record: record),
                 const _Section('报修信息'),
                 _Row('维修项目', record.repairItemName),
                 _Row('预约时间', record.appointment),
@@ -392,6 +408,10 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
                 _Row('处理状态', record.statusText),
                 const _Section('故障描述'),
                 _Row('描述', record.description),
+                if (record.attachment.isNotEmpty)
+                  Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: RepairPhotos(urls: record.attachment)),
               ]),
       ),
       bottomNavigationBar: record?.canCancel != true
@@ -420,6 +440,8 @@ class RepairFormPage extends StatefulWidget {
       this.itemLoader = getRepairItemsApi,
       this.submitter = submitRepairApi,
       this.userInfoLoader = getUserInfoApi,
+      this.photoPicker = pickRepairPhotos,
+      this.photoUploader = uploadPhotoAPI,
       this.draftStore,
       this.draftUserKey,
       super.key});
@@ -428,6 +450,8 @@ class RepairFormPage extends StatefulWidget {
   final RepairItemLoader itemLoader;
   final SubmitRepairLoader submitter;
   final UserInfoLoader userInfoLoader;
+  final RepairPhotoPicker photoPicker;
+  final UploadPhotoLoader photoUploader;
   final RepairDraftStore? draftStore;
   final String Function()? draftUserKey;
   @override
@@ -439,6 +463,9 @@ class _RepairFormPageState extends State<RepairFormPage>
   final _formKey = GlobalKey<FormState>();
   final _mobile = TextEditingController();
   final _description = TextEditingController();
+  List<String> _photos = <String>[];
+  final List<PickedAvatar> _failedPhotos = <PickedAvatar>[];
+  bool _uploading = false;
   List<House> _houses = const <House>[];
   List<RepairItem> _items = const <RepairItem>[];
   String? _houseId;
@@ -586,6 +613,7 @@ class _RepairFormPageState extends State<RepairFormPage>
         mobile: _mobile.text.trim(),
         appointment: _date == null ? '' : formatDate(_date!),
         description: _description.text.trim(),
+        attachment: List<String>.of(_photos),
       );
 
   void _scheduleDraftSave() {
@@ -660,6 +688,7 @@ class _RepairFormPageState extends State<RepairFormPage>
                       : null;
               _mobile.text = draft.record.mobile;
               _description.text = draft.record.description;
+              _photos = List<String>.of(draft.record.attachment.take(8));
               final DateTime today = DateUtils.dateOnly(DateTime.now());
               final DateTime? date =
                   DateTime.tryParse(draft.record.appointment);
@@ -732,8 +761,94 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
   }
 
+  Future<void> _addPhotos() async {
+    if (_uploading ||
+        _submitting ||
+        !_sameOwner ||
+        _photos.length + _failedPhotos.length >= 8) {
+      return;
+    }
+    setState(() => _uploading = true);
+    try {
+      final remaining = 8 - _photos.length - _failedPhotos.length;
+      List<PickedAvatar> files;
+      if (supportsAvatarCamera) {
+        final source = await showModalBottomSheet<AvatarSource>(
+            context: context,
+            builder: (sheet) => SafeArea(
+                    child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                      ListTile(
+                          leading: const Icon(Icons.photo_library_outlined),
+                          title: const Text('从相册选择'),
+                          onTap: () =>
+                              Navigator.pop(sheet, AvatarSource.gallery)),
+                      ListTile(
+                          leading: const Icon(Icons.camera_alt_outlined),
+                          title: const Text('拍照'),
+                          onTap: () =>
+                              Navigator.pop(sheet, AvatarSource.camera)),
+                    ])));
+        if (!mounted || !_sameOwner || source == null) return;
+        if (source == AvatarSource.camera) {
+          final file = await pickAvatar(source);
+          files = file == null ? <PickedAvatar>[] : <PickedAvatar>[file];
+        } else {
+          files = await widget.photoPicker(remaining);
+        }
+      } else {
+        files = await widget.photoPicker(remaining);
+      }
+      if (!mounted || !_sameOwner) return;
+      if (files.length > remaining) throw FormatException('还能添加$remaining张照片');
+      await _uploadFiles(files);
+    } on Object catch (error) {
+      if (mounted && _sameOwner) {
+        await PromptAction.showError(
+            describeError(error, fallback: '添加照片失败，请重试'));
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  Future<void> _uploadFiles(List<PickedAvatar> files) async {
+    for (final file in files) {
+      if (!mounted || !_sameOwner) return;
+      try {
+        final url = await widget.photoUploader(
+            fileBytes: file.bytes, fileName: file.fileName);
+        if (!mounted || !_sameOwner) return;
+        setState(() => _photos.add(url));
+        _scheduleDraftSave();
+      } on Object {
+        if (!mounted || !_sameOwner) return;
+        setState(() => _failedPhotos.add(file));
+      }
+    }
+  }
+
+  Future<void> _retryPhotos() async {
+    if (_uploading || !_sameOwner) return;
+    final files = List<PickedAvatar>.of(_failedPhotos);
+    setState(() {
+      _failedPhotos.clear();
+      _uploading = true;
+    });
+    try {
+      await _uploadFiles(files);
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
   Future<void> _submit() async {
-    if (_submitting || _submitted) return;
+    if (_submitting || _submitted || _uploading) return;
+    if (_failedPhotos.isNotEmpty) {
+      await PromptAction.showWarning('请重试或移除上传失败的照片');
+      return;
+    }
     if (!_sameOwner) {
       await PromptAction.showWarning('登录账号已变化，请返回后重新打开报修页面');
       return;
@@ -856,115 +971,148 @@ class _RepairFormPageState extends State<RepairFormPage>
               absorbing: _submitting || _submitted,
               child: Form(
                   key: _formKey,
-                  child: ListView(
+                  child: SingleChildScrollView(
                       padding: const EdgeInsets.all(16),
-                      children: <Widget>[
-                        if (_draftUserKey.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: <Widget>[
-                                const Text(
-                                    '账号信息尚未就绪，草稿暂未保存；请保留当前页面，待账号信息加载后再提交'),
-                                if (_identityError != null)
-                                  Text(_identityError!),
-                                if (widget.draftUserKey == null)
-                                  TextButton(
-                                    onPressed:
-                                        _identityLoading ? null : _prepareDraft,
-                                    child: Text(_identityLoading
-                                        ? '正在加载账号信息…'
-                                        : '重试加载账号信息'),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        if (_draftLoading)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('正在读取当前账号的草稿，请稍后提交'),
-                          ),
-                        if (_resultUnconfirmed && !_submitting)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 16),
-                            child: Text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。',
-                                style: TextStyle(color: AppColors.danger)),
-                          ),
-                        if (_draftRestored)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('已恢复当前账号的报修草稿'),
-                          ),
-                        if (_draftSaveFailed)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('本机草稿保存不可用，请保留当前页面的填写内容'),
-                          ),
-                        if (_draftReadFailed)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('本机草稿读取失败，请保留当前页面，点击提交可重试'),
-                          ),
-                        DropdownButtonFormField<String>(
-                            key: ValueKey('house:$_draftRestored'),
-                            initialValue: _houseId,
-                            decoration:
-                                const InputDecoration(labelText: '报修房屋'),
-                            validator: (v) => v == null ? '请选择报修房屋' : null,
-                            items: _houses
-                                .map((house) => DropdownMenuItem(
-                                    value: house.id,
-                                    child: Text(house.fullName)))
-                                .toList(),
-                            onChanged: (value) {
-                              setState(() => _houseId = value);
-                              _scheduleDraftSave();
-                            }),
-                        const SizedBox(height: 14),
-                        DropdownButtonFormField<String>(
-                            key: ValueKey('item:$_draftRestored'),
-                            initialValue: _itemId,
-                            decoration:
-                                const InputDecoration(labelText: '维修项目'),
-                            validator: (v) => v == null ? '请选择维修项目' : null,
-                            items: _items
-                                .map((item) => DropdownMenuItem(
-                                    value: item.id, child: Text(item.name)))
-                                .toList(),
-                            onChanged: (value) {
-                              setState(() => _itemId = value);
-                              _scheduleDraftSave();
-                            }),
-                        const SizedBox(height: 14),
-                        TextFormField(
-                            controller: _mobile,
-                            keyboardType: TextInputType.phone,
-                            decoration:
-                                const InputDecoration(labelText: '联系电话'),
-                            validator: Validators.required('请输入联系电话')
-                                .chain(Validators.mobile())
-                                .validate),
-                        const SizedBox(height: 14),
-                        ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(
-                                _date == null ? '请选择预约日期' : formatDate(_date!)),
-                            trailing: const Icon(Icons.calendar_today_outlined),
-                            onTap: _pickDate),
-                        TextFormField(
-                            controller: _description,
-                            decoration:
-                                const InputDecoration(labelText: '故障描述（选填）'),
-                            maxLines: 4),
-                        const SizedBox(height: 28),
-                        FilledButton(
-                            onPressed:
-                                _submitting || _submitted ? null : _submit,
-                            child: _submitting && !_waitingForConfirmation
-                                ? const CircularProgressIndicator()
-                                : const Text('提交报修'))
-                      ])))));
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            if (_draftUserKey.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    const Text(
+                                        '账号信息尚未就绪，草稿暂未保存；请保留当前页面，待账号信息加载后再提交'),
+                                    if (_identityError != null)
+                                      Text(_identityError!),
+                                    if (widget.draftUserKey == null)
+                                      TextButton(
+                                        onPressed: _identityLoading
+                                            ? null
+                                            : _prepareDraft,
+                                        child: Text(_identityLoading
+                                            ? '正在加载账号信息…'
+                                            : '重试加载账号信息'),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            if (_draftLoading)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 12),
+                                child: Text('正在读取当前账号的草稿，请稍后提交'),
+                              ),
+                            if (_resultUnconfirmed && !_submitting)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 16),
+                                child: Text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。',
+                                    style: TextStyle(color: AppColors.danger)),
+                              ),
+                            if (_draftRestored)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 12),
+                                child: Text('已恢复之前未完成的内容'),
+                              ),
+                            if (_draftSaveFailed)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 12),
+                                child: Text('本机草稿保存不可用，请保留当前页面的填写内容'),
+                              ),
+                            if (_draftReadFailed)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 12),
+                                child: Text('本机草稿读取失败，请保留当前页面，点击提交可重试'),
+                              ),
+                            DropdownButtonFormField<String>(
+                                key: ValueKey('house:$_draftRestored'),
+                                initialValue: _houseId,
+                                decoration:
+                                    const InputDecoration(labelText: '报修房屋'),
+                                validator: (v) => v == null ? '请选择报修房屋' : null,
+                                items: _houses
+                                    .map((house) => DropdownMenuItem(
+                                        value: house.id,
+                                        child: Text(house.fullName)))
+                                    .toList(),
+                                onChanged: (value) {
+                                  setState(() => _houseId = value);
+                                  _scheduleDraftSave();
+                                }),
+                            const SizedBox(height: 14),
+                            DropdownButtonFormField<String>(
+                                key: ValueKey('item:$_draftRestored'),
+                                initialValue: _itemId,
+                                decoration:
+                                    const InputDecoration(labelText: '维修项目'),
+                                validator: (v) => v == null ? '请选择维修项目' : null,
+                                items: _items
+                                    .map((item) => DropdownMenuItem(
+                                        value: item.id, child: Text(item.name)))
+                                    .toList(),
+                                onChanged: (value) {
+                                  setState(() => _itemId = value);
+                                  _scheduleDraftSave();
+                                }),
+                            const SizedBox(height: 14),
+                            TextFormField(
+                                controller: _mobile,
+                                keyboardType: TextInputType.phone,
+                                decoration:
+                                    const InputDecoration(labelText: '联系电话'),
+                                validator: Validators.required('请输入联系电话')
+                                    .chain(Validators.mobile())
+                                    .validate),
+                            const SizedBox(height: 14),
+                            ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(_date == null
+                                    ? '请选择预约日期'
+                                    : formatDate(_date!)),
+                                trailing:
+                                    const Icon(Icons.calendar_today_outlined),
+                                onTap: _pickDate),
+                            TextFormField(
+                                controller: _description,
+                                decoration: const InputDecoration(
+                                    labelText: '故障描述（选填）'),
+                                maxLines: 4),
+                            const SizedBox(height: 20),
+                            RepairPhotos(
+                                urls: _photos,
+                                editable: true,
+                                uploading: _uploading,
+                                selectedCount:
+                                    _photos.length + _failedPhotos.length,
+                                onAdd: _addPhotos,
+                                onRemove: (index) {
+                                  setState(() => _photos.removeAt(index));
+                                  _scheduleDraftSave();
+                                }),
+                            if (_failedPhotos.isNotEmpty) ...<Widget>[
+                              Text(
+                                  '${_failedPhotos.length}张照片上传失败，离开页面前请重试或移除'),
+                              Wrap(spacing: 12, children: <Widget>[
+                                TextButton(
+                                    onPressed: _uploading ? null : _retryPhotos,
+                                    child: const Text('重试上传')),
+                                TextButton(
+                                    onPressed: _uploading
+                                        ? null
+                                        : () => setState(_failedPhotos.clear),
+                                    child: const Text('移除失败照片')),
+                              ]),
+                            ],
+                            const SizedBox(height: 28),
+                            FilledButton(
+                                onPressed:
+                                    _submitting || _submitted || _uploading
+                                        ? null
+                                        : _submit,
+                                child: _submitting && !_waitingForConfirmation
+                                    ? const CircularProgressIndicator()
+                                    : const Text('提交报修'))
+                          ]))))));
 }
 
 class _Section extends StatelessWidget {

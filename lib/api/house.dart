@@ -2,7 +2,10 @@ import 'dart:typed_data';
 
 import '../constant/index.dart';
 import '../models/house.dart';
+import '../utils/mutation_list.dart';
 import '../utils/request_dio.dart';
+
+final MutationList<House> _houseChanges = MutationList(House.fromJson);
 
 /// 房屋列表加载器类型定义。
 typedef HouseListLoader = Future<List<House>> Function();
@@ -30,8 +33,11 @@ typedef SubmitHouseLoader = Future<void> Function(House house);
 /// - [NetworkException]: 网络请求失败
 /// - [BusinessException]: 业务逻辑错误
 /// - [FormatException]: 数据格式不正确
-Future<List<House>> getHouseListApi() async {
-  final dynamic data = await requestDio.get(HttpPath.houseList);
+Future<List<House>> getHouseListApi({RequestDio? client}) =>
+    _houseChanges.load(() => _fetchHouseList(client ?? requestDio));
+
+Future<List<House>> _fetchHouseList(RequestDio client) async {
+  final dynamic data = await client.get(HttpPath.houseList);
   if (data is! List<dynamic>) {
     throw const FormatException('房屋列表数据格式不正确');
   }
@@ -56,7 +62,11 @@ Future<List<House>> getHouseListApi() async {
 /// - [NetworkException]: 网络请求失败
 /// - [BusinessException]: 业务逻辑错误（如房屋不存在）
 /// - [FormatException]: 数据格式不正确
-Future<House> getHouseDetailApi(String id) async {
+Future<House> getHouseDetailApi(String id, {bool forceRefresh = false}) async {
+  // 编辑返回详情页时直接使用同一次写响应中的记录，列表仍可随后消费。
+  for (final House house in forceRefresh ? const <House>[] : _houseChanges.pending ?? const <House>[]) {
+    if (house.id == id) return house;
+  }
   final dynamic data = await requestDio.get(HttpPath.houseDetail(id));
   if (data is! Map<dynamic, dynamic>) {
     throw const FormatException('房屋详情数据格式不正确');
@@ -73,13 +83,14 @@ Future<House> getHouseDetailApi(String id) async {
 /// - [FormatException]: ID 参数无效
 /// - [NetworkException]: 网络请求失败
 /// - [BusinessException]: 业务逻辑错误（如无权限删除）
-Future<void> deleteHouseApi(String id) async {
+Future<void> deleteHouseApi(String id, {RequestDio? client}) async {
   final String houseId = id.trim();
   if (houseId.isEmpty) {
     throw const FormatException('房屋参数不正确');
   }
 
-  await requestDio.delete(HttpPath.houseDetail(houseId));
+  await _houseChanges.write(
+      () => (client ?? requestDio).delete(HttpPath.houseDetail(houseId)));
 }
 
 /// 上传照片到服务器。
@@ -120,6 +131,6 @@ Future<String> uploadPhotoAPI({
 /// 抛出：
 /// - [NetworkException]: 网络请求失败
 /// - [BusinessException]: 业务逻辑错误（如验证失败）
-Future<void> submitHouseAPI(House house) async {
-  await requestDio.post(HttpPath.houseList, data: house.toJson());
-}
+Future<void> submitHouseAPI(House house, {RequestDio? client}) =>
+    _houseChanges.write(() =>
+        (client ?? requestDio).post(HttpPath.houseList, data: house.toJson()));

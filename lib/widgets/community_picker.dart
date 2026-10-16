@@ -37,7 +37,8 @@ class CommunityHeader extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               address,
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+              style:
+                  const TextStyle(color: AppColors.textSecondary, fontSize: 13),
             ),
           ],
           if (selectedBuilding.isNotEmpty) ...<Widget>[
@@ -57,43 +58,81 @@ class CommunityHeader extends StatelessWidget {
   }
 }
 
-/// 选楼流程里“一列可点条目”的列表，楼栋和房间共用。
-class PickerListView extends StatelessWidget {
-  const PickerListView({
-    required this.items,
-    required this.onSelected,
+/// 缺少楼栋、房间资料时，由用户按门牌填写，不生成可选房屋。
+class ManualHouseInput extends StatelessWidget {
+  const ManualHouseInput({
+    required this.controller,
+    required this.notice,
+    required this.label,
+    required this.hint,
+    required this.buttonLabel,
+    required this.onContinue,
     this.enabled = true,
+    this.additionalField,
+    this.canContinue = true,
+    this.inputKey,
+    this.inputField,
     super.key,
   });
 
-  final List<String> items;
-  final ValueChanged<String> onSelected;
+  final TextEditingController controller;
+  final String notice;
+  final String label;
+  final String hint;
+  final String buttonLabel;
+  final VoidCallback onContinue;
   final bool enabled;
+  final Widget? additionalField;
+  final bool canContinue;
+  final Key? inputKey;
+  final Widget? inputField;
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
-      itemCount: items.length,
-      separatorBuilder: (_, __) => const Divider(height: 1, indent: 16),
-      itemBuilder: (BuildContext context, int index) {
-        final String item = items[index];
-        return ListTile(
-          onTap: enabled ? () => onSelected(item) : null,
-          tileColor: Colors.white,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 4,
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            notice,
+            style: const TextStyle(color: AppColors.textSecondary),
           ),
-          title: Text(
-            item,
-            style: const TextStyle(color: AppColors.textPrimary, fontSize: 16),
+          const SizedBox(height: 20),
+          if (additionalField != null) ...<Widget>[
+            additionalField!,
+            const SizedBox(height: 20),
+          ],
+          inputField ??
+              TextField(
+                key: inputKey,
+                controller: controller,
+                enabled: enabled,
+                maxLength: 100,
+                textInputAction: TextInputAction.done,
+                onSubmitted: enabled ? (_) => onContinue() : null,
+                decoration: InputDecoration(
+                  labelText: label,
+                  hintText: hint,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+          const SizedBox(height: 20),
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: controller,
+            builder:
+                (BuildContext context, TextEditingValue value, Widget? child) {
+              return ElevatedButton(
+                onPressed:
+                    enabled && canContinue && value.text.trim().isNotEmpty
+                        ? onContinue
+                        : null,
+                child: Text(buttonLabel),
+              );
+            },
           ),
-          trailing: const Icon(
-            Icons.chevron_right_rounded,
-            color: AppColors.divider,
-          ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../api/home.dart';
+import '../../api/user.dart';
+import '../../constant/index.dart';
 import '../../constant/tab_config.dart';
 import '../../controller/build_controller.dart';
 import '../../l10n/app_localizations.dart';
@@ -12,14 +14,32 @@ import '../../utils/token_manager.dart';
 import '../home/index.dart';
 import '../login/index.dart';
 import '../mine/index.dart';
+import '../worker/worker_pages.dart';
+
+/// 判断当前登录账号是否为维修师傅；未登录或非本地后端时返回 false。
+typedef WorkerRoleLoader = Future<bool> Function();
+
+Future<bool> loadIsWorker() async {
+  if (!GlobalVariable.localBackend || tokenManager.getToken().isEmpty) {
+    return false;
+  }
+  final user = await getUserInfoApi();
+  return user.role == 'worker';
+}
 
 class TabsPage extends StatefulWidget {
   const TabsPage({
     this.announcementLoader = getAnnouncementListApi,
+    this.workerRoleLoader = loadIsWorker,
+    this.workerPageBuilder = _buildWorkerPage,
     super.key,
   });
 
   final AnnouncementLoader announcementLoader;
+  final WorkerRoleLoader workerRoleLoader;
+  final WidgetBuilder workerPageBuilder;
+
+  static Widget _buildWorkerPage(BuildContext context) => const WorkerPage();
 
   @override
   State<TabsPage> createState() => _TabsPageState();
@@ -27,7 +47,10 @@ class TabsPage extends StatefulWidget {
 
 class _TabsPageState extends State<TabsPage> {
   int _currentIndex = 0;
+  bool _isWorker = false;
+  int _roleRequestId = 0;
   late Future<void> _tokenInitialization;
+  late final StreamSubscription<LoginSuccessEvent> _loginSubscription;
   late final StreamSubscription<LogoutEvent> _logoutSubscription;
   bool _isHandlingLogout = false;
 
@@ -35,17 +58,30 @@ class _TabsPageState extends State<TabsPage> {
   void initState() {
     super.initState();
     BuildController.instance();
-    _tokenInitialization = tokenManager.init();
+    _tokenInitialization = _initializeIdentity();
+    _loginSubscription =
+        eventBus.on<LoginSuccessEvent>().listen(_onLoginSuccess);
     _logoutSubscription = eventBus.on<LogoutEvent>().listen(_onLogoutEvent);
   }
 
   @override
   void dispose() {
+    _loginSubscription.cancel();
     _logoutSubscription.cancel();
     super.dispose();
   }
 
+  /// 换号后旧实例可能仍在栈底，必须按新账号重新判定角色，
+  /// 否则住户会看到上一位师傅的工作台。
+  void _onLoginSuccess(LoginSuccessEvent event) {
+    if (!mounted) return;
+    setState(() => _isWorker = false);
+    unawaited(_resolveRole());
+  }
+
   void _onLogoutEvent(LogoutEvent event) {
+    _roleRequestId++;
+    if (mounted && _isWorker) setState(() => _isWorker = false);
     unawaited(_handleLogout());
   }
 
@@ -91,8 +127,35 @@ class _TabsPageState extends State<TabsPage> {
 
   void _retryTokenInitialization() {
     setState(() {
-      _tokenInitialization = tokenManager.init();
+      _tokenInitialization = _initializeIdentity();
     });
+  }
+
+  Future<void> _initializeIdentity() async {
+    await tokenManager.init();
+    await _resolveRole();
+  }
+
+  /// 角色查询失败只降级为住户界面，不阻塞启动；师傅接口仍由服务端鉴权。
+  Future<void> _resolveRole() async {
+    final int requestId = ++_roleRequestId;
+    final int session = tokenManager.sessionId;
+    bool isWorker = false;
+    bool failed = false;
+    try {
+      isWorker = await widget.workerRoleLoader();
+    } on Object {
+      failed = true;
+    }
+    if (!mounted ||
+        requestId != _roleRequestId ||
+        session != tokenManager.sessionId) {
+      return;
+    }
+    if (isWorker != _isWorker) setState(() => _isWorker = isWorker);
+    if (failed) {
+      await PromptAction.showWarning('身份信息获取失败，已按住户界面进入');
+    }
   }
 
   List<BottomNavigationBarItem> getTabs(BuildContext context) {
@@ -148,7 +211,7 @@ class _TabsPageState extends State<TabsPage> {
           );
         }
 
-        return _buildTabs();
+        return _isWorker ? widget.workerPageBuilder(context) : _buildTabs();
       },
     );
   }

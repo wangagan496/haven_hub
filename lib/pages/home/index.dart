@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../api/home.dart';
+import '../../api/repair.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/notice_data.dart';
 import '../../utils/app_exception.dart';
+import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
 import 'components/home_list.dart';
 import 'components/home_nav.dart';
@@ -13,32 +15,44 @@ import 'components/home_nav.dart';
 class HomePage extends StatefulWidget {
   const HomePage({
     this.announcementLoader = getAnnouncementListApi,
+    this.repairPreloader = preloadRepairList,
     super.key,
   });
 
   final AnnouncementLoader announcementLoader;
+  final Future<void> Function() repairPreloader;
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  static const List<NoticeData> _fallbackData = <NoticeData>[
-    NoticeData(
-      title: '社区',
-      content: '网络不可用时会显示本地示例内容。',
-      date: '2024-08-22 15:00:00',
-    ),
-  ];
-
-  List<NoticeData> _dataList = List<NoticeData>.of(_fallbackData);
+  List<NoticeData> _dataList = const <NoticeData>[];
   bool _isLoading = false;
   String? _errorMessage;
+  late final StreamSubscription<LoginSuccessEvent> _loginSubscription;
 
   @override
   void initState() {
     super.initState();
     unawaited(_getAnnouncementList());
+    _loginSubscription = eventBus.on<LoginSuccessEvent>().listen((_) {
+      _scheduleRepairPreload();
+    });
+    _scheduleRepairPreload();
+  }
+
+  void _scheduleRepairPreload() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(widget.repairPreloader());
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  @override
+  void dispose() {
+    _loginSubscription.cancel();
+    super.dispose();
   }
 
   Future<void> _getAnnouncementList() async {
@@ -122,6 +136,11 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               HomeList(list: _dataList),
+              if (_dataList.isEmpty && !_isLoading && _errorMessage == null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: Text(l10n.noAnnouncement),
+                ),
             ],
           ),
         ),

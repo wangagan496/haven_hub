@@ -59,7 +59,7 @@ class _HouseDetailState extends State<HouseDetail> {
     unawaited(_loadDetail());
   }
 
-  Future<void> _loadDetail() async {
+  Future<void> _loadDetail({bool forceRefresh = false}) async {
     if (_isLoading || _houseId.isEmpty) return;
 
     setState(() {
@@ -67,7 +67,9 @@ class _HouseDetailState extends State<HouseDetail> {
       _errorMessage = null;
     });
     try {
-      final House detail = await widget.houseDetailLoader(_houseId);
+      final House detail = forceRefresh && widget.houseDetailLoader == getHouseDetailApi
+          ? await getHouseDetailApi(_houseId, forceRefresh: true)
+          : await widget.houseDetailLoader(_houseId);
       if (!mounted) return;
       setState(() => _detail = detail);
     } on Object catch (error) {
@@ -144,6 +146,12 @@ class _HouseDetailState extends State<HouseDetail> {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('房屋详情'),
+        actions: <Widget>[
+          IconButton(
+              tooltip: '刷新审核结果',
+              onPressed: _isLoading ? null : () => _loadDetail(forceRefresh: true),
+              icon: const Icon(Icons.refresh))
+        ],
       ),
       body: SafeArea(
         top: false,
@@ -190,6 +198,12 @@ class _HouseDetailState extends State<HouseDetail> {
               ),
             ),
             const SectionTitle('业主信息'),
+            if (detail.isRejected)
+              _DetailRow(
+                  label: '打回原因',
+                  value: detail.reviewReason.isEmpty
+                      ? '请联系物业了解原因'
+                      : detail.reviewReason),
             _DetailRow(label: '房间号', value: detail.room),
             const Divider(height: 1, indent: 16),
             _DetailRow(label: '业主', value: detail.name),

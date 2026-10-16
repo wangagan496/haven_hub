@@ -4,6 +4,8 @@ import 'dart:io';
 const String _courseApiBaseUrl = 'https://live-api.itheima.net/';
 const String _tencentMapBaseUrl = 'https://apis.map.qq.com/';
 const String _tencentMapProxyPrefix = '/tencent-map/';
+const String _amapBaseUrl = 'https://restapi.amap.com/';
+const String _amapProxyPrefix = '/amap-map/';
 const int _defaultPort = 3001;
 
 class _ProxyOptions {
@@ -40,6 +42,7 @@ Future<void> main(List<String> arguments) async {
   stdout.writeln('Web API 开发代理已启动：http://127.0.0.1:$port/');
   stdout.writeln('课程接口：$_courseApiBaseUrl');
   stdout.writeln('腾讯位置服务：$_tencentMapBaseUrl');
+  stdout.writeln('高德位置服务：$_amapBaseUrl');
   stdout.writeln('按 Ctrl+C 停止服务。');
 
   final HttpClient client = HttpClient()
@@ -138,12 +141,19 @@ Future<void> _handleRequest(
 
   final bool isTencentMapRequest =
       request.uri.path.startsWith(_tencentMapProxyPrefix);
+  final bool isAmapRequest = request.uri.path.startsWith(_amapProxyPrefix);
   final Uri upstreamBaseUri = Uri.parse(
-    isTencentMapRequest ? _tencentMapBaseUrl : _courseApiBaseUrl,
+    isTencentMapRequest
+        ? _tencentMapBaseUrl
+        : isAmapRequest
+            ? _amapBaseUrl
+            : _courseApiBaseUrl,
   );
   final String upstreamPath = isTencentMapRequest
       ? '/${request.uri.path.substring(_tencentMapProxyPrefix.length)}'
-      : request.uri.path;
+      : isAmapRequest
+          ? '/${request.uri.path.substring(_amapProxyPrefix.length)}'
+          : request.uri.path;
   final Uri upstreamUri = upstreamBaseUri.replace(
     path: upstreamPath,
     query: request.uri.hasQuery ? request.uri.query : null,
@@ -171,16 +181,20 @@ Future<void> _handleRequest(
     await request.response.addStream(upstreamResponse);
     await request.response.close();
   } on Object catch (error) {
+    // 查询串可能带地图 Key；代理日志只记录路径和错误类型。
     stderr.writeln(
-      '${request.method} ${request.uri} 转发失败：$error',
-    );
+        '${request.method} ${request.uri.path} 转发失败：${error.runtimeType}');
     if (!responseStarted) {
       request.response.statusCode = HttpStatus.badGateway;
       await _sendJson(
         request.response,
         <String, Object?>{
           'code': 50200,
-          'message': isTencentMapRequest ? '开发代理连接腾讯位置服务失败' : '开发代理连接课程接口失败',
+          'message': isTencentMapRequest
+              ? '开发代理连接腾讯位置服务失败'
+              : isAmapRequest
+                  ? '开发代理连接高德位置服务失败'
+                  : '开发代理连接课程接口失败',
           'data': null,
         },
       );

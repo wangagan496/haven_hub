@@ -29,22 +29,20 @@ class BuildController extends GetxController {
 
   /// 更新小区信息（重置楼栋和房间）。
   void updateBuildingInfo(Map<String, dynamic> info) {
-    _info = BuildingInfo(
-      name: info['name']?.toString().trim() ?? '',
-      address: info['address']?.toString().trim() ?? '',
-    );
+    _info =
+        BuildingInfo.fromJson(info).copyWith(building: '', room: '', floor: '');
     update();
   }
 
   /// 更新楼栋信息（重置房间）。
   void updateBuild(String value) {
-    _info = _info.copyWith(building: value.trim(), room: '');
+    _info = _info.copyWith(building: value.trim(), room: '', floor: '');
     update();
   }
 
   /// 更新房间信息。
-  void updateRoom(String value) {
-    _info = _info.copyWith(room: value.trim());
+  void updateRoom(String value, {String? floor}) {
+    _info = _info.copyWith(room: value.trim(), floor: floor);
     update();
   }
 

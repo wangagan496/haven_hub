@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/user.dart';
+import '../../constant/index.dart';
+import '../../router/app_routes.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
@@ -15,7 +17,8 @@ class LoginPage extends StatefulWidget {
     this.toArguments,
     this.sendCodeLoader = sendCodeApi,
     this.loginLoader = loginApi,
-    this.enableDevelopmentCodeAutofill = kDebugMode,
+    this.enableDevelopmentCodeAutofill =
+        GlobalVariable.localBackend || kDebugMode,
     super.key,
   });
 
@@ -75,13 +78,18 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       final String? developmentCode =
-          kDebugMode && widget.enableDevelopmentCodeAutofill
+          (GlobalVariable.localBackend || kDebugMode) &&
+                  widget.enableDevelopmentCodeAutofill
               ? _extractVerificationCode(result)
               : null;
       if (developmentCode != null) {
         _codeController.text = developmentCode;
-        await PromptAction.showSuccess('验证码已获取并自动填入');
+        await PromptAction.showSuccess(
+            GlobalVariable.localBackend ? '开发验证码已填入，不发送短信' : '验证码已获取并自动填入');
       } else {
+        if (GlobalVariable.localBackend) {
+          throw const FormatException('未获取到开发验证码，请重新获取');
+        }
         await PromptAction.showSuccess('验证码已发送，请查收短信');
       }
       if (!mounted) {
@@ -172,6 +180,12 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       final String? toName = widget.toName;
+      if (GlobalVariable.localBackend && result['role'] == 'worker') {
+        // 师傅工作台由 TabsPage 按角色承载，登出事件也由它统一处理。
+        await Navigator.pushNamedAndRemoveUntil<void>(
+            context, AppRoutes.home, (_) => false);
+        return;
+      }
       if (toName != null && toName.isNotEmpty) {
         await Navigator.pushReplacementNamed(
           context,
@@ -180,7 +194,11 @@ class _LoginPageState extends State<LoginPage> {
         );
         return;
       }
-      await Navigator.maybePop(context);
+      if (Navigator.canPop(context)) {
+        await Navigator.maybePop(context);
+      } else {
+        await Navigator.pushReplacementNamed<void, void>(context, AppRoutes.home);
+      }
     } on Object catch (error) {
       if (mounted) {
         await PromptAction.showError(
@@ -268,6 +286,11 @@ class _LoginPageState extends State<LoginPage> {
               ],
             ),
             const SizedBox(height: 30),
+            if (GlobalVariable.localBackend)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text('本地学习版：使用开发验证码，不发送短信'),
+              ),
             Row(
               children: <Widget>[
                 Expanded(

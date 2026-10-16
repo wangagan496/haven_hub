@@ -55,6 +55,7 @@ void main() {
         'cancelled'
       ],
       RepairStatusFilter.pending: <String>['pending'],
+      RepairStatusFilter.waiting: <String>[],
       RepairStatusFilter.processing: <String>['processing'],
       RepairStatusFilter.completed: <String>['completed'],
     };

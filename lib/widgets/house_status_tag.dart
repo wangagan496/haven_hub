@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 /// 房屋审核状态：1 审核中、2 审核成功、3 审核失败，其余视为未知。
 String getStatusText(int value) {
   return switch (value) {
-    1 => '审核中',
-    2 => '审核成功',
-    3 => '审核失败',
+    1 => '待审核',
+    2 => '已通过',
+    3 => '已打回',
     _ => '未知状态',
   };
 }

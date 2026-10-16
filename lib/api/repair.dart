@@ -2,8 +2,13 @@ import '../constant/index.dart';
 import '../models/repair.dart';
 import '../utils/app_exception.dart';
 import '../utils/json_utils.dart';
+import '../utils/mutation_list.dart';
+import '../utils/repair_list_preloader.dart';
 import '../utils/request_dio.dart';
 import '../utils/token_manager.dart';
+
+final MutationList<RepairRecord> _repairChanges =
+    MutationList(RepairRecord.fromJson);
 
 typedef RepairListLoader = Future<List<RepairRecord>> Function();
 typedef RepairDetailLoader = Future<RepairRecord> Function(String id);
@@ -11,7 +16,20 @@ typedef RepairItemLoader = Future<List<RepairItem>> Function();
 typedef SubmitRepairLoader = Future<void> Function(RepairRecord record);
 typedef CancelRepairLoader = Future<void> Function(String id);
 
-Future<List<RepairRecord>> getRepairListApi({RequestDio? client}) async {
+final RepairListPreloader repairListPreloader =
+    RepairListPreloader(loader: getRepairListApi);
+
+Future<void> preloadRepairList() => repairListPreloader.preload();
+
+Future<List<RepairRecord>> getPreloadedRepairListApi() {
+  if (_repairChanges.pending != null) repairListPreloader.invalidate();
+  return repairListPreloader.load();
+}
+
+Future<List<RepairRecord>> getRepairListApi({RequestDio? client}) =>
+    _repairChanges.load(() => _fetchRepairList(client: client));
+
+Future<List<RepairRecord>> _fetchRepairList({RequestDio? client}) async {
   final RequestDio requests = client ?? requestDio;
   final int sessionId = tokenManager.sessionId;
   final List<RepairRecord> records = <RepairRecord>[];
@@ -63,14 +81,24 @@ Future<List<RepairItem>> getRepairItemsApi() async {
       .toList(growable: false);
 }
 
-Future<void> submitRepairApi(RepairRecord record, {RequestDio? client}) =>
-    (client ?? requestDio).post(HttpPath.repair, data: <String, dynamic>{
-      ...record.toJson(),
-      // 当前表单没有附件选择；显式传空数组，避免后端遗漏必填的 attach 列。
-      'attachment': <String>[],
-    });
+Future<void> submitRepairApi(RepairRecord record, {RequestDio? client}) async {
+  if (record.attachment.length > 8) throw const FormatException('现场照片最多8张');
+  repairListPreloader.invalidate();
+  try {
+    await _repairChanges.write(() =>
+        (client ?? requestDio).post(HttpPath.repair, data: record.toJson()));
+  } finally {
+    repairListPreloader.invalidate();
+  }
+}
 
 Future<void> cancelRepairApi(String id, {RequestDio? client}) async {
   if (id.trim().isEmpty) throw const FormatException('报修参数不正确');
-  await (client ?? requestDio).put(HttpPath.cancelRepair(id));
+  repairListPreloader.invalidate();
+  try {
+    await _repairChanges
+        .write(() => (client ?? requestDio).put(HttpPath.cancelRepair(id)));
+  } finally {
+    repairListPreloader.invalidate();
+  }
 }

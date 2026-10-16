@@ -1,3 +1,5 @@
+import '../utils/floor.dart';
+
 /// 房屋信息，对应接口 `room` 的列表项与详情。
 ///
 /// 接口返回的字段类型并不稳定（status、gender 可能是数字也可能是字符串），
@@ -20,12 +22,14 @@ class House {
     this.point = '',
     this.building = '',
     this.room = '',
+    this.floor = '',
     this.name = '',
     this.gender = 1,
     this.mobile = '',
     this.idcardFrontUrl = '',
     this.idcardBackUrl = '',
     this.status = 0,
+    this.reviewReason = '',
   });
 
   factory House.fromJson(Map<String, dynamic> json) {
@@ -34,12 +38,14 @@ class House {
       point: _readText(json['point']),
       building: _readText(json['building']),
       room: _readText(json['room']),
+      floor: _readText(json['floor']),
       name: _readText(json['name']),
       gender: _readGender(json['gender']),
       mobile: _readText(json['mobile']),
       idcardFrontUrl: _readFirstText(json, _idcardFrontKeys),
       idcardBackUrl: _readFirstText(json, _idcardBackKeys),
       status: _readStatus(json['status']),
+      reviewReason: _readText(json['reviewReason']),
     );
   }
 
@@ -73,6 +79,8 @@ class House {
   final String point;
   final String building;
   final String room;
+  final String floor;
+  String get floorLabel => formatFloor(floor);
 
   /// 业主姓名。
   final String name;
@@ -85,23 +93,25 @@ class House {
 
   /// 审核状态：1 审核中、2 审核成功、3 审核失败，0 表示未知。
   final int status;
+  final String reviewReason;
 
   /// 「小区 楼栋 房间」，缺失的部分自动跳过。
-  String get fullName => <String>[point, building, room]
+  String get fullName => <String>[point, building, floorLabel, room]
       .where((String value) => value.isNotEmpty)
       .join(' ');
 
   /// 「楼栋+房间」，房屋列表里的房间号展示。
-  String get roomLabel => '$building$room';
+  String get roomLabel =>
+      floor.isEmpty ? '$building$room' : '$building $floorLabel $room';
 
   /// 性别文本（男/女）。
   String get genderText => gender == 0 ? '女' : '男';
 
   /// 审核状态文本。
   String get statusText => switch (status) {
-        1 => '审核中',
-        2 => '审核成功',
-        3 => '审核失败',
+        1 => '待审核',
+        2 => '已通过',
+        3 => '已打回',
         _ => '未知',
       };
 
@@ -119,6 +129,7 @@ class House {
     String? point,
     String? building,
     String? room,
+    String? floor,
     String? name,
     int? gender,
     String? mobile,
@@ -131,12 +142,14 @@ class House {
       point: point ?? this.point,
       building: building ?? this.building,
       room: room ?? this.room,
+      floor: floor ?? this.floor,
       name: name ?? this.name,
       gender: gender ?? this.gender,
       mobile: mobile ?? this.mobile,
       idcardFrontUrl: idcardFrontUrl ?? this.idcardFrontUrl,
       idcardBackUrl: idcardBackUrl ?? this.idcardBackUrl,
       status: status ?? this.status,
+      reviewReason: reviewReason,
     );
   }
 
@@ -147,6 +160,7 @@ class House {
       'point': point,
       'building': building,
       'room': room,
+      if (floor.isNotEmpty) 'floor': floor,
       'name': name,
       'gender': gender,
       'mobile': mobile,

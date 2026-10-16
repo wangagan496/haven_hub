@@ -149,7 +149,7 @@ void main() {
       ...record.toJson(),
       'attachment': <String>[],
     });
-    expect(record.toJson().containsKey('attachment'), isFalse);
+    expect(record.toJson()['attachment'], isEmpty);
   });
 
   test('cancellation uses the verified repaire route and encodes the id',

@@ -6,9 +6,11 @@ class TokenManager {
 
   final TokenStorage _storage;
   Future<void>? _initialization;
+  bool _initialized = false;
   int _sessionVersion = 0;
   int? _refreshSessionVersion;
   Future<void> _pendingMutation = Future<void>.value();
+  int _runningMutations = 0;
 
   /// 会话身份。只在**登录、登出**时变化，刷新不动它。
   ///
@@ -29,6 +31,12 @@ class TokenManager {
   int? get refreshSessionVersion => _refreshSessionVersion;
 
   Future<void> init() {
+    // 已完成时返回调用方 zone 里的新 future，不复用缓存的旧 future：
+    // 旧 future 绑定在创建它的 zone 上，那个 zone 失效后（如上一个 widget
+    // 测试结束）再 await 它将永远等不到回调。
+    if (_initialized) {
+      return Future<void>.value();
+    }
     final Future<void>? initialization = _initialization;
     if (initialization != null) {
       return initialization;
@@ -36,7 +44,9 @@ class TokenManager {
 
     late final Future<void> newInitialization;
     newInitialization = Future<void>.sync(_storage.load).then<void>(
-      (_) {},
+      (_) {
+        _initialized = true;
+      },
       onError: (Object error, StackTrace stackTrace) {
         if (identical(_initialization, newInitialization)) {
           _initialization = null;
@@ -84,11 +94,15 @@ class TokenManager {
 
   // 串行落盘，避免旧刷新/清理与新登录的两组凭证交错写入。
   Future<bool> _serializeMutation(Future<bool> Function() action) {
-    final Future<bool> operation = _pendingMutation.then((_) => action());
+    // 空闲时从当前 zone 起链，理由同 [init]：不挂到可能已失效 zone 的旧 future 上。
+    final Future<void> previous =
+        _runningMutations == 0 ? Future<void>.value() : _pendingMutation;
+    _runningMutations++;
+    final Future<bool> operation = previous.then((_) => action());
     _pendingMutation = operation.then<void>(
       (_) {},
       onError: (Object error, StackTrace stackTrace) {},
-    );
+    ).whenComplete(() => _runningMutations--);
     return operation;
   }
 

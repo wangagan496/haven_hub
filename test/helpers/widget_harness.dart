@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:haven_hub/constant/index.dart';
+import 'package:haven_hub/l10n/app_localizations.dart';
 import 'package:haven_hub/theme/app_theme.dart';
 
 Future<void> pumpPage(
@@ -15,7 +15,8 @@ Future<void> pumpPage(
     theme: buildAppTheme(),
     locale: const Locale('zh'),
     supportedLocales: const <Locale>[Locale('zh')],
-    localizationsDelegates: GlobalMaterialLocalizations.delegates,
+    // 与 main.dart 一致，含 AppLocalizations；缺它的页面会在 `of(context)!` 处崩溃。
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
     onGenerateRoute: (RouteSettings settings) => MaterialPageRoute<bool>(
       settings: RouteSettings(
           name: settings.name, arguments: settings.arguments ?? arguments),

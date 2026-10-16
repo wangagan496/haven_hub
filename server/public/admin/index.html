@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#102742">
+  <meta name="description" content="享家社区物业工作台，审核房屋资料、安排维修人员、跟进报修进度。">
+  <title>享家 · 物业工作台</title>
+  <link rel="icon" type="image/svg+xml" href="./brand.svg">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="topbar">
+  <div class="brand"><img src="./brand.svg" width="38" height="38" alt=""><div><strong>享家社区</strong><span>物业工作台</span></div></div>
+  <div class="header-right"><span class="environment">本地演示</span><span id="account-name" hidden></span><button id="logout" class="quiet" hidden>退出登录</button></div>
+</header>
+<main id="main">
+  <section id="login-panel" class="login-layout" aria-labelledby="login-title">
+    <div class="login-story">
+      <span class="eyebrow">享家 · 社区服务</span>
+      <h1>把社区的每件小事，<br><em>好好照顾。</em></h1>
+      <p class="story-description">从一份入住资料，到一次上门维修。<br>在一个工作台里，跟进每一位住户的需要。</p>
+      <div class="community-scene" aria-hidden="true">
+        <div class="scene-orbit"></div><div class="scene-label"><span class="status-dot"></span> 让服务有回应</div>
+        <div class="building building-back"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="building building-main"><div class="building-roof"></div><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><div class="building-door"></div></div>
+        <div class="building building-side"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="tree tree-left"></div><div class="tree tree-right"></div><div class="scene-path"></div><div class="scene-caption">住有所居，也有所应。</div>
+      </div>
+      <div class="story-services"><span>01 <b>房屋审核</b></span><span>02 <b>维修派单</b></span><span>03 <b>进度跟进</b></span></div>
+    </div>
+    <div class="login-card">
+      <span class="login-overline">物业管理入口</span><span class="sr-only">物业登录</span><h2 id="login-title">欢迎回来</h2><p class="muted">登录后，开始处理社区事务。</p>
+      <form id="login-form">
+        <label for="mobile">手机号</label><input id="mobile" type="tel" required pattern="1[3-9][0-9]{9}" maxlength="11" placeholder="请输入物业账号手机号" autocomplete="username">
+        <label for="code">验证码</label>
+        <div class="code-row"><input id="code" inputmode="numeric" required pattern="[0-9]{6}" maxlength="6" placeholder="6 位验证码" autocomplete="one-time-code"><button id="send-code" type="button">获取验证码</button></div>
+        <p id="code-hint" class="field-hint" aria-live="polite">使用已开通权限的物业账号登录</p>
+        <button type="submit" class="primary login-submit">登录工作台 <span aria-hidden="true">→</span></button>
+      </form>
+      <div class="login-note"><span class="note-symbol" aria-hidden="true">i</span><p>当前为本地演示环境，验证码会自动填入。<br>如需开通物业账号，请联系管理员。</p></div>
+    </div>
+    <footer class="login-footer"><span>享家社区 · 物业服务管理</span><span>让日常管理更从容</span></footer>
+  </section>
+  <section id="workspace" hidden>
+    <aside class="sidebar">
+      <div class="community-label"><span class="community-mark" aria-hidden="true">享</span><div><strong>社区管理中心</strong><small>物业服务</small></div></div>
+      <span class="nav-caption">日常工作</span>
+      <nav aria-label="业务菜单">
+        <button data-tab="rooms" aria-pressed="true"><span class="nav-icon" aria-hidden="true">▤</span>房屋审核<span class="nav-count" id="rooms-count">—</span></button>
+        <button data-tab="repairs" aria-pressed="false"><span class="nav-icon" aria-hidden="true">▦</span>报修管理<span class="nav-count" id="repairs-count">—</span></button>
+        <button data-tab="workers" aria-pressed="false"><span class="nav-icon" aria-hidden="true">♧</span>维修人员</button>
+      </nav>
+      <div class="sidebar-note"><span class="status-dot"></span><strong>每一件，都有着落</strong><p>审核资料、安排师傅，<br>及时回应住户的需求。</p></div>
+      <div class="sidebar-footer">享家社区 <span>物业端</span></div>
+    </aside>
+    <div class="workspace-main">
+      <div class="breadcrumb">社区管理 <span>/</span> <span id="breadcrumb-page">房屋审核</span></div>
+      <div class="page-heading"><div><h1 id="title">房屋审核</h1><p id="page-description" class="muted">查看住户提交的房屋资料，及时完成审核。</p></div><div class="date-block"><time id="today"></time><small id="updated-at">尚未更新</small></div></div>
+      <div id="stats" class="stats" aria-label="业务概览"></div>
+      <div class="desk-grid">
+        <section class="records-panel queue-panel" aria-labelledby="list-title">
+          <div class="panel-heading"><div><h2 id="list-title">房屋资料</h2><span id="result-count" class="muted"></span></div><button id="refresh" class="quiet">刷新 <span aria-hidden="true">↻</span></button></div>
+          <div class="toolbar"><label class="search-box"><span class="sr-only">搜索记录</span><input id="search" type="search" placeholder="搜索房屋、业主或手机号" autocomplete="off"></label><label id="filter-label" class="sr-only">状态<select id="filter"></select></label><div id="quick-filters" class="quick-filters" role="group" aria-label="状态筛选"></div></div>
+          <div id="content" aria-live="polite"></div>
+        </section>
+        <aside id="detail-panel" class="detail-panel" aria-label="所选记录详情" aria-live="polite"></aside>
+      </div>
+      <footer class="workspace-footer"><span>享家社区 · 认真对待每一次托付</span><span>数据来自当前社区记录</span></footer>
+    </div>
+  </section>
+  <p id="message" role="status" aria-live="polite"></p>
+</main>
+<noscript>请启用 JavaScript 后使用物业工作台。</noscript>
+</body>
+</html>

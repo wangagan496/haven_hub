@@ -21,6 +21,14 @@ class RepairRecord {
     this.appointment = '',
     this.description = '',
     this.status = unknownStatus,
+    this.attachment = const <String>[],
+    this.workflowVersion = 0,
+    this.revision = 0,
+    this.workerId = '',
+    this.workerName = '',
+    this.workerMobile = '',
+    this.completionNote = '',
+    this.timeline = const <RepairEvent>[],
   });
 
   /// 服务端未给出或无法解析 [status] 时使用。
@@ -39,6 +47,23 @@ class RepairRecord {
         appointment: json['appointment']?.toString().trim() ?? '',
         description: json['description']?.toString().trim() ?? '',
         status: _toInt(json['status']),
+        attachment: (json['attachment'] is List<dynamic>)
+            ? (json['attachment'] as List<dynamic>)
+                .whereType<String>()
+                .toList(growable: false)
+            : const <String>[],
+        workflowVersion: int.tryParse('${json['workflowVersion']}') ?? 0,
+        revision: int.tryParse('${json['revision']}') ?? 0,
+        workerId: json['workerId']?.toString().trim() ?? '',
+        workerName: json['workerName']?.toString() ?? '',
+        workerMobile: json['workerMobile']?.toString() ?? '',
+        completionNote: json['completionNote']?.toString() ?? '',
+        timeline: json['timeline'] is List<dynamic>
+            ? (json['timeline'] as List<dynamic>)
+                .whereType<Map<String, dynamic>>()
+                .map(RepairEvent.fromJson)
+                .toList(growable: false)
+            : const <RepairEvent>[],
       );
 
   final String id;
@@ -50,14 +75,23 @@ class RepairRecord {
   final String appointment;
   final String description;
   final int status;
+  final List<String> attachment;
+  final int workflowVersion;
+  final int revision;
+  final String workerId;
+  final String workerName;
+  final String workerMobile;
+  final String completionNote;
+  final List<RepairEvent> timeline;
 
   bool get canCancel => status == 1;
   String get statusText => switch (status) {
         0 => '已取消',
-        1 => '待处理',
+        1 => workflowVersion == 1 ? '待派单' : '待处理',
         2 => '处理中',
         3 => '已完成',
         4 => '已取消',
+        5 => '待接单',
         // 未识别或缺失的状态如实显示，不猜成某一个具体状态。
         _ => '状态未知',
       };
@@ -69,7 +103,25 @@ class RepairRecord {
         'mobile': mobile,
         'appointment': appointment,
         if (description.isNotEmpty) 'description': description,
+        'attachment': attachment,
       };
+}
+
+class RepairEvent {
+  const RepairEvent(
+      {required this.action,
+      required this.label,
+      required this.at,
+      this.detail = ''});
+  factory RepairEvent.fromJson(Map<String, dynamic> json) => RepairEvent(
+      action: json['action']?.toString() ?? '',
+      label: json['label']?.toString() ?? '',
+      at: json['at']?.toString() ?? '',
+      detail: json['detail']?.toString() ?? '');
+  final String action;
+  final String label;
+  final String at;
+  final String detail;
 }
 
 int _toInt(Object? value) => value is num

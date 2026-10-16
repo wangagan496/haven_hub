@@ -4,14 +4,19 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 typedef PositionLoader = Future<Position> Function();
+typedef PositionSampleObserver = void Function(double accuracy, bool isFresh);
 
-// 给 GPS 足够时间完成冷启动和卫星收敛，避免过早接受网络/基站粗略位置。
+// 选择社区允许用户核对结果；接受搜索范围内的估计误差，避免等待导航级精度。
 const Duration _locationTimeout = Duration(seconds: 45);
 const Duration _maximumPositionAge = Duration(minutes: 2);
-const double _targetAccuracyInMeters = 10;
-const double _fallbackAccuracyInMeters = 50;
+const double _communityAccuracyInMeters = 1000;
 
-Future<Position> getLocation() async {
+/// 保留精度筛选失败的原因，与定位提供方直接报告的超时区分。
+class PositionAcquisitionTimeout extends TimeoutException {
+  PositionAcquisitionTimeout(String super.message, Duration super.duration);
+}
+
+Future<Position> getLocation({PositionSampleObserver? onSample}) async {
   final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
   if (!serviceEnabled) {
     throw const LocationServiceDisabledException();
@@ -20,9 +25,10 @@ Future<Position> getLocation() async {
   return selectPrecisePosition(
     Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
+        accuracy: LocationAccuracy.high,
       ),
     ),
+    onSample: onSample,
   );
 }
 
@@ -31,9 +37,11 @@ Future<Position> selectPrecisePosition(
   Stream<Position> positions, {
   Duration timeout = _locationTimeout,
   DateTime Function() now = DateTime.now,
+  PositionSampleObserver? onSample,
 }) async {
   final Completer<Position> completer = Completer<Position>();
   Position? bestPosition;
+  bool receivedSample = false;
 
   late final StreamSubscription<Position> subscription;
   late final Timer timer;
@@ -41,18 +49,31 @@ Future<Position> selectPrecisePosition(
   void completeWithBestPosition() {
     if (completer.isCompleted) return;
     final Position? fallback = bestPosition;
-    if (fallback != null && _isUsableFallback(fallback)) {
+    if (fallback != null && _isUsableCommunityPosition(fallback)) {
       completer.complete(fallback);
       return;
     }
-    completer.completeError(
-      TimeoutException('未能在限定时间内获取精确定位', timeout),
-    );
+    final String reason;
+    if (!receivedSample) {
+      reason = '设备定位等待结束，未收到任何位置';
+    } else if (fallback == null) {
+      reason = '设备已返回位置，但坐标无效或已过期';
+    } else if (!fallback.accuracy.isFinite || fallback.accuracy <= 0) {
+      reason = '设备已返回位置，但未提供有效的定位精度';
+    } else {
+      reason = '设备已返回位置，但最佳估计误差 '
+          '${fallback.accuracy.toStringAsFixed(0)} 米，超过附近社区搜索允许的 '
+          '${_communityAccuracyInMeters.toStringAsFixed(0)} 米';
+    }
+    completer.completeError(PositionAcquisitionTimeout(reason, timeout));
   }
 
   subscription = positions.listen(
     (Position position) {
-      if (!_isFreshValidPosition(position, now())) return;
+      receivedSample = true;
+      final bool fresh = _isFreshValidPosition(position, now());
+      onSample?.call(position.accuracy, fresh);
+      if (!fresh) return;
 
       final Position? currentBest = bestPosition;
       if (currentBest == null ||
@@ -60,8 +81,7 @@ Future<Position> selectPrecisePosition(
         bestPosition = position;
       }
 
-      if (_accuracyScore(position) <= _targetAccuracyInMeters &&
-          !completer.isCompleted) {
+      if (_isUsableCommunityPosition(position) && !completer.isCompleted) {
         completer.complete(position);
       }
     },
@@ -98,11 +118,11 @@ bool _isFreshValidPosition(Position position, DateTime now) {
       now.difference(timestamp.toLocal()).abs() <= _maximumPositionAge;
 }
 
-bool _isUsableFallback(Position position) {
+bool _isUsableCommunityPosition(Position position) {
   final double accuracy = position.accuracy;
   return accuracy.isFinite &&
       accuracy > 0 &&
-      accuracy <= _fallbackAccuracyInMeters;
+      accuracy <= _communityAccuracyInMeters;
 }
 
 double _accuracyScore(Position position) {

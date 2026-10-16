@@ -1,32 +1,29 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
+import '../../api/location.dart';
 import '../../controller/build_controller.dart';
+import '../../models/building_info.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
-import '../../utils/deterministic_sample.dart';
+import '../../utils/app_exception.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
 import '../../widgets/section_title.dart';
 import '../room/room_list.dart';
 
-typedef BuildingCountGenerator = int Function(String communityName);
-
-/// 按小区名推导楼栋数，同一小区每次进入都得到同一个列表。
-int generateBuildingCount(String communityName) {
-  final DeterministicSample sample = DeterministicSample(communityName);
-  return sample.nextInt(10) + 2;
-}
-
 class BuildingList extends StatefulWidget {
   const BuildingList({
-    this.buildingCountGenerator = generateBuildingCount,
     super.key,
+    this.buildingLookup = searchCommunityBuildings,
   });
 
-  static const String routeName = AppRoutes.buildingList;
+  final CommunityBuildingLookup buildingLookup;
 
-  final BuildingCountGenerator buildingCountGenerator;
+  static const String routeName = AppRoutes.buildingList;
 
   @override
   State<BuildingList> createState() => _BuildingListState();
@@ -34,32 +31,196 @@ class BuildingList extends StatefulWidget {
 
 class _BuildingListState extends State<BuildingList> {
   late final BuildController _controller;
-  late final List<String> _list;
+  late final TextEditingController _buildingInput;
+  late final BuildingInfo _community;
+  final List<TencentBuilding> _buildings = <TencentBuilding>[];
+  final Set<String> _seenPoiIds = <String>{};
+  bool _isLoading = false;
+  bool _hasMore = true;
+  bool _reachedLimit = false;
+  String? _lookupError;
+  int _nextPage = 1;
   bool _isSelecting = false;
 
   @override
   void initState() {
     super.initState();
     _controller = BuildController.instance();
-    final String communityName = _controller.buildingInfo.name;
-    final int buildingCount = widget.buildingCountGenerator(communityName);
-    final String suffix = buildingCount >= 5 ? '栋' : '单元';
-    _list = List<String>.generate(
-      buildingCount,
-      (int index) => '$communityName${index + 1}$suffix',
-      growable: false,
+    _buildingInput = TextEditingController(text: _controller.build);
+    _community = _controller.buildingInfo;
+    if (_canLookup) unawaited(_loadBuildings());
+  }
+
+  bool get _canLookup =>
+      _community.hasCommunity &&
+      _community.latitude != null &&
+      _community.longitude != null;
+
+  bool get _sameCommunity {
+    final BuildingInfo current = _controller.buildingInfo;
+    return current.name == _community.name &&
+        current.address == _community.address &&
+        current.communityId == _community.communityId &&
+        current.latitude == _community.latitude &&
+        current.longitude == _community.longitude;
+  }
+
+  Future<void> _loadBuildings() async {
+    if (_isLoading || !_hasMore || !_canLookup || !_sameCommunity) return;
+    setState(() {
+      _isLoading = true;
+      _lookupError = null;
+    });
+    try {
+      final TencentBuildingPage result =
+          await widget.buildingLookup(_community, _nextPage);
+      if (!mounted || !_sameCommunity) return;
+      setState(() {
+        final bool hasNewPois =
+            result.poiIds.any((String id) => !_seenPoiIds.contains(id));
+        final Set<String> buildingIds =
+            _buildings.map((TencentBuilding item) => item.id).toSet();
+        final Set<String> buildingLabels = _buildings
+            .map((TencentBuilding item) => item.label.trim().toLowerCase())
+            .toSet();
+        _buildings.addAll(result.buildings.where((TencentBuilding item) =>
+            buildingIds.add(item.id) &&
+            buildingLabels.add(item.label.trim().toLowerCase())));
+        _seenPoiIds.addAll(result.poiIds);
+        // 腾讯超过可翻页范围时可能重复末页，不能无限加载。
+        _hasMore = result.hasMore && hasNewPois;
+        _reachedLimit = result.reachedLimit;
+        _nextPage++;
+      });
+    } on Object catch (error) {
+      if (!mounted || !_sameCommunity) return;
+      setState(() {
+        _lookupError = describeError(error, fallback: '楼栋查询失败，请重试');
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  List<DropdownMenuEntry<String>> _filterBuildings(
+    List<DropdownMenuEntry<String>> entries,
+    String keyword,
+  ) {
+    final String needle = keyword.trim().toLowerCase();
+    final Set<String> matchingLabels = _buildings
+        .where((TencentBuilding building) =>
+            needle.isEmpty ||
+            building.label.toLowerCase().contains(needle) ||
+            building.name.toLowerCase().contains(needle) ||
+            building.address.toLowerCase().contains(needle))
+        .map((TencentBuilding building) => building.label)
+        .toSet();
+    final List<DropdownMenuEntry<String>> matches = entries
+        .where(
+          (DropdownMenuEntry<String> entry) =>
+              entry.enabled && matchingLabels.contains(entry.value),
+        )
+        .toList(growable: false);
+    return matches.isNotEmpty
+        ? matches
+        : <DropdownMenuEntry<String>>[
+            DropdownMenuEntry(
+              value: '',
+              label: _isLoading ? '正在查询楼栋，可直接填写' : '没有匹配的楼栋，可直接填写',
+              enabled: false,
+            ),
+          ];
+  }
+
+  Widget _lookupStatus() {
+    if (!_sameCommunity) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('所选小区已变更，请返回重新进入楼栋页面。'),
+      );
+    }
+    if (!_canLookup) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('所选小区缺少地图坐标，可返回重新选择，或直接手动填写。'),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        if (_isLoading)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Column(
+              children: <Widget>[
+                LinearProgressIndicator(),
+                SizedBox(height: 8),
+                Text('正在查询地图楼栋，可先手动填写'),
+              ],
+            ),
+          )
+        else if (_lookupError != null)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: <Widget>[
+                Text('楼栋查询失败：$_lookupError'),
+                TextButton(
+                    onPressed: _loadBuildings, child: const Text('重试查询')),
+              ],
+            ),
+          )
+        else ...<Widget>[
+          if (_buildings.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text('已加载 ${_buildings.length} 个楼栋及单元'),
+            ),
+          if (_buildings.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(_hasMore
+                  ? '本页未找到匹配楼栋，可以继续查询或手动填写。'
+                  : '本次查询未找到匹配楼栋，请手动填写。这不代表小区没有楼栋。'),
+            ),
+          if (_hasMore)
+            TextButton(onPressed: _loadBuildings, child: const Text('加载更多地图结果'))
+          else
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Text(_reachedLimit
+                  ? '已达到本次查询上限，未找到的楼栋或单元可直接填写。'
+                  : '没有更多结果了，未找到的楼栋或单元可直接填写。'),
+            ),
+        ],
+      ],
     );
   }
 
-  Future<void> _selectBuilding(String building) async {
+  @override
+  void dispose() {
+    _buildingInput.dispose();
+    super.dispose();
+  }
+
+  Future<void> _continue() async {
     if (_isSelecting) return;
+    if (!_sameCommunity) return;
+    if (!_controller.buildingInfo.hasCommunity) {
+      await PromptAction.showWarning('请先返回选择小区');
+      return;
+    }
+    final String building = _buildingInput.text.trim();
+    if (building.isEmpty || building.length > 100) {
+      await PromptAction.showWarning('请填写楼栋信息，最多100个字符');
+      return;
+    }
 
+    FocusScope.of(context).unfocus();
     setState(() => _isSelecting = true);
-    _controller.updateBuild(building);
+    // 返回重填时，只有楼栋变更才清空之前的房号。
+    if (building != _controller.build) _controller.updateBuild(building);
     try {
-      await PromptAction.showToast('当前选择：${_controller.build}');
-      if (!mounted) return;
-
       await Navigator.pushNamed<void>(
         context,
         RoomList.routeName,
@@ -74,7 +235,7 @@ class _BuildingListState extends State<BuildingList> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('选择楼栋'),
+        title: const Text('选择或填写楼栋'),
       ),
       body: GetBuilder<BuildController>(
         init: _controller,
@@ -82,21 +243,82 @@ class _BuildingListState extends State<BuildingList> {
           final String communityName = controller.buildingInfo.name;
           final String address = controller.buildingInfo.address;
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          return ListView(
             children: <Widget>[
               CommunityHeader(
                 communityName: communityName,
                 address: address,
               ),
               const SectionTitle('楼栋信息'),
-              Expanded(
-                child: PickerListView(
-                  items: _list,
-                  enabled: !_isSelecting,
-                  onSelected: _selectBuilding,
+              if (controller.buildingInfo.hasCommunity) _lookupStatus(),
+              ManualHouseInput(
+                controller: _buildingInput,
+                notice: '可下拉选择或输入搜索，也可直接填写楼栋和单元。',
+                label: '楼栋及单元',
+                hint: '例如：12栋2单元、A座；无单元可不填',
+                inputField: DropdownMenu<String>(
+                  key: const Key('building-dropdown'),
+                  controller: _buildingInput,
+                  enabled: !_isSelecting &&
+                      _sameCommunity &&
+                      controller.buildingInfo.hasCommunity,
+                  expandedInsets: EdgeInsets.zero,
+                  menuHeight: 320,
+                  requestFocusOnTap: true,
+                  enableFilter: true,
+                  filterCallback: _filterBuildings,
+                  inputFormatters: <TextInputFormatter>[
+                    LengthLimitingTextInputFormatter(100)
+                  ],
+                  label: const Text('楼栋及单元'),
+                  hintText: '搜索、下拉选择或直接填写',
+                  inputDecorationTheme:
+                      const InputDecorationTheme(border: OutlineInputBorder()),
+                  menuStyle: const MenuStyle(
+                    backgroundColor: WidgetStatePropertyAll(Colors.white),
+                    surfaceTintColor:
+                        WidgetStatePropertyAll(Colors.transparent),
+                  ),
+                  dropdownMenuEntries: <DropdownMenuEntry<String>>[
+                    for (final TencentBuilding item in _buildings)
+                      DropdownMenuEntry(
+                        value: item.label,
+                        label: item.label,
+                        labelWidget: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(item.name),
+                              if (item.address.isNotEmpty)
+                                Text(item.address,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.textSecondary)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (_buildings.isEmpty)
+                      DropdownMenuEntry(
+                          value: '',
+                          enabled: false,
+                          label: _isLoading ? '正在查询楼栋，可直接填写' : '暂无楼栋选项，可直接填写'),
+                  ],
                 ),
+                buttonLabel: '下一步，填写房号',
+                enabled: !_isSelecting &&
+                    _sameCommunity &&
+                    controller.buildingInfo.hasCommunity,
+                onContinue: _continue,
               ),
+              if (!controller.buildingInfo.hasCommunity)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('请先返回选择小区'),
+                ),
             ],
           );
         },

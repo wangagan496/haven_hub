@@ -18,6 +18,8 @@ import '../building/building_list.dart';
 typedef LocationPermissionRequester = Future<PermissionStatus> Function();
 
 const Duration _permissionRequestTimeout = Duration(seconds: 12);
+const Duration _positionRequestTimeout = Duration(seconds: 50);
+const Duration _lookupRequestTimeout = Duration(seconds: 20);
 
 Future<PermissionStatus> requestLocationPermission() async {
   if (!kIsWeb) {
@@ -43,7 +45,7 @@ class LocationList extends StatefulWidget {
   const LocationList({
     this.permissionRequester = requestLocationPermission,
     this.permissionRequestTimeout = _permissionRequestTimeout,
-    this.positionLoader = getLocation,
+    this.positionLoader,
     this.locationLookup = getTencentLocationInfo,
     this.ipLocationLookup = getTencentIpLocationInfo,
     super.key,
@@ -53,7 +55,7 @@ class LocationList extends StatefulWidget {
 
   final LocationPermissionRequester permissionRequester;
   final Duration permissionRequestTimeout;
-  final PositionLoader positionLoader;
+  final PositionLoader? positionLoader;
   final LocationLookup locationLookup;
   final IpLocationLookup ipLocationLookup;
 
@@ -64,19 +66,15 @@ class LocationList extends StatefulWidget {
 class _LocationListState extends State<LocationList> {
   late final BuildController _buildController;
   bool _isLoading = false;
+  int _requestId = 0;
+  String? _errorMessage;
+  String _loadingStage = '正在等待定位权限，请留意浏览器的权限提示';
 
   /// 是否已经拿到过一次定位结果。决定刷新时用整屏骨架还是保留页面：
-  /// 已经有内容时把搜索框和定位按钮整块换掉，用户会以为页面被重置了。
+  /// 已经有内容时保留搜索框和社区列表，避免刷新时页面闪烁。
   bool _hasResolved = false;
   String _currentAddress = '正在获取当前位置';
-  String _keyword = '';
   List<NearbyCommunity> _locations = const <NearbyCommunity>[];
-
-  /// 当前应展示的社区列表，与 [_locations] 和 [_keyword] 同步更新。
-  ///
-  /// 不再放进 build 里惰性计算：那样缓存是否有效取决于「每条改数据的路径都
-  /// 记得把它置空」，漏一处就会显示出上一次的过滤结果。
-  List<NearbyCommunity> _visibleLocations = const <NearbyCommunity>[];
 
   @override
   void initState() {
@@ -85,228 +83,158 @@ class _LocationListState extends State<LocationList> {
     unawaited(_getAccess());
   }
 
+  bool _isCurrent(int requestId) => mounted && requestId == _requestId;
+
+  int _beginRequest() {
+    final int requestId = ++_requestId;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _loadingStage = '正在等待定位权限，请留意浏览器的权限提示';
+    });
+    return requestId;
+  }
+
+  void _showFailure(String message) {
+    setState(() {
+      _errorMessage = message;
+      if (!_hasResolved) _currentAddress = '定位失败，请重试';
+    });
+  }
+
+  Future<void> _retryLookup() async {
+    if (_isLoading) return;
+    await _getAccess();
+  }
+
   Future<void> _getAccess() async {
     if (_isLoading) return;
 
-    setState(() => _isLoading = true);
+    final int requestId = _beginRequest();
     try {
-      // GPS 反查可返回区、街道等完整行政区划；IP 定位只作为兜底，
-      // 因其通常只能稳定到城市级别。
+      // GPS 反查可返回区、街道等完整行政区划；权限不足时自动使用 IP 兜底。
       late final PermissionStatus status;
       try {
         status = await widget.permissionRequester().timeout(
               widget.permissionRequestTimeout,
             );
       } on Object {
-        if (!mounted) return;
-        await _loadIpLocation(
-          '无法获取定位权限，已切换为 IP 定位，仅供城市级参考',
-        );
+        if (!_isCurrent(requestId)) return;
+        await _loadIpLocation(requestId);
         return;
       }
-      if (!mounted) return;
+      if (!_isCurrent(requestId)) return;
 
       if (status.isGranted) {
-        await _loadCurrentLocation();
-      } else if (status.isPermanentlyDenied) {
-        await _loadIpLocation(
-          '定位权限已被永久拒绝，已切换为 IP 定位，仅供城市级参考',
-        );
+        await _loadCurrentLocation(requestId);
       } else {
-        await _loadIpLocation(
-          '未获得定位权限，已切换为 IP 定位，仅供城市级参考',
-        );
+        await _loadIpLocation(requestId);
       }
     } on Object catch (error) {
-      if (!mounted) return;
+      if (!_isCurrent(requestId)) return;
       final String msg = describeError(
         error,
         fallback: '获取当前位置失败，请重试',
         onOtherError: (Object error) => switch (error) {
           LocationServiceDisabledException() => '请先开启系统定位服务',
-          TimeoutException() => '定位超时，请移动到开阔位置后重试',
+          TimeoutException() => '定位或社区查询超时，请重试',
           _ => null,
         },
       );
+      _showFailure(msg);
       await PromptAction.showError(msg);
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (_isCurrent(requestId)) setState(() => _isLoading = false);
     }
   }
 
-  /// 主动切换到设备 GPS 定位。
-  ///
-  /// 页面默认已优先使用 GPS；此按钮可在用户移动或修改模拟器坐标后
-  /// 主动刷新设备位置。
-  Future<void> _getGpsAccess() async {
-    if (_isLoading) return;
-
-    setState(() => _isLoading = true);
-    try {
-      final PermissionStatus status =
-          await widget.permissionRequester().timeout(
-                widget.permissionRequestTimeout,
-              );
-      if (!mounted) return;
-
-      if (status.isGranted) {
-        await _loadCurrentLocation(allowIpFallback: false);
-      } else if (status.isPermanentlyDenied) {
-        // 永久拒绝后系统不再弹权限框，只能去设置里改。这里主动给一条路，
-        // 否则用户点多少次「GPS定位」都只是同一个报错。
-        await _promptOpenSettings(
-          '定位权限已被永久拒绝，需要在小区的系统设置中开启精确位置权限。',
-        );
-      } else {
-        throw const FormatException('未获得 GPS 定位权限，请允许使用精确位置');
-      }
-    } on Object catch (error) {
-      if (!mounted) return;
-      final String msg = describeError(
-        error,
-        fallback: '获取 GPS 定位失败，请重试',
-        onOtherError: (Object error) => switch (error) {
-          LocationServiceDisabledException() => '请先开启系统定位服务',
-          TimeoutException() => 'GPS 定位超时，请移动到开阔位置后重试',
-          _ => null,
-        },
-      );
-      await PromptAction.showError(msg);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _getIpAccess() async {
-    if (_isLoading) return;
-
-    setState(() => _isLoading = true);
-    try {
-      await _loadIpLocation();
-      if (!mounted) return;
-      await PromptAction.showWarning(
-        'IP 定位显示的是网络出口位置，可能与实际所在区不同，仅供参考',
-      );
-    } on Object catch (error) {
-      if (!mounted) return;
-      final String msg = describeError(
-        error,
-        fallback: 'IP 定位失败，请重试',
-      );
-      await PromptAction.showError(msg);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _loadCurrentLocation({bool allowIpFallback = true}) async {
+  Future<void> _loadCurrentLocation(int requestId) async {
     LocationLookupResult? result;
+    Position? devicePosition;
     try {
-      final Position position = await widget.positionLoader();
-      if (!mounted) return;
+      setState(() => _loadingStage = '正在获取当前位置');
+      final Position position =
+          await (widget.positionLoader?.call() ?? getLocation())
+              .timeout(_positionRequestTimeout);
+      if (!_isCurrent(requestId)) return;
 
+      devicePosition = position;
       setState(() {
-        _currentAddress = '${position.latitude.toStringAsFixed(6)}, '
-            '${position.longitude.toStringAsFixed(6)}';
+        _loadingStage = '已获取设备位置，正在查询地址和附近社区';
       });
 
-      result = await widget.locationLookup(
-        position.latitude,
-        position.longitude,
-        isMocked: position.isMocked,
-      );
+      result = await widget
+          .locationLookup(
+            position.latitude,
+            position.longitude,
+            isMocked: position.isMocked,
+          )
+          .timeout(_lookupRequestTimeout);
     } on Object catch (locationError, locationStackTrace) {
-      if (!mounted) return;
-      if (!allowIpFallback) {
-        Error.throwWithStackTrace(locationError, locationStackTrace);
+      if (!_isCurrent(requestId)) return;
+      if (devicePosition != null) {
+        final String reason = '附近社区查询失败：${describeError(
+          locationError,
+          fallback: '地址或附近社区查询异常',
+          onOtherError: (Object error) =>
+              error is TimeoutException ? '查询超时' : null,
+        )}';
+        Error.throwWithStackTrace(FormatException(reason), locationStackTrace);
       }
-      try {
-        result = await widget.ipLocationLookup();
-      } on Object {
-        Error.throwWithStackTrace(locationError, locationStackTrace);
-      }
-      if (!mounted) return;
-      await PromptAction.showWarning('GPS 定位不可用，已切换为 IP 定位，仅供城市级参考');
+      await _loadIpLocation(requestId);
+      return;
     }
-    if (!mounted) return;
+    if (!_isCurrent(requestId)) return;
 
     final LocationLookupResult lookupResult = result;
     _applyLookupResult(lookupResult);
   }
 
-  Future<void> _loadIpLocation([String warningMessage = '']) async {
-    final LocationLookupResult result = await widget.ipLocationLookup();
-    if (!mounted) return;
-
-    if (warningMessage.isNotEmpty) {
-      await PromptAction.showWarning(warningMessage);
-    }
-    if (!mounted) return;
+  Future<void> _loadIpLocation(int requestId) async {
+    setState(() => _loadingStage = '正在查询位置和附近社区');
+    final LocationLookupResult result =
+        await widget.ipLocationLookup().timeout(_lookupRequestTimeout);
+    if (!_isCurrent(requestId)) return;
 
     _applyLookupResult(result);
   }
 
   void _applyLookupResult(LocationLookupResult result) {
     setState(() {
-      _currentAddress = result.isIpBased
-          ? '${result.address}（IP 网络出口位置，仅供参考）'
-          : result.address;
+      _currentAddress = result.address;
       _locations = result.communities;
-      _visibleLocations = _filterCommunities(_locations, _keyword);
       _hasResolved = true;
     });
   }
 
-  void _onSearchChanged(String value) {
-    setState(() {
-      _keyword = value;
-      _visibleLocations = _filterCommunities(_locations, value);
-    });
-  }
-
-  static List<NearbyCommunity> _filterCommunities(
-    List<NearbyCommunity> source,
+  static List<DropdownMenuEntry<NearbyCommunity?>> _filterCommunities(
+    List<DropdownMenuEntry<NearbyCommunity?>> source,
     String keyword,
   ) {
     final String needle = keyword.trim().toLowerCase();
     if (needle.isEmpty) {
       return source;
     }
-    return source
-        .where((NearbyCommunity item) =>
-            item.name.toLowerCase().contains(needle) ||
-            item.address.toLowerCase().contains(needle))
+    final matches = source
+        .where((DropdownMenuEntry<NearbyCommunity?> entry) =>
+            entry.value != null &&
+            (entry.value!.name.toLowerCase().contains(needle) ||
+                entry.value!.address.toLowerCase().contains(needle)))
         .toList(growable: false);
-  }
-
-  /// 权限被永久拒绝后，唯一的恢复路径是系统设置。
-  Future<void> _promptOpenSettings(String message) async {
-    final bool? openSettings = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext dialog) => AlertDialog(
-        title: const Text('需要定位权限'),
-        content: Text(message),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialog, false),
-            child: const Text('暂不'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialog, true),
-            child: const Text('前往设置'),
-          ),
-        ],
-      ),
-    );
-    if (openSettings ?? false) {
-      await openAppSettings();
-    }
+    return matches.isEmpty
+        ? const <DropdownMenuEntry<NearbyCommunity?>>[
+            DropdownMenuEntry(value: null, label: '没有匹配的小区', enabled: false),
+          ]
+        : matches;
   }
 
   Future<void> _selectCommunity(NearbyCommunity community) async {
-    _buildController.updateBuildingInfo(<String, String>{
+    _buildController.updateBuildingInfo(<String, dynamic>{
       'name': community.name,
       'address': community.address,
+      'communityId': community.id,
+      'latitude': community.latitude,
+      'longitude': community.longitude,
     });
     await Navigator.pushNamed<void>(
       context,
@@ -316,7 +244,7 @@ class _LocationListState extends State<LocationList> {
 
   @override
   Widget build(BuildContext context) {
-    final List<NearbyCommunity> locations = _visibleLocations;
+    final List<NearbyCommunity> locations = _locations;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -325,13 +253,28 @@ class _LocationListState extends State<LocationList> {
       ),
       body: SafeArea(
         top: false,
-        // 只有首次进入才铺整屏骨架。已经有地址或列表后再刷新，页面结构保持
-        // 不动，搜索框和两个定位按钮始终可点。
+        // 首次加载显示进度；刷新时保留已有结果。
         child: _isLoading && !_hasResolved
-            ? const _LocationSkeleton(key: Key('location-skeleton'))
+            ? Column(
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(children: <Widget>[
+                      Expanded(child: Text(_loadingStage)),
+                    ]),
+                  ),
+                  const Expanded(
+                      child: _LocationSkeleton(key: Key('location-skeleton'))),
+                ],
+              )
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
+                  if (_isLoading || _errorMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(_isLoading ? _loadingStage : _errorMessage!),
+                    ),
                   const SectionTitle('当前地址'),
                   Container(
                     color: Colors.white,
@@ -349,29 +292,68 @@ class _LocationListState extends State<LocationList> {
                             ),
                           ),
                         ),
-                        TextButton.icon(
-                          key: const Key('gps-location-button'),
-                          onPressed: _getGpsAccess,
-                          icon: const Icon(Icons.gps_fixed_rounded, size: 20),
-                          label: const Text('GPS定位'),
-                        ),
-                        TextButton.icon(
-                          key: const Key('ip-location-button'),
-                          onPressed: _getIpAccess,
-                          icon: const Icon(Icons.public_rounded, size: 20),
-                          label: const Text('IP定位'),
-                        ),
+                        if (_errorMessage != null)
+                          IconButton(
+                            key: const Key('location-retry-button'),
+                            tooltip: '重新查询',
+                            onPressed: _retryLookup,
+                            icon: const Icon(Icons.refresh_rounded),
+                          ),
                       ],
                     ),
                   ),
                   const SectionTitle('附近社区'),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                    child: TextField(
-                      onChanged: _onSearchChanged,
-                      decoration: InputDecoration(
-                        hintText: '请输入社区名称或地址',
-                        prefixIcon: const Icon(Icons.search_rounded),
+                    child: DropdownMenu<NearbyCommunity?>(
+                      key: const Key('community-dropdown'),
+                      enabled: !_isLoading && locations.isNotEmpty,
+                      expandedInsets: EdgeInsets.zero,
+                      menuHeight: 320,
+                      requestFocusOnTap: true,
+                      enableFilter: true,
+                      filterCallback: _filterCommunities,
+                      hintText: '搜索或下拉选择小区',
+                      leadingIcon: const Icon(Icons.search_rounded),
+                      menuStyle: const MenuStyle(
+                        backgroundColor: WidgetStatePropertyAll(Colors.white),
+                        surfaceTintColor:
+                            WidgetStatePropertyAll(Colors.transparent),
+                      ),
+                      onSelected: (NearbyCommunity? community) {
+                        if (community != null) {
+                          unawaited(_selectCommunity(community));
+                        }
+                      },
+                      dropdownMenuEntries: locations
+                          .map((NearbyCommunity item) =>
+                              DropdownMenuEntry<NearbyCommunity?>(
+                                value: item,
+                                label: item.name,
+                                labelWidget: Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 8),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: <Widget>[
+                                      Text(item.name),
+                                      if (item.address.isNotEmpty)
+                                        Text(
+                                          item.address,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ))
+                          .toList(growable: false),
+                      inputDecorationTheme: InputDecorationTheme(
                         filled: true,
                         fillColor: Colors.white,
                         contentPadding:
@@ -385,54 +367,16 @@ class _LocationListState extends State<LocationList> {
                   ),
                   Expanded(
                     child: locations.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
-                              '附近暂无社区信息',
-                              style: TextStyle(color: AppColors.textTertiary),
+                              _errorMessage != null
+                                  ? '社区加载失败，请重新查询'
+                                  : '附近暂无社区信息',
+                              style: const TextStyle(
+                                  color: AppColors.textTertiary),
                             ),
                           )
-                        : ListView.separated(
-                            itemCount: locations.length,
-                            separatorBuilder: (_, __) => const Divider(
-                              height: 1,
-                              indent: 16,
-                            ),
-                            itemBuilder: (BuildContext context, int index) {
-                              final NearbyCommunity item = locations[index];
-                              return ListTile(
-                                onTap: () => _selectCommunity(item),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 6,
-                                ),
-                                tileColor: Colors.white,
-                                title: Text(
-                                  item.name,
-                                  style: const TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                subtitle: item.address.isEmpty
-                                    ? null
-                                    : Padding(
-                                        padding: const EdgeInsets.only(top: 6),
-                                        child: Text(
-                                          item.address,
-                                          style: const TextStyle(
-                                            color: AppColors.textSecondary,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ),
-                                trailing: const Icon(
-                                  Icons.chevron_right_rounded,
-                                  color: AppColors.divider,
-                                ),
-                              );
-                            },
-                          ),
+                        : const SizedBox.shrink(),
                   ),
                 ],
               ),
@@ -460,8 +404,6 @@ class _LocationSkeleton extends StatelessWidget {
               child: const Row(
                 children: <Widget>[
                   Expanded(child: _SkeletonBlock(height: 18)),
-                  SizedBox(width: 28),
-                  _SkeletonBlock(width: 76, height: 18),
                 ],
               ),
             ),

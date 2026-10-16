@@ -339,7 +339,7 @@ void main() {
     options.complete(_houses);
     await tester.pumpAndSettle();
     expect(find.text('saved A draft'), findsOneWidget);
-    expect(find.text('已恢复当前账号的报修草稿'), findsOneWidget);
+    expect(find.text('已恢复之前未完成的内容'), findsOneWidget);
     expect(find.text('测试小区 1栋 101'), findsOneWidget);
     expect(find.text('重新加载'), findsNothing);
     await finishPage(tester);

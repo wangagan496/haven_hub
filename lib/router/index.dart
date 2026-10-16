@@ -26,7 +26,18 @@ Widget _requireLogin(
   Widget Function() builder,
 ) {
   if (tokenManager.getToken().isEmpty) {
-    return LoginPage(toName: routeName, toArguments: arguments);
+    return FutureBuilder<void>(
+      future: tokenManager.init(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.hasError || tokenManager.getToken().isEmpty) {
+          return LoginPage(toName: routeName, toArguments: arguments);
+        }
+        return builder();
+      },
+    );
   }
   return builder();
 }
