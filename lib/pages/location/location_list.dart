@@ -21,15 +21,12 @@ const Duration _permissionRequestTimeout = Duration(seconds: 12);
 const Duration _positionRequestTimeout = Duration(seconds: 50);
 const Duration _lookupRequestTimeout = Duration(seconds: 20);
 
-Future<PermissionStatus> requestLocationPermission() async {
+Future<PermissionStatus> checkLocationPermission() async {
   if (!kIsWeb) {
-    return Permission.location.request();
+    return Permission.location.status;
   }
 
-  LocationPermission permission = await Geolocator.checkPermission();
-  if (permission == LocationPermission.denied) {
-    permission = await Geolocator.requestPermission();
-  }
+  final LocationPermission permission = await Geolocator.checkPermission();
 
   if (permission == LocationPermission.always ||
       permission == LocationPermission.whileInUse) {
@@ -41,10 +38,16 @@ Future<PermissionStatus> requestLocationPermission() async {
   return PermissionStatus.denied;
 }
 
+Future<bool> openLocationPermissionSettings() async {
+  if (kIsWeb) return false;
+  return openAppSettings();
+}
+
 class LocationList extends StatefulWidget {
   const LocationList({
-    this.permissionRequester = requestLocationPermission,
+    this.permissionRequester = checkLocationPermission,
     this.permissionRequestTimeout = _permissionRequestTimeout,
+    this.settingsOpener = openLocationPermissionSettings,
     this.positionLoader,
     this.locationLookup = getTencentLocationInfo,
     this.ipLocationLookup = getTencentIpLocationInfo,
@@ -55,6 +58,7 @@ class LocationList extends StatefulWidget {
 
   final LocationPermissionRequester permissionRequester;
   final Duration permissionRequestTimeout;
+  final Future<bool> Function() settingsOpener;
   final PositionLoader? positionLoader;
   final LocationLookup locationLookup;
   final IpLocationLookup ipLocationLookup;
@@ -63,12 +67,17 @@ class LocationList extends StatefulWidget {
   State<LocationList> createState() => _LocationListState();
 }
 
-class _LocationListState extends State<LocationList> {
+class _LocationListState extends State<LocationList>
+    with WidgetsBindingObserver {
   late final BuildController _buildController;
   bool _isLoading = false;
   int _requestId = 0;
   String? _errorMessage;
-  String _loadingStage = '正在等待定位权限，请留意浏览器的权限提示';
+  String _loadingStage = '正在获取当前位置';
+  bool _needsAuthorization = true;
+  bool _openingSettings = false;
+  bool _waitingForSettings = false;
+  bool _leftForSettings = false;
 
   /// 是否已经拿到过一次定位结果。决定刷新时用整屏骨架还是保留页面：
   /// 已经有内容时保留搜索框和社区列表，避免刷新时页面闪烁。
@@ -79,8 +88,71 @@ class _LocationListState extends State<LocationList> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _buildController = BuildController.instance();
     unawaited(_getAccess());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_waitingForSettings) return;
+    if (state != AppLifecycleState.resumed) {
+      _leftForSettings = true;
+      return;
+    }
+    if (!_leftForSettings) return;
+    _waitingForSettings = false;
+    _leftForSettings = false;
+    // 设置返回后旧的权限/IP 请求可能仍在等待，作废它再查询新权限。
+    _requestId++;
+    _isLoading = false;
+    unawaited(_getAccess());
+  }
+
+  Future<void> _openSettings() async {
+    if (_openingSettings) return;
+    setState(() => _openingSettings = true);
+    _waitingForSettings = true;
+    _leftForSettings = false;
+    try {
+      final bool opened = await widget.settingsOpener().timeout(
+            const Duration(seconds: 5),
+          );
+      if (!mounted) return;
+      if (!opened) {
+        _waitingForSettings = false;
+        await PromptAction.showWarning(
+            kIsWeb ? '请在浏览器的网站设置中允许定位，然后刷新页面' : '无法打开设置，请在系统设置中为本应用开启定位权限');
+      }
+    } on Object {
+      if (!mounted) return;
+      _waitingForSettings = false;
+      await PromptAction.showError('无法打开设置，请在系统设置中为本应用开启定位权限');
+    } finally {
+      if (mounted) setState(() => _openingSettings = false);
+    }
+  }
+
+  Widget _buildAuthorizationPrompt() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: <Widget>[
+          const Expanded(child: Text('如未授权，请到设置授权')),
+          TextButton(
+            key: const Key('location-settings-button'),
+            onPressed: _openingSettings ? null : _openSettings,
+            child: const Text('去授权'),
+          ),
+        ],
+      ),
+    );
   }
 
   bool _isCurrent(int requestId) => mounted && requestId == _requestId;
@@ -90,7 +162,7 @@ class _LocationListState extends State<LocationList> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
-      _loadingStage = '正在等待定位权限，请留意浏览器的权限提示';
+      _loadingStage = '正在获取当前位置';
     });
     return requestId;
   }
@@ -120,10 +192,12 @@ class _LocationListState extends State<LocationList> {
             );
       } on Object {
         if (!_isCurrent(requestId)) return;
+        setState(() => _needsAuthorization = true);
         await _loadIpLocation(requestId);
         return;
       }
       if (!_isCurrent(requestId)) return;
+      setState(() => _needsAuthorization = !status.isGranted);
 
       if (status.isGranted) {
         await _loadCurrentLocation(requestId);
@@ -172,6 +246,9 @@ class _LocationListState extends State<LocationList> {
           .timeout(_lookupRequestTimeout);
     } on Object catch (locationError, locationStackTrace) {
       if (!_isCurrent(requestId)) return;
+      if (locationError is PermissionDeniedException) {
+        setState(() => _needsAuthorization = true);
+      }
       if (devicePosition != null) {
         final String reason = '附近社区查询失败：${describeError(
           locationError,
@@ -257,6 +334,7 @@ class _LocationListState extends State<LocationList> {
         child: _isLoading && !_hasResolved
             ? Column(
                 children: <Widget>[
+                  if (_needsAuthorization) _buildAuthorizationPrompt(),
                   Padding(
                     padding: const EdgeInsets.all(16),
                     child: Row(children: <Widget>[
@@ -270,6 +348,7 @@ class _LocationListState extends State<LocationList> {
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
+                  if (_needsAuthorization) _buildAuthorizationPrompt(),
                   if (_isLoading || _errorMessage != null)
                     Padding(
                       padding: const EdgeInsets.all(16),

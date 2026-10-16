@@ -17,6 +17,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('PUBLIC_BASE_URL 必须是无路径、无凭证的 HTTP(S) 地址');
   }
+  // 只允许回环地址，拒绝 0.0.0.0 或其他可从外网访问的配置
+  const loopbackHosts = ['127.0.0.1', 'localhost', '::1', '[::1]'];
+  if (!loopbackHosts.includes(config.HOST)) {
+    throw new Error(`HOST 只能使用回环地址（${loopbackHosts.join('、')}），不能监听 ${config.HOST}。设备访问请使用 HDC/ADB 端口转发。`);
+  }
   return {
     host: config.HOST, port: config.PORT,
     publicBaseUrl: url.origin,

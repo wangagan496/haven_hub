@@ -114,7 +114,7 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   });
   app.get('/repair/:id', (req, res) => res.json(ok(service.detail('repairs', res.locals.userId, req.params.id))));
   app.post('/repair', (req, res) => res.json(ok(service.createRepair(res.locals.userId, req.body))));
-  app.put('/cancel/repaire/:id', (req, res) => res.json(ok(service.cancelRepair(res.locals.userId, req.params.id))));
+  app.put('/cancel/repair/:id', (req, res) => res.json(ok(service.cancelRepair(res.locals.userId, req.params.id))));
   app.get('/visitor', (_req, res) => res.json(ok({ rows: service.list('visitors', res.locals.userId) })));
   app.get('/visitor/:id', (req, res) => res.json(ok(service.detail('visitors', res.locals.userId, req.params.id))));
   app.post('/visitor', async (req, res) => {

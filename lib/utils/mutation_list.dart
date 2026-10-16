@@ -53,7 +53,7 @@ class MutationList<T> {
   }
 
   List<T>? _decode(dynamic data) {
-    // 旧课程接口没有此契约，保留原先重新查询的行为。
+    // 响应不符合完整列表契约时，保留原先重新查询的行为。
     if (data is! Map || data['complete'] != true || data['rows'] is! List) {
       return null;
     }

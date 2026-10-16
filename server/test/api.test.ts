@@ -76,7 +76,7 @@ test('one repair flows through assignment, worker acceptance and completion with
   assert.equal((await f.request('GET',`/worker/repairs/${id}`,other.token)).status,404);
   assert.equal((await f.request('PUT',`/worker/repairs/${id}/accept`,other.token,{revision:2})).status,404);
   assert.notEqual((await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:2})).code,10000);
-  assert.notEqual((await f.request('PUT',`/cancel/repaire/${id}`,resident.token)).code,10000);
+  assert.equal((await f.request('PUT',`/cancel/repair/${id}`,resident.token)).code,40001);
   const accepted = await f.request('PUT',`/worker/repairs/${id}/accept`,worker.token,{revision:2});
   assert.equal(accepted.data.status,2);
   assert.equal((await f.request('PUT',assign,admin.token,{revision:3,workerId})).code,40001);
@@ -360,11 +360,11 @@ test('repair creation returns all rows beyond a page, cancellation updates statu
   assert.equal((await f.request('GET', '/repair?current=2&pageSize=20', a.token)).data.rows.length, 3);
   assert.equal((await f.request('POST', '/repair', b.token, body)).status, 404);
   assert.equal((await f.request('GET', `/repair/${record.id}`, b.token)).status, 404);
-  assert.equal((await f.request('PUT', `/cancel/repaire/${record.id}`, b.token)).status, 404);
-  const cancelled = await f.request('PUT', `/cancel/repaire/${record.id}`, a.token);
+  assert.equal((await f.request('PUT', `/cancel/repair/${record.id}`, b.token)).status, 404);
+  const cancelled = await f.request('PUT', `/cancel/repair/${record.id}`, a.token);
   assert.equal(cancelled.data.rows[0].status, 0);
   assert.equal(cancelled.data.rows.length, 23);
-  assert.notEqual((await f.request('PUT', `/cancel/repaire/${record.id}`, a.token)).code, 10000);
+  assert.notEqual((await f.request('PUT', `/cancel/repair/${record.id}`, a.token)).code, 10000);
   assert.notEqual((await f.request('POST', '/repair', a.token, { ...body, appointment: '2026-02-30' })).code, 10000);
 });
 

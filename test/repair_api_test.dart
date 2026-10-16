@@ -152,13 +152,13 @@ void main() {
     expect(record.toJson()['attachment'], isEmpty);
   });
 
-  test('cancellation uses the verified repaire route and encodes the id',
+  test('cancellation uses the correct repair route and encodes the id',
       () async {
     final _RepairAdapter adapter = _RepairAdapter((_) => page(<String>[]));
     await cancelRepairApi('test/id',
         client: RequestDio(client: Dio()..httpClientAdapter = adapter));
     expect(adapter.requests.single.method, 'PUT');
-    expect(adapter.requests.single.path, 'cancel/repaire/test%2Fid');
+    expect(adapter.requests.single.path, 'cancel/repair/test%2Fid');
     expect(adapter.requests.single.data, isNull);
   });
 }

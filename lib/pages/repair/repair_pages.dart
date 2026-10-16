@@ -6,7 +6,6 @@ import 'package:get/get.dart' show Get, Inst;
 import '../../api/house.dart';
 import '../../api/repair.dart';
 import '../../api/user.dart';
-import '../../constant/index.dart';
 import '../../controller/user_info_controller.dart';
 import '../../models/house.dart';
 import '../../models/repair.dart';
@@ -48,7 +47,7 @@ enum RepairStatusFilter {
       case RepairStatusFilter.all:
         return '全部';
       case RepairStatusFilter.pending:
-        return GlobalVariable.localBackend ? '待派单' : '待处理';
+        return '待派单';
       case RepairStatusFilter.waiting:
         return '待接单';
       case RepairStatusFilter.processing:

@@ -17,7 +17,7 @@ import 'package:haven_hub/utils/logger.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// 显式开启且只允许回环地址，防止普通测试访问课程或外部业务服务器。
+// 显式开启且只允许回环地址，防止普通测试连接日常开发数据库或外部服务器。
 const bool enabled = bool.fromEnvironment('RUN_LOCAL_BACKEND_TEST');
 
 void main() {
@@ -25,7 +25,6 @@ void main() {
   test('real Dart API -> local HTTP server -> persistent SQLite round trip',
       () async {
     final Uri base = Uri.parse(GlobalVariable.baseUrl);
-    expect(GlobalVariable.localBackend, isTrue);
     expect(base.host, anyOf('127.0.0.1', 'localhost'));
     HttpOverrides.global = null; // Flutter测试默认拦截网络；此用例明确联调本机。
     Logger.enabled = false;

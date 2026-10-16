@@ -11,27 +11,21 @@ class GlobalVariable {
   static final GlobalKey<NavigatorState> navigatorKey =
       GlobalKey<NavigatorState>();
 
-  /// 本地存储的 Token 键名。
-  static const bool localBackend = bool.fromEnvironment('LOCAL_BACKEND');
-  static const String tokenKey =
-      localBackend ? 'flutter_enjoy_plus_local' : 'flutter_enjoy_plus';
+  /// 本地存储的 Token 键名（一期统一走本地服务）。
+  static const String tokenKey = 'flutter_enjoy_plus_local';
 
-  /// 本地存储的 Refresh Token 键名。
-  static const String refreshTokenKey = localBackend
-      ? 'flutter_enjoy_plus_local_refresh'
-      : 'flutter_enjoy_plus_refresh';
+  /// 本地存储的 Refresh Token 键名（一期统一走本地服务）。
+  static const String refreshTokenKey = 'flutter_enjoy_plus_local_refresh';
 
-  /// API 基础地址。
-  ///
-  /// 可通过 `--dart-define=API_BASE_URL=...` 切换正式、测试或本地 Mock 接口。
+  /// 业务 API 基础地址（一期统一走本地服务，通过编译参数覆盖）。
   ///
   /// 示例：
   /// ```bash
-  /// flutter run --dart-define=API_BASE_URL=https://test-api.example.com/
+  /// flutter run --dart-define=API_BASE_URL=http://127.0.0.1:3000/
   /// ```
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://live-api.itheima.net/',
+    defaultValue: 'http://127.0.0.1:3000/',
   );
 
   /// 网络请求超时时间。
@@ -135,8 +129,7 @@ class HttpPath {
   static String repairDetail(String id) => '$repair/${Uri.encodeComponent(id)}';
 
   static String cancelRepair(String id) =>
-      // 课程服务端的实际路由拼写为 repaire，不是 repair。
-      'cancel/repaire/${Uri.encodeComponent(id)}';
+      'cancel/repair/${Uri.encodeComponent(id)}';
 
   static String visitorDetail(String id) =>
       '$visitor/${Uri.encodeComponent(id)}';

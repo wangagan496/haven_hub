@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../../api/home.dart';
 import '../../api/user.dart';
-import '../../constant/index.dart';
 import '../../constant/tab_config.dart';
 import '../../controller/build_controller.dart';
 import '../../l10n/app_localizations.dart';
@@ -16,13 +15,11 @@ import '../login/index.dart';
 import '../mine/index.dart';
 import '../worker/worker_pages.dart';
 
-/// 判断当前登录账号是否为维修师傅；未登录或非本地后端时返回 false。
+/// 判断当前登录账号是否为维修师傅；未登录时返回 false。
 typedef WorkerRoleLoader = Future<bool> Function();
 
 Future<bool> loadIsWorker() async {
-  if (!GlobalVariable.localBackend || tokenManager.getToken().isEmpty) {
-    return false;
-  }
+  if (tokenManager.getToken().isEmpty) return false;
   final user = await getUserInfoApi();
   return user.role == 'worker';
 }
