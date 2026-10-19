@@ -7,6 +7,12 @@ param(
   [string] $DeviceId
 )
 
+# PowerShell binds --debug to its common Debug parameter before collecting
+# remaining arguments. Forward it so Flutter does not silently build release.
+if ($PSBoundParameters['Debug'] -and $FlutterArguments -notcontains '--debug') {
+  $FlutterArguments += '--debug'
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $defaultDartDefinesFile = Join-Path $PSScriptRoot 'dart_defines.local.env'
 $dartDefinesPath = if ([string]::IsNullOrWhiteSpace($DartDefinesFile)) {
