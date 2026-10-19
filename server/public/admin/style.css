@@ -237,3 +237,5 @@ dialog::backdrop { background: #19382b66; backdrop-filter: blur(3px); }
 @media (prefers-reduced-motion: reduce) {
   .request-row, .quick-filters button, .stat { transition: none; }
 }
+.todo-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.todo-tag { padding: 1px 6px; border-radius: 4px; background: #fbeeed; color: #af6259; font-size: 9px; }

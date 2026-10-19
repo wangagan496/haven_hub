@@ -4,7 +4,9 @@ let token = sessionStorage.getItem('haven-admin-token') || '';
 let tab = 'rooms', rows = [], workers = [], loading = false, epoch = 0, selectedId = '';
 let dataset = {rooms: [], repairs: [], workers: []};
 const roomStatus = {1:'待审核',2:'已通过',3:'已打回'};
-const repairStatus = {0:'已取消',1:'待派单',2:'处理中',3:'已完成',4:'已取消',5:'待接单'};
+const repairStatus = {0:'已取消',1:'待派单',2:'处理中',3:'已完成',4:'已取消',5:'待接单',6:'待住户确认'};
+// 选中“待办”时只显示有待办标签的工单；急单优先，其余按时间倒序。
+const TODO='todo';
 const pages = {
   rooms: {title:'房屋审核',description:'查看住户提交的房屋资料，及时完成审核。',list:'房屋资料',search:'搜索房屋、业主或手机号'},
   repairs: {title:'报修管理',description:'安排合适的维修师傅，跟进每一条报修记录。',list:'报修记录',search:'搜索维修项目、房屋或师傅'},
@@ -124,12 +126,14 @@ function setTab(value) {
   $('filter').value='';
   $('quick-filters').replaceChildren();
   const states=tab==='rooms'?roomStatus:repairStatus;
-  for(const [value,label] of [['','全部'],...Object.entries(states).filter(([key])=>key!=='4')]) {
+  const entries=Object.entries(states).filter(([key])=>key!=='4');
+  for(const [value,label] of tab==='repairs'?[[TODO,'待办'],['','全部'],...entries]:[['','全部'],...entries]) {
     const option=node('option',label); option.value=value; $('filter').append(option);
     const quick=node('button',label); quick.type='button'; quick.dataset.status=value;
     quick.onclick=()=>{$('filter').value=value;renderQuickFilters();renderStats();render();};
     $('quick-filters').append(quick);
   }
+  if(tab==='repairs') $('filter').value=TODO;
   renderQuickFilters();
   $('result-count').textContent='';
   $('stats').replaceChildren();
@@ -137,17 +141,19 @@ function setTab(value) {
   skeleton();
   renderDetail(null);
 }
-async function load() {
+// keep=true 用于处理完一条记录后刷新：保留筛选条件、所选记录和列表滚动位置。
+async function load(keep=false) {
   if(loading||!token) return;
   loading=true;
   const generation=epoch;
+  const scroll=keep?(document.querySelector('.request-list')?.scrollTop??0):0;
+  const pageScroll=keep?window.scrollY:0;
   $('search').disabled=true;
   $('filter').disabled=true;
   $('refresh').disabled=true;
   document.querySelectorAll('[data-tab]').forEach(button=>button.disabled=true);
   message();
-  skeleton();
-  renderDetail(null);
+  if(!keep) { skeleton(); renderDetail(null); }
   try {
     const results=await Promise.all(['rooms','repairs','workers'].map(name=>api(`/management/${name}`)));
     if(generation!==epoch) return;
@@ -155,10 +161,15 @@ async function load() {
     rows=dataset[tab]; workers=dataset.workers;
     if(!rows.some(row=>row.id===selectedId)) selectedId=rows[0]?.id||'';
     $('rooms-count').textContent=dataset.rooms.filter(row=>row.status===1).length;
-    $('repairs-count').textContent=dataset.repairs.filter(row=>row.status===1).length;
+    $('repairs-count').textContent=dataset.repairs.filter(row=>(row.todo||[]).length).length;
     $('updated-at').textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
     renderStats();
     render();
+    if(keep) {
+      const list=document.querySelector('.request-list');
+      if(list) list.scrollTop=scroll;
+      window.scrollTo(0,pageScroll);
+    }
   } catch(error) {
     if(generation!==epoch) return;
     message(error.message);
@@ -187,10 +198,10 @@ function renderStats() {
     ['全部房屋',rows.length,'当前提交的房屋资料','']
   ];
   else if(tab==='repairs') cards=[
+    ['待办',rows.filter(row=>(row.todo||[]).length).length,'需要物业跟进的工单',TODO],
     ['待派单',count(1),'等待安排维修师傅','1'],
-    ['待接单',count(5),'已派单，等待师傅接单','5'],
     ['处理中',count(2),'师傅正在处理','2'],
-    ['已完成',count(3),'维修已结束','3']
+    ['待住户确认',count(6),'师傅已提交完工','6']
   ];
   else cards=[
     ['维修人员',rows.length,'已开通的师傅账号',null],
@@ -241,12 +252,14 @@ function render() {
   root.replaceChildren();
   if(tab==='workers') root.append(existingForm||workerForm());
   const query=$('search').value.trim().toLowerCase();
+  const selected=$('filter').value;
   const filtered=rows.filter(row=>{
     const status=tab==='repairs'&&row.status===4?0:row.status;
-    const matchesStatus=tab==='workers'||!$('filter').value||String(status)===$('filter').value;
-    const text=[row.point,row.building,row.room,row.name,row.mobile,row.nickName,row.repairItemName,row.houseInfo,row.workerName].filter(Boolean).join(' ').toLowerCase();
+    const matchesStatus=tab==='workers'||!selected||(selected===TODO?(row.todo||[]).length>0:String(status)===selected);
+    const text=[row.point,row.building,row.room,row.name,row.mobile,row.nickName,row.repairItemName,row.houseInfo,row.workerName,...(row.todo||[])].filter(Boolean).join(' ').toLowerCase();
     return matchesStatus&&(!query||text.includes(query));
   });
+  if(tab==='repairs'&&selected===TODO) filtered.sort((a,b)=>Number(Boolean(b.urgent))-Number(Boolean(a.urgent)));
   $('result-count').textContent=`${filtered.length} 条`;
   if(!filtered.some(row=>row.id===selectedId)) selectedId=filtered[0]?.id||'';
   if(!filtered.length) {
@@ -271,8 +284,13 @@ function render() {
       const tone=(tab==='rooms'?row.status===2:row.status===3)?'done':tab==='rooms'&&row.status===3?'rejected':tab==='repairs'&&row.status===2?'processing':[0,4].includes(row.status)?'cancelled':'';
       headline.append(node('span',statusLabel,`status ${tone}`));
     }
-    const subtitle=tab==='rooms'?`${row.name||'住户'} · ${row.mobile||'未留电话'}`:tab==='workers'?row.mobile:`${row.houseInfo||'房屋待确认'} · ${row.appointment||'未预约'}`;
+    const subtitle=tab==='rooms'?`${row.name||'住户'} · ${row.mobile||'未留电话'}`:tab==='workers'?row.mobile:`${row.houseInfo||'房屋待确认'} · ${timeText(row.agreedTime||row.expectedTime)||row.appointment||'未预约'}`;
     copy.append(headline,node('span',subtitle,'request-subtitle'));
+    if(tab==='repairs'&&(row.todo||[]).length) {
+      const tags=node('span',null,'todo-tags');
+      for(const tag of row.todo) tags.append(node('span',tag,'todo-tag'));
+      copy.append(tags);
+    }
     const meta=node('span',null,'request-meta');
     if(tab==='repairs') meta.append(node('span',row.workerName||([0,4].includes(row.status)?'已取消':'待派单')));
     else if(tab==='workers') meta.append(node('span','维修师傅'));
@@ -283,11 +301,16 @@ function render() {
   root.append(list);
   renderDetail(filtered.find(row=>row.id===selectedId)||null);
 }
+function timeText(value) {
+  if(!value) return '';
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{month:'numeric',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit'});
+}
 function repairProgress(record) {
   const list=node('ol',null,'progress');
   list.setAttribute('aria-label','报修进度');
-  const active={1:1,5:2,2:3,3:4}[record.status];
-  ['住户申请','物业派单','待接单','处理中','已完成'].forEach((label,index)=>{
+  const active={1:1,5:2,2:3,6:4,3:5}[record.status];
+  ['住户申请','物业派单','待接单','处理中','待确认','已完成'].forEach((label,index)=>{
     const item=node('li',label,index<active?'complete':index===active?'current':'');
     if(index===active) item.setAttribute('aria-current','step');
     list.append(item);
@@ -342,7 +365,18 @@ function renderDetail(record) {
   if(tab==='rooms') {
     for(const [label,value] of [['房屋',[record.point,record.building,record.floor,record.room].filter(Boolean).join(' ')],['业主',record.name],['联系电话',record.mobile],['审核状态',roomStatus[record.status]],['打回原因',record.reviewReason]]) field(root,label,value);
   } else {
-    for(const [label,value] of [['房屋',record.houseInfo],['联系电话',record.mobile],['预约日期',record.appointment],['问题描述',record.description],['维修人员',record.workerName],['处理结果',record.completionNote]]) field(root,label,value);
+    const open=kind=>(record.pendings||[]).find(item=>item.kind===kind&&!item.resolvedAt);
+    const reschedule=open('reschedule');
+    for(const [label,value] of [
+      ['房屋',record.houseInfo],['住户电话',record.mobile],['期望时间',timeText(record.expectedTime)||record.appointment],
+      ['约定时间',timeText(record.agreedTime)||'未约定'],
+      ['待回应改约',reschedule?`${reschedule.by==='resident'?'住户':'师傅'}提议改为 ${timeText(reschedule.proposedTime)}：${reschedule.reason}`:''],
+      ['问题描述',record.description],['维修人员',record.workerName?`${record.workerName} · ${record.workerMobile||''}`:''],
+      ['维修轮次',`第 ${record.round||1} 轮${record.reworkUsed?'（返修机会已用）':''}`],
+      ['确认期限',timeText(record.confirmDeadline)],['售后期至',timeText(record.warrantyEnd)]
+    ]) if(value) field(root,label,value);
+    for(const round of record.rounds||[]) if(round.completedAt) field(root,`第${round.number}轮`,
+      `${round.note}；上报费用 ${round.cost??0} 元${round.verifiedNote?`；物业核实：${round.verifiedNote}`:''}${round.rejectReason?`；未修好：${round.rejectReason}`:''}`);
   }
   const photos=node('div',null,'photos');
   for(const url of tab==='rooms'?[record.idcardFrontUrl,record.idcardBackUrl]:(record.attachment||[])) {
@@ -351,18 +385,18 @@ function renderDetail(record) {
   if(photos.childElementCount) root.append(photos);
   const actionError=node('p'); actionError.setAttribute('role','alert'); root.append(actionError);
   let saving=false;
-  async function mutate(button,path,body) {
+  async function mutate(button,path,body,method='PUT') {
     if(saving) return;
     saving=true;
     const generation=epoch;
     actionError.textContent='';
-    const controls=[...root.querySelectorAll('button, select, textarea')];
+    const controls=[...root.querySelectorAll('button, select, textarea, input')];
     controls.forEach(control=>control.disabled=true);
     button.setAttribute('aria-busy','true');
     try {
-      await api(path,'PUT',body);
+      await api(path,method,body);
       if(generation!==epoch) return;
-      await load();
+      await load(true);
     } catch(error) {
       if(generation===epoch) actionError.textContent=error.message;
     } finally {
@@ -392,6 +426,15 @@ function renderDetail(record) {
       }
       root.append(history);
     }
+    const base=`/management/repairs/${record.id}`;
+    const revision=record.revision||0;
+    const open=kind=>(record.pendings||[]).find(item=>item.kind===kind&&!item.resolvedAt);
+    const textBox=(labelText,placeholder)=>{
+      const label=node('label',labelText),input=node('textarea');
+      input.maxLength=500; input.placeholder=placeholder; label.append(input); root.append(label);
+      return input;
+    };
+    const require=(input,text)=>{ if(input.value.trim()) return true; actionError.textContent=text; input.focus(); return false; };
     if(record.status===1||record.status===5) {
       const label=node('label','指派维修人员'),select=node('select');
       const option=node('option','请选择维修人员'); option.value=''; select.append(option);
@@ -401,14 +444,57 @@ function renderDetail(record) {
       }
       label.append(select); root.append(label);
       if(!workers.length) root.append(node('p','请先在“维修人员”中添加师傅。','detail-guidance'));
-      const button=node('button',record.status===5?'重新派单':'确认派单','primary');
+      const button=node('button',record.status===5||record.releasedAt?'重新派单':'确认派单','primary');
       button.disabled=!workers.length;
       button.onclick=()=>{
         if(!select.value) {actionError.textContent='请选择维修人员';return;}
-        mutate(button,`/management/repairs/${record.id}/assign`,{revision:record.revision||0,workerId:select.value});
+        mutate(button,`${base}/assign`,{revision,workerId:select.value});
       };
       root.append(button);
     }
+    const aftersale=open('aftersale');
+    if(aftersale) {
+      root.append(node('p',`住户申请售后返修：${aftersale.reason}`,'detail-guidance'));
+      const reason=textBox('审核说明（拒绝时必填）','说明审核结果，拒绝时请写明原因');
+      const actions=node('div',null,'actions'),reject=node('button','拒绝'),approve=node('button','通过，交回原师傅','primary');
+      approve.onclick=()=>mutate(approve,`${base}/aftersale`,{revision,approve:true,reason:reason.value.trim()});
+      reject.onclick=()=>{ if(require(reason,'拒绝售后申请必须填写原因')) mutate(reject,`${base}/aftersale`,{revision,approve:false,reason:reason.value.trim()}); };
+      actions.append(reject,approve); root.append(actions);
+    }
+    const reschedule=open('reschedule');
+    if(reschedule) {
+      root.append(node('p','改约待对方回应。已与双方电话核实后，可代为确认或保持原约定。','detail-guidance'));
+      const reason=textBox('跟进说明（保持原约定时必填）','例如：已电话联系师傅，同意下午上门');
+      const actions=node('div',null,'actions'),decline=node('button','保持原约定'),accept=node('button','确认新时间','primary');
+      accept.onclick=()=>mutate(accept,`${base}/reschedule`,{revision,accept:true,reason:reason.value.trim()});
+      decline.onclick=()=>{ if(require(reason,'请填写跟进说明')) mutate(decline,`${base}/reschedule`,{revision,accept:false,reason:reason.value.trim()}); };
+      actions.append(decline,accept); root.append(actions);
+    }
+    const feedback=open('feedback');
+    const objection=(record.pendings||[]).find(item=>item.objection&&!item.reply);
+    if(feedback) root.append(node('p',`住户反馈：${feedback.reason}`,'detail-guidance'));
+    if(objection) root.append(node('p',`师傅对撤销有异议：${objection.objection}`,'detail-guidance'));
+    // 回复反馈、处理异议、核实内容与费用、一般跟进：只追加记录，不改变工单状态。
+    const label=node('label','物业记录'),target=node('select');
+    for(const [value,text,show] of [['feedback','回复问题反馈',Boolean(feedback)],['objection','处理撤销异议',Boolean(objection)],
+      ['verify','核实处理内容和费用',(record.rounds||[]).some(round=>round.completedAt)],['follow','跟进记录',true]]) {
+      if(!show) continue;
+      const item=node('option',text); item.value=value; target.append(item);
+    }
+    label.append(target); root.append(label);
+    const content=textBox('记录内容','写明与住户、师傅核实或沟通的结果');
+    const costLabel=node('label','核实费用（元，可不填）'),cost=node('input');
+    cost.type='number'; cost.min='0'; cost.step='0.01'; costLabel.append(cost); root.append(costLabel);
+    const syncCost=()=>{ costLabel.hidden=target.value!=='verify'; };
+    target.onchange=syncCost; syncCost();
+    const save=node('button','保存记录');
+    save.onclick=()=>{
+      if(!require(content,'请填写记录内容')) return;
+      const body={revision,target:target.value,content:content.value.trim()};
+      if(target.value==='verify'&&cost.value!=='') body.cost=Number(cost.value);
+      mutate(save,`${base}/notes`,body,'POST');
+    };
+    const actions=node('div',null,'actions'); actions.append(save); root.append(actions);
   }
 }
 if(token) enter().catch(error=>{logout();message(error.message);});

@@ -34,8 +34,15 @@ export class Store {
       this.db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'resident' CHECK(role IN ('resident','admin','worker')); PRAGMA user_version = 2;");
     });
   }
+  private depth = 0;
+  // 可重入：外层已在事务中时直接执行，由外层统一提交或回滚。
   transaction<T>(operation: () => T): T {
+    if (this.depth > 0) {
+      this.depth++;
+      try { return operation(); } finally { this.depth--; }
+    }
     this.db.exec('BEGIN IMMEDIATE');
+    this.depth = 1;
     try {
       const result = operation();
       this.db.exec('COMMIT');
@@ -43,7 +50,23 @@ export class Store {
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
+    } finally {
+      this.depth = 0;
     }
+  }
+  /** 在当前事务内开一个保存点：operation 失败只回滚它自己的写入，外层事务继续。 */
+  savepoint<T>(operation: () => T): T {
+    return this.transaction(() => {
+      this.db.exec('SAVEPOINT nested');
+      try {
+        const result = operation();
+        this.db.exec('RELEASE nested');
+        return result;
+      } catch (error) {
+        this.db.exec('ROLLBACK TO nested; RELEASE nested');
+        throw error;
+      }
+    });
   }
   list(table: Collection, userId: string): RecordData[] {
     return this.db.prepare(`SELECT payload FROM ${table} WHERE userId = ? ORDER BY seq DESC`).all(userId)
@@ -58,10 +81,12 @@ export class Store {
     return row ? JSON.parse(String(row.payload)) as RecordData : undefined;
   }
   save(table: Collection, userId: string, record: RecordData, editing = false) {
+    this.transaction(() => {
     if (editing) this.db.prepare(`UPDATE ${table} SET payload = ? WHERE userId = ? AND id = ?`)
       .run(JSON.stringify(record), userId, record.id);
     else this.db.prepare(`INSERT INTO ${table}(id, userId, payload) VALUES (?, ?, ?)`)
       .run(record.id, userId, JSON.stringify(record));
+    });
   }
   delete(table: Collection, userId: string, id: string) {
     this.db.prepare(`DELETE FROM ${table} WHERE userId = ? AND id = ?`).run(userId, id);

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:haven_hub/api/worker.dart';
+import 'package:haven_hub/constant/index.dart';
 import 'package:haven_hub/models/repair.dart';
 import 'package:haven_hub/pages/worker/worker_pages.dart';
 import 'package:haven_hub/utils/token_manager.dart';
@@ -103,13 +104,13 @@ void main() {
   }
 
   testWidgets(
-      'blank result is blocked; valid result submits once and shows completion',
+      'blank result is blocked; valid result submits once and returns to workbench',
       (tester) async {
     int calls = 0;
     final response = Completer<RepairRecord>();
-    await pumpPage(
-        tester,
-        WorkerDetailPage(
+    await pumpPage(tester, const Scaffold(body: Text('测试工作台')),
+        routes: <String, WidgetBuilder>{
+      '/worker-test': (_) => WorkerDetailPage(
           id: 'repair',
           recordLoader: (_) async => const RepairRecord(
               id: 'repair', status: 2, repairItemName: '水电维修'),
@@ -119,26 +120,29 @@ void main() {
             expect(result, '已更换水管，试水正常');
             return response.future;
           },
-        ));
-    expect(find.text('处理结果（必填）'), findsOneWidget);
-    await tester.tap(find.text('完成维修'));
+        ),
+    });
+    unawaited(GlobalVariable.navigatorKey.currentState!.pushNamed<void>('/worker-test'));
+    await tester.pumpAndSettle();
+    expect(find.text('修了什么（必填）'), findsOneWidget);
+    await tester.tap(find.text('提交完工'));
     await tester.pumpAndSettle();
     expect(calls, 0);
     expect(find.text('请填写处理结果后再完成维修'), findsWidgets);
-    await tester.enterText(find.byType(TextField), '   ');
-    await tester.tap(find.text('完成维修'));
+    await tester.enterText(find.byType(TextField).first, '   ');
+    await tester.tap(find.text('提交完工'));
     await tester.pumpAndSettle();
     expect(calls, 0);
-    await tester.enterText(find.byType(TextField), ' 已更换水管，试水正常 ');
-    await tester.tap(find.text('完成维修'));
+    await tester.enterText(find.byType(TextField).first, ' 已更换水管，试水正常 ');
+    await tester.tap(find.text('提交完工'));
     await tester.pump();
     expect(calls, 1);
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull);
     response.complete(const RepairRecord(
-        id: 'repair', status: 3, completionNote: '已更换水管，试水正常'));
+        id: 'repair', status: 6, completionNote: '已更换水管，试水正常'));
     await tester.pumpAndSettle();
-    expect(find.text('已更换水管，试水正常'), findsOneWidget);
+    expect(find.text('测试工作台'), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
     expect(find.byType(FilledButton), findsNothing);
     await finishPage(tester);
@@ -163,7 +167,7 @@ void main() {
     await tester.tap(find.text('接单'));
     await tester.pumpAndSettle();
     expect(calls, 1);
-    expect(find.text('处理结果（必填）'), findsOneWidget);
+    expect(find.text('修了什么（必填）'), findsOneWidget);
     await finishPage(tester);
   });
 }

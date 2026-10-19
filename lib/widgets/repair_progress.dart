@@ -10,22 +10,31 @@ class RepairProgress extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = switch (record.status) {
-      2 => const Color(0xFFB85C00),
-      3 => const Color(0xFF2E7D32),
+      RepairStatus.processing => const Color(0xFFB85C00),
+      RepairStatus.confirming => const Color(0xFF5D7CAA),
+      RepairStatus.completed => const Color(0xFF2E7D32),
       _ => Theme.of(context).colorScheme.primary,
     };
     final IconData statusIcon = switch (record.status) {
-      2 => Icons.schedule_rounded,
-      3 => Icons.task_alt,
-      1 || 5 => Icons.handyman_outlined,
+      RepairStatus.processing => Icons.schedule_rounded,
+      RepairStatus.confirming => Icons.fact_check_outlined,
+      RepairStatus.completed => Icons.task_alt,
+      RepairStatus.pending || RepairStatus.assigned => Icons.handyman_outlined,
       _ => Icons.info_outline,
     };
+    final bool released =
+        record.timeline.any((RepairEvent event) => event.action == 'released');
     final String description = switch (record.status) {
-      1 => '报修已提交，等待物业安排维修人员',
-      5 => '物业已派单，等待维修人员接单',
-      2 => '维修人员已接单，正在处理本次报修',
-      3 => '本次维修已完成，可查看处理结果',
-      0 || 4 => '本次报修已取消',
+      RepairStatus.pending => released
+          ? '原师傅无法继续，物业正在重新安排维修人员'
+          : '报修已提交，等待物业安排维修人员',
+      RepairStatus.assigned => '物业已派单，等待维修人员接单',
+      RepairStatus.processing => record.round > 1
+          ? '第 ${record.round} 轮维修（返修）进行中'
+          : '维修人员已接单，正在处理本次报修',
+      RepairStatus.confirming => '维修人员已提交完工，等待住户确认',
+      RepairStatus.completed => '本次维修已完成，可查看处理结果',
+      RepairStatus.cancelled || RepairStatus.legacyCancelled => '本次报修已取消',
       _ => '暂未获取到工单状态，请刷新后重试',
     };
     return Align(

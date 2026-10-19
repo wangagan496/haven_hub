@@ -12,6 +12,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     CORS_ORIGINS: z.string().default('http://localhost:8080,http://127.0.0.1:8080'),
     DATABASE_PATH: z.string().default('data/haven.sqlite'),
     AUTH_MODE: z.literal('development').default('development'),
+    // 物业联系电话对住户和师傅可见；默认是虚构号码，演示时可在 .env 中修改。
+    PROPERTY_PHONE: z.string().trim().regex(/^[0-9+\- ]{5,20}$/, 'PROPERTY_PHONE 格式不正确').default('020-88888888'),
   }).parse(env);
   const url = new URL(config.PUBLIC_BASE_URL);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
@@ -26,7 +28,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     host: config.HOST, port: config.PORT,
     publicBaseUrl: url.origin,
     origins: config.CORS_ORIGINS.split(',').map(value => value.trim()).filter(Boolean),
-    databasePath: resolve(config.DATABASE_PATH),
+    databasePath: config.DATABASE_PATH === ':memory:' ? ':memory:' : resolve(config.DATABASE_PATH),
+    propertyPhone: config.PROPERTY_PHONE,
   };
 }
 export type Config = ReturnType<typeof readConfig>;

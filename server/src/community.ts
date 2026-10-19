@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Collection, RecordData, Store } from './database.js';
 import { mobileSchema } from './auth.js';
 import { ApiError, requireValue } from './errors.js';
+import { localTimePattern, newRound } from './repair-rules.js';
 
 const text = z.string().trim().min(1).max(100);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
@@ -48,18 +49,26 @@ function roomValidationMessage(error: z.ZodError): string {
   }
   return `${label}格式不正确，请检查输入`;
 }
+// expectedTime 为住户选择的具体期望上门时间（带时区偏移）；appointment 为其当地日期，兼容旧客户端与旧数据。
 export const repairSchema = z.object({
   houseId: z.string().uuid(), repairItemId: z.enum(['1001', '1002', '1003']), mobile: mobileSchema,
-  appointment: date, description: z.string().trim().max(2000).default(''),
+  appointment: date.optional(), expectedTime: z.string().regex(localTimePattern, '期望上门时间格式不正确').optional(),
+  description: z.string().trim().max(2000).default(''),
   attachment: z.array(z.url()).max(8).default([]),
-}).strict();
+}).strict().refine(value => value.appointment || value.expectedTime, '请选择期望上门时间');
 export const visitorSchema = z.object({
   houseId: z.string().uuid(), name: text, gender: z.union([z.literal(0), z.literal(1)]), mobile: mobileSchema, visitDate: date,
 }).strict();
 
 export class CommunityService {
-  constructor(private readonly store: Store, private readonly publicBaseUrl: string) {}
-  list(table: Collection, userId: string) { return this.store.list(table, userId); }
+  /** 报修列表的读取方式可替换：由 RepairService 结算到期事项并按住户视角裁剪电话。 */
+  repairList?: (userId: string) => RecordData[];
+  constructor(private readonly store: Store, private readonly publicBaseUrl: string,
+    private readonly now: () => number = Date.now) {}
+  private iso() { return new Date(this.now()).toISOString(); }
+  list(table: Collection, userId: string) {
+    return table === 'repairs' && this.repairList ? this.repairList(userId) : this.store.list(table, userId);
+  }
   detail(table: Collection, userId: string, id: string) {
     const value = this.store.get(table, userId, id);
     if (!value) throw new ApiError(404, 40400, '记录不存在或无权访问');
@@ -69,7 +78,7 @@ export class CommunityService {
   mutate(table: Collection, userId: string, operation: () => void) {
     return this.store.transaction(() => {
       operation();
-      const rows = this.store.list(table, userId);
+      const rows = this.list(table, userId);
       return { complete: true, rows, total: rows.length };
     });
   }
@@ -90,7 +99,7 @@ export class CommunityService {
       }
       this.store.save('rooms', userId, { ...input, id: input.id ?? randomUUID(), status: 1,
         revision: Number(previous?.revision ?? 0) + 1, reviewReason: '', reviewedAt: '',
-        submittedAt: new Date().toISOString() }, Boolean(input.id));
+        submittedAt: this.iso() }, Boolean(input.id));
     });
   }
   deleteRoom(userId: string, id: string) {
@@ -101,31 +110,28 @@ export class CommunityService {
   }
   createRepair(userId: string, raw: unknown) {
     const input = repairSchema.parse(raw);
-    return this.mutate('repairs', userId, () => {
+    if (input.expectedTime) requireValue(Date.parse(input.expectedTime) > this.now(), '期望上门时间必须晚于当前时间');
+    const appointment = input.expectedTime ? input.expectedTime.slice(0, 10) : input.appointment!;
+    const id = randomUUID();
+    const result = this.mutate('repairs', userId, () => {
       const house = this.detail('rooms', userId, input.houseId);
       for (const url of input.attachment) this.ownedUpload(userId, url);
-      const createdAt = new Date().toISOString();
-      this.store.save('repairs', userId, { ...input, id: randomUUID(), status: 1, workflowVersion: 1, revision: 1,
-        createdAt, timeline: [{ action: 'submitted', label: '住户申请', at: createdAt }],
+      const createdAt = this.iso();
+      this.store.save('repairs', userId, { ...input, appointment, expectedTime: input.expectedTime ?? '', agreedTime: '',
+        id, status: 1, workflowVersion: 1, revision: 1, createdAt,
+        rounds: [newRound(1, 'first', createdAt)], pendings: [],
+        timeline: [{ action: 'submitted', label: '住户申请', at: createdAt, by: 'resident',
+          detail: input.expectedTime ? `期望上门时间 ${input.expectedTime}` : '' }],
         houseInfo: this.houseInfo(house), repairItemName: repairItems.find(item => item.id === input.repairItemId)!.name });
     });
-  }
-  cancelRepair(userId: string, id: string) {
-    return this.mutate('repairs', userId, () => {
-      const record = this.detail('repairs', userId, id);
-      requireValue(record.status === 1, '物业派单后不能自行取消，请联系物业');
-      const cancelledAt = new Date().toISOString();
-      this.store.save('repairs', userId, { ...record, status: 0, cancelledAt,
-        revision: Number(record.revision ?? 0) + 1,
-        timeline: [...(Array.isArray(record.timeline) ? record.timeline : []),
-          { action: 'cancelled', label: '住户取消', at: cancelledAt }] }, true);
-    });
+    // createdId 供 App 提交成功后直接进入新工单详情。
+    return { ...result, createdId: id };
   }
   createVisitor(userId: string, input: z.infer<typeof visitorSchema>, image: Uint8Array, imageId: string) {
     return this.mutate('visitors', userId, () => {
       const house = this.detail('rooms', userId, input.houseId);
       this.store.run('INSERT INTO uploads VALUES (?, ?, ?, ?)', imageId, userId, 'image/png', image);
-      this.store.save('visitors', userId, { ...input, id: randomUUID(), status: 1, houseInfo: this.houseInfo(house),
+      this.store.save('visitors', userId, { ...input, id: randomUUID(), status: 1, houseInfo: this.houseInfo(house), createdAt: this.iso(),
         validTime: 1440, url: `${this.publicBaseUrl}/media/${imageId}`, encryptedData: 'LOCAL-DEMO-NOT-A-REAL-PASS' });
     });
   }

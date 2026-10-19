@@ -131,6 +131,10 @@ class HttpPath {
   static String cancelRepair(String id) =>
       'cancel/repair/${Uri.encodeComponent(id)}';
 
+  /// 住户对工单的操作：confirm / reject / aftersale / feedback / reschedule。
+  static String repairAction(String id, String action) =>
+      '${repairDetail(id)}/$action';
+
   static String visitorDetail(String id) =>
       '$visitor/${Uri.encodeComponent(id)}';
 }

@@ -23,6 +23,7 @@ import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
+import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
 
@@ -59,19 +60,20 @@ enum RepairStatusFilter {
 
   /// 匹配报修记录的状态
   ///
-  /// 返回 true 表示该记录应该显示
+  /// 返回 true 表示该记录应该显示。“处理中”包含待住户确认，因为都还没结单。
   bool matches(RepairRecord record) {
     switch (this) {
       case RepairStatusFilter.all:
         return true;
       case RepairStatusFilter.pending:
-        return record.status == 1;
+        return record.status == RepairStatus.pending;
       case RepairStatusFilter.waiting:
-        return record.status == 5;
+        return record.status == RepairStatus.assigned;
       case RepairStatusFilter.processing:
-        return record.status == 2;
+        return record.status == RepairStatus.processing ||
+            record.status == RepairStatus.confirming;
       case RepairStatusFilter.completed:
-        return record.status == 3;
+        return record.status == RepairStatus.completed;
     }
   }
 }
@@ -232,7 +234,8 @@ class _RepairListPageState extends State<RepairListPage> {
                           title: Text(item.repairItemName.isEmpty
                               ? '维修服务'
                               : item.repairItemName),
-                          subtitle: Text('${item.appointment}\n${item.mobile}'),
+                          subtitle: Text(
+                              '${item.visitTime.isNotEmpty ? formatVisitTime(item.visitTime) : item.appointment}\n${item.mobile}'),
                           isThreeLine: true,
                           trailing: Text(item.statusText,
                               style: const TextStyle(color: AppColors.accent)),
@@ -292,10 +295,12 @@ class RepairDetailPage extends StatefulWidget {
   const RepairDetailPage(
       {this.loader = getRepairDetailApi,
       this.cancelLoader = cancelRepairApi,
+      this.actionLoader = runRepairAction,
       super.key});
   static const String routeName = AppRoutes.repairDetail;
   final RepairDetailLoader loader;
   final CancelRepairLoader cancelLoader;
+  final RepairActionLoader actionLoader;
   @override
   State<RepairDetailPage> createState() => _RepairDetailPageState();
 }
@@ -307,6 +312,142 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
   bool _loading = false;
   bool _cancelling = false;
   bool _confirming = false;
+  bool _acting = false;
+  bool _changed = false;
+
+  /// 通用的工单操作：防重复提交；异步后检查 mounted 与会话；409 时刷新权威数据，不重放旧操作。
+  Future<void> _act(
+      RepairAction action, String success, String fallback) async {
+    final RepairRecord? record = _record;
+    if (_acting || record == null) return;
+    final int sessionId = tokenManager.sessionId;
+    setState(() => _acting = true);
+    try {
+      final RepairRecord updated = await widget.actionLoader(record, action);
+      if (!mounted || tokenManager.sessionId != sessionId) return;
+      _changed = true;
+      setState(() => _record = updated);
+      await PromptAction.showSuccess(success);
+    } on Object catch (error) {
+      if (!mounted || tokenManager.sessionId != sessionId) return;
+      if (error is NetworkException && error.statusCode == 409) {
+        await PromptAction.showWarning('工单已被更新，已为你刷新，请确认后再操作');
+        if (mounted) setState(() => _acting = false);
+        await _load();
+        return;
+      }
+      await PromptAction.showError(describeError(error, fallback: fallback));
+    } finally {
+      if (mounted) setState(() => _acting = false);
+    }
+  }
+
+  Future<void> _confirmRepair() async {
+    final bool ok = await showDialog<bool>(
+            context: context,
+            builder: (BuildContext dialog) => AlertDialog(
+                    title: const Text('确认已修好'),
+                    content: const Text('确认后进入售后期，售后期内如有问题仍可申请返修。'),
+                    actions: <Widget>[
+                      TextButton(
+                          onPressed: () => Navigator.pop(dialog, false),
+                          child: const Text('返回')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(dialog, true),
+                          child: const Text('确认修好')),
+                    ])) ??
+        false;
+    if (ok && mounted) {
+      await _act(const ConfirmAction(), '已确认修好', '确认失败，请重试');
+    }
+  }
+
+  Future<void> _rejectRepair() async {
+    final String? reason = await askReason(context,
+        title: '还没修好',
+        label: '哪里还有问题',
+        message: '工单会直接交回原师傅返修。每张工单只有一次返修机会。',
+        confirmText: '交回返修');
+    if (reason != null && mounted) {
+      await _act(RejectAction(reason), '已交回师傅返修', '提交失败，请重试');
+    }
+  }
+
+  Future<void> _aftersale() async {
+    final String? reason = await askReason(context,
+        title: '申请售后返修',
+        label: '遇到了什么问题',
+        message: '申请提交后由物业审核，通过后交回原师傅返修。每张工单只有一次返修机会。',
+        confirmText: '提交申请');
+    if (reason != null && mounted) {
+      await _act(AftersaleAction(reason), '售后申请已提交，等待物业审核', '提交失败，请重试');
+    }
+  }
+
+  Future<void> _feedback() async {
+    final String? content = await askReason(context,
+        title: '反馈问题',
+        label: '问题说明',
+        message: '物业会核实处理并在时间线中回复。',
+        confirmText: '提交反馈');
+    if (content != null && mounted) {
+      await _act(FeedbackAction(content), '反馈已提交', '提交失败，请重试');
+    }
+  }
+
+  Future<void> _revoke() async {
+    final RepairRecord? record = _record;
+    if (record == null) return;
+    final bool needsWorker = record.revokeNeedsWorker;
+    final String? reason = await askReason(context,
+        title: needsWorker ? '申请撤销报修' : '撤销报修',
+        label: '撤销原因',
+        message: needsWorker
+            ? '师傅已接单，请先电话告知师傅。提交后师傅确认即撤销；师傅未回应时，到期自动通过。'
+            : '撤销后工单关闭，如需维修请重新报修。',
+        phone: needsWorker ? record.workerMobile : null,
+        notifyHint: needsWorker ? '我已电话告知师傅' : null,
+        confirmText: needsWorker ? '提交撤销申请' : '确认撤销',
+        danger: true);
+    if (reason == null || !mounted) return;
+    await _act(RevokeAction(reason, notified: needsWorker),
+        needsWorker ? '撤销申请已提交' : '报修已撤销', '撤销失败，请重试');
+  }
+
+  Future<void> _propose() async {
+    final RepairRecord? record = _record;
+    if (record == null) return;
+    final DateTime? time = await pickVisitTime(context,
+        initial: DateTime.tryParse(record.visitTime)?.toLocal(),
+        title: '选择新的上门时间');
+    if (time == null || !mounted) return;
+    final String? reason = await askReason(context,
+        title: '修改预约',
+        label: '改约原因',
+        message: '新时间：${formatVisitTime(time.toIso8601String())}\n'
+            '请先电话告知师傅。师傅同意后新时间才生效，之前按原约定。',
+        phone: record.workerMobile,
+        notifyHint: '我已电话告知师傅',
+        confirmText: '发起改约');
+    if (reason != null && mounted) {
+      await _act(ProposeAction(time, reason), '改约已发起，等待师傅同意', '改约失败，请重试');
+    }
+  }
+
+  Future<void> _respond(bool accept) async {
+    String reason = '';
+    if (!accept) {
+      final String? value = await askReason(context,
+          title: '不同意改约',
+          label: '原因',
+          message: '将保持原约定时间，建议电话与师傅再沟通。',
+          confirmText: '保持原约定');
+      if (value == null || !mounted) return;
+      reason = value;
+    }
+    await _act(RespondAction(accept: accept, reason: reason),
+        accept ? '已同意新时间' : '已保持原约定', '操作失败，请重试');
+  }
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -340,7 +481,10 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
     }
   }
 
+  /// 未接单前的直接撤销沿用原有流程；师傅接单后走 [_revoke] 的撤销申请。
   Future<void> _cancel() async {
+    final RepairRecord? record = _record;
+    if (record != null && record.revokeNeedsWorker) return _revoke();
     if (_cancelling || _confirming || _id.isEmpty) return;
     // The confirmation dialog is part of the operation too.
     setState(() => _confirming = true);
@@ -382,55 +526,221 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
   @override
   Widget build(BuildContext context) {
     final RepairRecord? record = _record;
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(title: const Text('报修详情'), actions: <Widget>[
-        IconButton(
-            tooltip: '刷新进度',
-            onPressed: _loading ? null : _load,
-            icon: const Icon(Icons.refresh)),
-      ]),
-      body: AsyncStateView(
-        isLoading: _loading,
-        errorMessage: _error,
-        onRetry: _load,
-        hasContent: record != null,
-        builder: (_) => record == null
-            ? const SizedBox.shrink()
-            : ListView(children: <Widget>[
-                if (record.workflowVersion == 1) RepairProgress(record: record),
-                const _Section('报修信息'),
-                _Row('维修项目', record.repairItemName),
-                _Row('预约时间', record.appointment),
-                _Row('联系电话', record.mobile),
-                _Row('报修房屋', record.houseInfo),
-                _Row('处理状态', record.statusText),
-                const _Section('故障描述'),
-                _Row('描述', record.description),
-                if (record.attachment.isNotEmpty)
-                  Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: RepairPhotos(urls: record.attachment)),
-              ]),
-      ),
-      bottomNavigationBar: record?.canCancel != true
-          ? null
-          : SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: FilledButton(
-                  onPressed: _cancelling || _confirming ? null : _cancel,
-                  style:
-                      FilledButton.styleFrom(backgroundColor: AppColors.danger),
-                  child: _cancelling
-                      ? const CircularProgressIndicator()
-                      : const Text('取消报修'),
+    return PopScope<bool>(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, _) {
+        // 有操作成功时通知列表刷新。
+        if (!didPop) Navigator.pop(context, _changed);
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(title: const Text('报修详情'), actions: <Widget>[
+          IconButton(
+              tooltip: '刷新进度',
+              onPressed: _loading ? null : _load,
+              icon: const Icon(Icons.refresh)),
+        ]),
+        body: AsyncStateView(
+          isLoading: _loading,
+          errorMessage: _error,
+          onRetry: _load,
+          hasContent: record != null,
+          builder: (_) => record == null
+              ? const SizedBox.shrink()
+              : AbsorbPointer(
+                  absorbing: _acting,
+                  child: ListView(children: <Widget>[
+                    if (record.workflowVersion == 1)
+                      RepairProgress(record: record),
+                    ..._notices(record),
+                    const _Section('报修信息'),
+                    _Row('维修项目', record.repairItemName),
+                    _Row(
+                        record.agreedTime.isNotEmpty ? '约定时间' : '期望时间',
+                        record.visitTime.isNotEmpty
+                            ? formatVisitTime(record.visitTime)
+                            : record.appointment),
+                    if (record.agreedTime.isNotEmpty &&
+                        record.expectedTime.isNotEmpty &&
+                        record.agreedTime != record.expectedTime)
+                      _Row('期望时间', formatVisitTime(record.expectedTime)),
+                    _Row('联系电话', record.mobile),
+                    _Row('报修房屋', record.houseInfo),
+                    _Row('处理状态', record.statusText),
+                    if (record.round > 1) _Row('维修轮次', '第 ${record.round} 轮（返修）'),
+                    const _Section('联系方式'),
+                    if (record.workerName.isNotEmpty)
+                      _Contact('维修师傅 ${record.workerName}', record.workerMobile),
+                    _Contact('物业', record.propertyPhone),
+                    const _Section('故障描述'),
+                    _Row('描述', record.description),
+                    if (record.attachment.isNotEmpty)
+                      Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: RepairPhotos(urls: record.attachment)),
+                    ..._roundHistory(record),
+                  ]),
                 ),
-              ),
-            ),
+        ),
+        bottomNavigationBar: record == null ? null : _actions(record),
+      ),
     );
   }
+
+  /// 顶部提示卡：待你回应的事项和截止时刻，不依赖推送。
+  List<Widget> _notices(RepairRecord record) {
+    final List<Widget> cards = <Widget>[];
+    final RepairPending? reschedule = record.reschedule;
+    if (record.canConfirm) {
+      cards.add(_Notice(
+          '师傅已提交完工，请确认是否修好',
+          record.confirmDeadline.isEmpty
+              ? ''
+              : '${formatVisitTime(record.confirmDeadline)} 前未操作，将自动确认完成'));
+    }
+    if (reschedule != null) {
+      cards.add(_Notice(
+          reschedule.by == 'resident' ? '你发起的改约，等待师傅同意' : '师傅提议修改上门时间',
+          '新时间：${formatVisitTime(reschedule.proposedTime)}\n原因：${reschedule.reason}\n'
+              '同意前按原约定时间执行',
+          actions: reschedule.by == 'resident'
+              ? const <Widget>[]
+              : <Widget>[
+                  TextButton(
+                      onPressed: () => _respond(false),
+                      child: const Text('不同意')),
+                  FilledButton(
+                      onPressed: () => _respond(true),
+                      child: const Text('同意新时间')),
+                ]));
+    }
+    if (record.revokeRequest != null) {
+      cards.add(_Notice('撤销申请已提交，等待师傅确认',
+          '${formatVisitTime(record.revokeRequest!.deadline)} 前师傅未回应将自动通过'));
+    }
+    if (record.status == RepairStatus.processing && record.agreedTime.isEmpty) {
+      cards.add(const _Notice('等待与师傅重新约定上门时间', '师傅会联系你确认时间，也可以主动发起改约'));
+    }
+    if (record.status == RepairStatus.pending &&
+        record.timeline.any((RepairEvent e) => e.action == 'released')) {
+      cards.add(const _Notice('物业正在为你重新安排师傅', '安排好后会在这里更新'));
+    }
+    if (record.aftersale != null) {
+      cards.add(_Notice('售后申请待物业审核', record.aftersale!.reason));
+    }
+    if (record.feedback != null) {
+      cards.add(_Notice('反馈已提交，等待物业回复', record.feedback!.reason));
+    }
+    if (record.inWarranty) {
+      cards.add(_Notice('售后期至 ${formatVisitTime(record.warrantyEnd)}',
+          record.reworkUsed ? '返修机会已使用，如有问题可反馈给物业' : '期间如有问题，可申请售后返修'));
+    }
+    return cards;
+  }
+
+  /// 每一轮的维修说明、费用与确认结果都保留，不覆盖上一轮。
+  List<Widget> _roundHistory(RepairRecord record) {
+    final List<Widget> rows = <Widget>[];
+    for (final RepairRound round in record.rounds) {
+      if (round.completedAt.isEmpty && round.rejectReason.isEmpty) continue;
+      rows
+        ..add(_Section('第 ${round.number} 轮维修'))
+        ..add(_Row('维修说明', round.note))
+        ..add(_Row('上报费用', round.cost == null ? '' : '${round.cost} 元'));
+      if (round.verifiedNote.isNotEmpty) rows.add(_Row('物业核实', round.verifiedNote));
+      if (round.rejectReason.isNotEmpty) rows.add(_Row('未修好原因', round.rejectReason));
+      if (round.confirmedAt.isNotEmpty) {
+        rows.add(_Row(
+            round.confirmedBy == 'system' ? '自动确认' : '住户确认',
+            formatVisitTime(round.confirmedAt)));
+      }
+    }
+    return rows;
+  }
+
+  Widget? _actions(RepairRecord record) {
+    final List<Widget> buttons = <Widget>[
+      if (record.canConfirm)
+        FilledButton(onPressed: _confirmRepair, child: const Text('确认修好')),
+      if (record.canReject)
+        OutlinedButton(onPressed: _rejectRepair, child: const Text('还没修好')),
+      if (record.canReschedule)
+        OutlinedButton(onPressed: _propose, child: const Text('修改预约')),
+      if (record.canApplyAftersale)
+        FilledButton(onPressed: _aftersale, child: const Text('申请售后返修')),
+      if (record.canFeedback &&
+          (record.reworkUsed ||
+              record.status == RepairStatus.completed ||
+              record.status == RepairStatus.confirming))
+        OutlinedButton(onPressed: _feedback, child: const Text('反馈问题')),
+      if (record.canRevoke)
+        FilledButton(
+          onPressed: _cancelling || _confirming ? null : _cancel,
+          style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+          child: _cancelling
+              ? const CircularProgressIndicator()
+              : Text(record.revokeNeedsWorker ? '申请撤销' : '取消报修'),
+        ),
+    ];
+    if (buttons.isEmpty) return null;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          alignment: WrapAlignment.end,
+          children: _acting
+              ? const <Widget>[CircularProgressIndicator()]
+              : buttons,
+        ),
+      ),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  const _Notice(this.title, this.detail, {this.actions = const <Widget>[]});
+  final String title;
+  final String detail;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) => Card(
+        margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        color: const Color(0xFFFFF8E7),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (detail.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 6),
+                Text(detail,
+                    style: const TextStyle(color: AppColors.textSecondary)),
+              ],
+              if (actions.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Wrap(spacing: 8, children: actions),
+                ),
+            ],
+          ),
+        ),
+      );
+}
+
+class _Contact extends StatelessWidget {
+  const _Contact(this.label, this.phone);
+  final String label;
+  final String phone;
+  @override
+  Widget build(BuildContext context) => Container(
+      color: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: PhoneLine(label: label, phone: phone));
 }
 
 class RepairFormPage extends StatefulWidget {
@@ -611,6 +921,7 @@ class _RepairFormPageState extends State<RepairFormPage>
         repairItemId: _itemId ?? '',
         mobile: _mobile.text.trim(),
         appointment: _date == null ? '' : formatDate(_date!),
+        expectedTime: _date == null ? '' : formatLocalTime(_date!),
         description: _description.text.trim(),
         attachment: List<String>.of(_photos),
       );
@@ -688,13 +999,14 @@ class _RepairFormPageState extends State<RepairFormPage>
               _mobile.text = draft.record.mobile;
               _description.text = draft.record.description;
               _photos = List<String>.of(draft.record.attachment.take(8));
-              final DateTime today = DateUtils.dateOnly(DateTime.now());
-              final DateTime? date =
-                  DateTime.tryParse(draft.record.appointment);
-              _date = date != null &&
-                      !date.isBefore(today) &&
-                      !date.isAfter(today.add(const Duration(days: 365)))
-                  ? date
+              // 草稿只恢复仍在未来一年内的具体时间；只有日期的旧草稿需重新选时间。
+              final DateTime now = DateTime.now();
+              final DateTime? time =
+                  DateTime.tryParse(draft.record.expectedTime)?.toLocal();
+              _date = time != null &&
+                      time.isAfter(now) &&
+                      !time.isAfter(now.add(const Duration(days: 366)))
+                  ? time
                   : null;
               _draftRestored = true;
             } finally {
@@ -748,12 +1060,10 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
   }
 
+  /// 选择期望上门的具体时间：日期 + “早中晚”快捷选项中的具体几点。
   Future<void> _pickDate() async {
-    final selected = await showDatePicker(
-        context: context,
-        initialDate: _date ?? DateTime.now(),
-        firstDate: DateTime.now(),
-        lastDate: DateTime.now().add(const Duration(days: 365)));
+    final DateTime? selected =
+        await pickVisitTime(context, initial: _date, title: '选择期望上门日期');
     if (selected != null && mounted) {
       setState(() => _date = selected);
       _scheduleDraftSave();
@@ -874,7 +1184,11 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_date == null) {
-      await PromptAction.showWarning('请选择预约日期');
+      await PromptAction.showWarning('请选择期望上门时间');
+      return;
+    }
+    if (!_date!.isAfter(DateTime.now())) {
+      await PromptAction.showWarning('期望上门时间已过，请重新选择');
       return;
     }
     setState(() => _submitting = true);
@@ -909,7 +1223,7 @@ class _RepairFormPageState extends State<RepairFormPage>
       if (!mounted) return;
       if (!_sameOwner) throw const SessionChangedException();
       requestSent = true;
-      await widget.submitter(_formRecord());
+      final Object? created = await widget.submitter(_formRecord()) as Object?;
       if (!mounted) return;
       if (!_sameOwner) throw const SessionChangedException();
       _submitted = true;
@@ -927,7 +1241,15 @@ class _RepairFormPageState extends State<RepairFormPage>
       }
       if (!mounted || !_sameOwner) return;
       await PromptAction.showSuccess('报修提交成功');
-      if (mounted) Navigator.pop(context, true);
+      if (!mounted || !_sameOwner) return;
+      // 提交成功后直接进入新工单详情；拿不到编号时（旧服务端或测试替身）回到列表。
+      final String createdId = created is String ? created.trim() : '';
+      if (createdId.isNotEmpty) {
+        await Navigator.pushReplacementNamed(context, RepairDetailPage.routeName,
+            arguments: createdId, result: true);
+      } else {
+        Navigator.pop(context, true);
+      }
     } on Object catch (error) {
       if (!mounted) return;
       final bool uncertain = requestSent &&
@@ -1066,8 +1388,9 @@ class _RepairFormPageState extends State<RepairFormPage>
                             ListTile(
                                 contentPadding: EdgeInsets.zero,
                                 title: Text(_date == null
-                                    ? '请选择预约日期'
-                                    : formatDate(_date!)),
+                                    ? '请选择期望上门时间'
+                                    : formatVisitTime(formatLocalTime(_date!))),
+                                subtitle: const Text('师傅接单时会确认上门时间'),
                                 trailing:
                                     const Icon(Icons.calendar_today_outlined),
                                 onTap: _pickDate),

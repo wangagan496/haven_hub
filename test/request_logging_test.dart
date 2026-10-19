@@ -143,6 +143,21 @@ void main() {
     dio.close();
   });
 
+  test('HTTP 409 from repair becomes NetworkException with statusCode 409 without replay', () async {
+    final adapter = _FailingAdapter(409, jsonEncode(<String, dynamic>{
+      'code': 40900, 'message': '记录已更新，请刷新后再操作',
+    }));
+    final Dio dio = Dio()..httpClientAdapter = adapter;
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+    await expectLater(client.put('worker/repairs/test-id/complete',
+        data: <String, dynamic>{'revision': 3, 'result': '已修好'}),
+      throwsA(isA<NetworkException>().having(
+        (error) => error.statusCode, 'statusCode', 409)));
+    expect(adapter.calls, 1);
+    expect(messages.join('\n'), contains('status: 409'));
+  });
+
   // 复用 _buildResponseLog 的同时也继承了它的脱敏；否则错误日志会成为新的泄漏面。
   test('redacts sensitive values in failed response bodies', () async {
     final Dio dio = Dio()
@@ -283,6 +298,7 @@ class _FailingAdapter implements HttpClientAdapter {
   final int statusCode;
   final String body;
   final String contentType;
+  int calls = 0;
 
   @override
   Future<ResponseBody> fetch(
@@ -290,6 +306,7 @@ class _FailingAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    calls++;
     return ResponseBody.fromString(
       body,
       statusCode,

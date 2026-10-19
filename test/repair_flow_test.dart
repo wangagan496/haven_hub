@@ -35,9 +35,16 @@ Future<void> fillRepair(WidgetTester tester) async {
   await tester.tap(find.text('水管维修').last);
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextFormField).first, '13800138000');
-  await tester.tap(find.text('请选择预约日期'));
+  await tester.tap(find.text('请选择期望上门时间'));
+  await tester.pumpAndSettle();
+  // 选下个月，避免当天快捷时间已过或月底“明天”不在当前月份。
+  await tester.tap(find.byIcon(Icons.chevron_right));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('15').last);
   await tester.pumpAndSettle();
   await tester.tap(find.text('确定'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('10:00'));
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextFormField).last, '水管漏水');
   await tester.scrollUntilVisible(find.text('提交报修'), 200,
@@ -46,7 +53,7 @@ Future<void> fillRepair(WidgetTester tester) async {
 }
 
 RepairFormPage form(
-  Future<void> Function(RepairRecord) submitter, {
+  Future<dynamic> Function(RepairRecord) submitter, {
   RepairDraftStore? draftStore,
   String Function()? draftUserKey,
   bool productionIdentity = false,

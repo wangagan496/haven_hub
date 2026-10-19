@@ -7,6 +7,10 @@ import sharp from 'sharp';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { CommunityService } from '../src/community.js';
+import { registerPhaseOneTests } from './repair-phase-one-cases.js';
+
+export type ApiFixtureFactory = typeof fixture;
+registerPhaseOneTests(fixture);
 
 type Envelope = { code: number; data: any; message: string };
 
@@ -51,7 +55,7 @@ test('property review: reject, edit and resubmit the same room, approve; stale a
 });
 
 test('one repair flows through assignment, worker acceptance and completion with revision and ownership checks', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, ':memory:', () => Date.parse('2026-10-17T00:00:00Z'));
   const resident = await f.login();
   const admin = await f.login('13800138090');
   f.store.run("UPDATE users SET role = 'admin' WHERE mobile = ?", '13800138090');
@@ -76,8 +80,7 @@ test('one repair flows through assignment, worker acceptance and completion with
   assert.equal((await f.request('GET',`/worker/repairs/${id}`,other.token)).status,404);
   assert.equal((await f.request('PUT',`/worker/repairs/${id}/accept`,other.token,{revision:2})).status,404);
   assert.notEqual((await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:2})).code,10000);
-  assert.equal((await f.request('PUT',`/cancel/repair/${id}`,resident.token)).code,40001);
-  const accepted = await f.request('PUT',`/worker/repairs/${id}/accept`,worker.token,{revision:2});
+  const accepted = await f.request('PUT',`/worker/repairs/${id}/accept`,worker.token,{revision:2,time:'2026-10-20T10:00:00+08:00',reason:'旧单补充具体时间'});
   assert.equal(accepted.data.status,2);
   assert.equal((await f.request('PUT',assign,admin.token,{revision:3,workerId})).code,40001);
   for (const body of [{ revision: 3 }, { revision: 3, result: '' }, { revision: 3, result: '   \n  ' }]) {
@@ -87,16 +90,17 @@ test('one repair flows through assignment, worker acceptance and completion with
     const unchanged = await f.request('GET', `/worker/repairs/${id}`, worker.token);
     assert.equal(unchanged.data.status, 2);
     assert.equal(unchanged.data.revision, 3);
-    assert.deepEqual(unchanged.data.timeline.map((event:any) => event.action), ['submitted', 'assigned', 'accept']);
+    assert.deepEqual(unchanged.data.timeline.map((event:any) => event.action), ['submitted', 'assigned', 'accept', 'reschedule_proposed']);
   }
   const completed = await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:3,result:'已修复漏水'});
-  assert.equal(completed.data.status,3);
+  assert.equal(completed.data.status,6);
   const detail = await f.request('GET',`/repair/${id}`,resident.token);
   assert.equal(detail.data.completionNote,'已修复漏水');
   assert.equal(detail.data.workerName,'张师傅');
-  assert.deepEqual(detail.data.timeline.map((event:any)=>event.action),['submitted','assigned','accept','complete']);
+  assert.deepEqual(detail.data.timeline.map((event:any)=>event.action),['submitted','assigned','accept','reschedule_proposed','complete']);
   assert.equal(detail.data.attachment.length,1);
-  assert.equal((await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:3})).status,409);
+  const staleCompletion = await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:3,result:'重复提交完工'});
+  assert.equal(staleCompletion.status,409,`stale completion code=${staleCompletion.code} message=${staleCompletion.message}`);
 });
 
 test('repair photos enforce eight and ownership; public profile cannot escalate roles', async t => {

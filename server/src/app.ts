@@ -16,15 +16,19 @@ import { AuthService } from './auth.js';
 import { CommunityService, announcements, repairItems, visitorSchema } from './community.js';
 import { ApiError, requireValue } from './errors.js';
 import { WorkflowService } from './workflow.js';
-
+import { RepairService } from './repair-service.js';
 export function createApp(config: Config, options: { now?: () => number; log?: (event: object) => void; workflowWebRoot?: string } = {}) {
+  const log = options.log ?? ((event: object) => process.stdout.write(`${JSON.stringify(event)}\n`));
   const store = new Store(config.databasePath);
-  const auth = new AuthService(store, options.now);
-  const service = new CommunityService(store, config.publicBaseUrl);
-  const workflow = new WorkflowService(store);
+  const now = options.now ?? Date.now;
+  const auth = new AuthService(store, now);
+  const service = new CommunityService(store, config.publicBaseUrl, now);
+  const workflow = new WorkflowService(store, now);
+  const repairs = new RepairService(store, now, config.propertyPhone, log);
+  repairs.settleAll();
+  service.repairList = userId => repairs.residentList(userId);
   const app = express();
   app.disable('x-powered-by');
-  const log = options.log ?? ((event: object) => process.stdout.write(`${JSON.stringify(event)}\n`));
   app.use((req, res, next) => {
     const requestId = randomUUID();
     const started = Date.now();
@@ -88,18 +92,32 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   });
   app.get('/userInfo', (_req, res) => res.json(ok(service.profile(res.locals.userId))));
   app.put('/userInfo', (req, res) => res.json(ok(service.updateProfile(res.locals.userId, req.body))));
+  app.get('/contacts', (_req, res) => res.json(ok({ propertyPhone: config.propertyPhone })));
   app.use('/management', (_req, res, next) => { workflow.requireRole(res.locals.userId, 'admin'); next(); });
-  app.get('/management/rooms', (_req, res) => res.json(ok(workflow.list('rooms'))));
+  app.get('/management/rooms', (_req, res) => res.json(ok(workflow.rooms())));
   app.put('/management/rooms/:id/review', (req, res) => res.json(ok(workflow.review(req.params.id, res.locals.userId, req.body))));
-  app.get('/management/repairs', (_req, res) => res.json(ok(workflow.list('repairs'))));
+  app.get('/management/repairs', (_req, res) => res.json(ok(repairs.adminList())));
   app.get('/management/workers', (_req, res) => res.json(ok(workflow.workers())));
   app.post('/management/workers', (req, res) => res.json(ok(workflow.saveWorker(req.body))));
-  app.put('/management/repairs/:id/assign', (req, res) => res.json(ok(workflow.assign(req.params.id, res.locals.userId, req.body))));
+  app.put('/management/repairs/:id/assign', (req, res) => res.json(ok(repairs.assign(req.params.id, req.body))));
+  app.put('/management/repairs/:id/aftersale', (req, res) => res.json(ok(repairs.reviewAftersale(req.params.id, req.body))));
+  app.put('/management/repairs/:id/reschedule', (req, res) => res.json(ok(repairs.respond(res.locals.userId, 'admin', req.params.id, req.body))));
+  app.post('/management/repairs/:id/notes', (req, res) => res.json(ok(repairs.note(req.params.id, req.body))));
   app.use('/worker', (_req, res, next) => { workflow.requireRole(res.locals.userId, 'worker'); next(); });
-  app.get('/worker/repairs', (_req, res) => res.json(ok(workflow.list('repairs', res.locals.userId))));
-  app.get('/worker/repairs/:id', (req, res) => res.json(ok(workflow.workerDetail(req.params.id, res.locals.userId))));
-  app.put('/worker/repairs/:id/accept', (req, res) => res.json(ok(workflow.process(req.params.id, res.locals.userId, 'accept', req.body))));
-  app.put('/worker/repairs/:id/complete', (req, res) => res.json(ok(workflow.process(req.params.id, res.locals.userId, 'complete', req.body))));
+  app.get('/worker/repairs', (_req, res) => res.json(ok(repairs.workerList(res.locals.userId))));
+  app.get('/worker/repairs/:id', (req, res) => res.json(ok(repairs.workerDetail(res.locals.userId, req.params.id))));
+  app.put('/worker/repairs/:id/accept', (req, res) => res.json(ok(repairs.accept(res.locals.userId, req.params.id, req.body))));
+  app.put('/worker/repairs/:id/complete', (req, res) => res.json(ok(repairs.complete(res.locals.userId, req.params.id, req.body))));
+  app.put('/worker/repairs/:id/release', (req, res) => {
+    repairs.release(res.locals.userId, req.params.id, req.body);
+    // 退出后原师傅已无权查看此工单，返回其最新工作台列表。
+    res.json(ok({ released: req.params.id, rows: repairs.workerList(res.locals.userId) }));
+  });
+  app.post('/worker/repairs/:id/reschedule', (req, res) => res.json(ok(repairs.propose(res.locals.userId, 'worker', req.params.id, req.body))));
+  app.put('/worker/repairs/:id/reschedule', (req, res) => res.json(ok(repairs.respond(res.locals.userId, 'worker', req.params.id, req.body))));
+  app.post('/worker/repairs/:id/progress', (req, res) => res.json(ok(repairs.progress(res.locals.userId, req.params.id, req.body))));
+  app.put('/worker/repairs/:id/revoke', (req, res) => res.json(ok(repairs.acknowledgeRevoke(res.locals.userId, req.params.id, req.body))));
+  app.post('/worker/repairs/:id/objection', (req, res) => res.json(ok(repairs.objectRevoke(res.locals.userId, req.params.id, req.body))));
   app.get('/room', (_req, res) => res.json(ok(service.list('rooms', res.locals.userId))));
   app.get('/room/:id', (req, res) => res.json(ok(service.detail('rooms', res.locals.userId, req.params.id))));
   app.post('/room', (req, res) => res.json(ok(service.saveRoom(res.locals.userId, req.body))));
@@ -112,9 +130,19 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
     res.json(ok({ rows: rows.slice((current - 1) * pageSize, current * pageSize), total: rows.length,
       pageTotal: Math.ceil(rows.length / pageSize), current }));
   });
-  app.get('/repair/:id', (req, res) => res.json(ok(service.detail('repairs', res.locals.userId, req.params.id))));
+  app.get('/repair/:id', (req, res) => res.json(ok(repairs.residentDetail(res.locals.userId, req.params.id))));
   app.post('/repair', (req, res) => res.json(ok(service.createRepair(res.locals.userId, req.body))));
-  app.put('/cancel/repair/:id', (req, res) => res.json(ok(service.cancelRepair(res.locals.userId, req.params.id))));
+  // 旧契约保持不变：未接单前直接撤销，返回当前住户的完整报修列表。
+  app.put('/cancel/repair/:id', (req, res) => res.json(ok(service.mutate('repairs', res.locals.userId,
+    () => { repairs.revoke(res.locals.userId, req.params.id, req.body ?? {}); }))));
+  // 撤销报修：未接单前直接撤销；已接单后提交撤销申请。返回该工单最新详情。
+  app.put('/repair/:id/revoke', (req, res) => res.json(ok(repairs.revoke(res.locals.userId, req.params.id, req.body))));
+  app.put('/repair/:id/confirm', (req, res) => res.json(ok(repairs.confirm(res.locals.userId, req.params.id, req.body))));
+  app.put('/repair/:id/reject', (req, res) => res.json(ok(repairs.reject(res.locals.userId, req.params.id, req.body))));
+  app.post('/repair/:id/aftersale', (req, res) => res.json(ok(repairs.applyAftersale(res.locals.userId, req.params.id, req.body))));
+  app.post('/repair/:id/feedback', (req, res) => res.json(ok(repairs.residentFeedback(res.locals.userId, req.params.id, req.body))));
+  app.post('/repair/:id/reschedule', (req, res) => res.json(ok(repairs.propose(res.locals.userId, 'resident', req.params.id, req.body))));
+  app.put('/repair/:id/reschedule', (req, res) => res.json(ok(repairs.respond(res.locals.userId, 'resident', req.params.id, req.body))));
   app.get('/visitor', (_req, res) => res.json(ok({ rows: service.list('visitors', res.locals.userId) })));
   app.get('/visitor/:id', (req, res) => res.json(ok(service.detail('visitors', res.locals.userId, req.params.id))));
   app.post('/visitor', async (req, res) => {
