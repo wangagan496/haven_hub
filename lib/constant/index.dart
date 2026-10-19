@@ -87,6 +87,7 @@ class HttpPath {
   static const String houseList = 'room';
   static const String refreshToken = 'refreshToken';
   static const String repair = 'repair';
+  static const String repairSlots = 'repair/slots';
   static const String repairItem = 'repairItem';
   static const String visitor = 'visitor';
   static const String notifications = 'notifications';

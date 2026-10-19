@@ -1,7 +1,6 @@
 import '../constant/index.dart';
 import '../models/repair.dart';
 import '../utils/app_exception.dart';
-import '../utils/date_utils.dart';
 import '../utils/json_utils.dart';
 import '../utils/mutation_list.dart';
 import '../utils/repair_list_preloader.dart';
@@ -14,6 +13,15 @@ final MutationList<RepairRecord> _repairChanges =
 typedef RepairListLoader = Future<List<RepairRecord>> Function();
 typedef RepairDetailLoader = Future<RepairRecord> Function(String id);
 typedef RepairItemLoader = Future<List<RepairItem>> Function();
+typedef RepairSlotsLoader = Future<RepairSlots> Function({String? date, String? excludeId});
+
+Future<RepairSlots> getRepairSlotsApi({String? date, String? excludeId, RequestDio? client}) async {
+  final dynamic data = await (client ?? requestDio).get(HttpPath.repairSlots, params: <String, dynamic>{
+    if (date != null && date.isNotEmpty) 'date': date,
+    if (excludeId != null && excludeId.isNotEmpty) 'excludeId': excludeId,
+  });
+  return RepairSlots.fromJson(asMap(data, '上门时段'));
+}
 /// 返回值为新工单编号时，提交后直接进入详情；其他返回值（如测试替身）回到列表。
 typedef SubmitRepairLoader = Future<dynamic> Function(RepairRecord record);
 typedef CancelRepairLoader = Future<void> Function(String id);
@@ -52,8 +60,8 @@ final class RevokeAction extends RepairAction {
 }
 
 final class ProposeAction extends RepairAction {
-  const ProposeAction(this.time, this.reason);
-  final DateTime time;
+  const ProposeAction(this.slot, this.reason);
+  final String slot;
   final String reason;
 }
 
@@ -71,8 +79,8 @@ Future<RepairRecord> runRepairAction(RepairRecord record, RepairAction action) =
       FeedbackAction(:final String content) => feedbackRepairApi(record, content),
       RevokeAction(:final String reason, :final bool notified) =>
         revokeRepairApi(record, reason: reason, notified: notified),
-      ProposeAction(:final DateTime time, :final String reason) =>
-        proposeRescheduleApi(record, time, reason),
+      ProposeAction(:final String slot, :final String reason) =>
+        proposeRescheduleApi(record, slot, reason),
       RespondAction(:final bool accept, :final String reason) =>
         respondRescheduleApi(record, accept: accept, reason: reason),
     };
@@ -202,30 +210,30 @@ Future<RepairRecord> feedbackRepairApi(RepairRecord record, String content) =>
 
 /// 住户发起改约：必须先电话告知师傅；师傅同意后生效。
 Future<RepairRecord> proposeRescheduleApi(
-        RepairRecord record, DateTime time, String reason) =>
+        RepairRecord record, String slot, String reason, {RequestDio? client}) =>
     _repairAction(HttpPath.repairAction(record.id, 'reschedule'), <String, dynamic>{
       'revision': record.revision,
-      'time': formatLocalTime(time),
+      'slot': slot,
       'reason': reason.trim(),
       'notified': true,
-    });
+    }, client: client);
 
 /// 住户回应师傅发起的改约。
 Future<RepairRecord> respondRescheduleApi(RepairRecord record,
-        {required bool accept, String reason = ''}) =>
+        {required bool accept, String reason = '', RequestDio? client}) =>
     _repairAction(HttpPath.repairAction(record.id, 'reschedule'), <String, dynamic>{
       'revision': record.revision,
       'accept': accept,
       'reason': reason.trim(),
-    }, method: 'PUT');
+    }, method: 'PUT', client: client);
 
 Future<RepairRecord> _repairAction(String path, Map<String, dynamic> body,
-    {String method = 'POST'}) async {
+    {String method = 'POST', RequestDio? client}) async {
   repairListPreloader.invalidate();
   try {
     final dynamic data = method == 'PUT'
-        ? await requestDio.put(path, data: body)
-        : await requestDio.post(path, data: body);
+        ? await (client ?? requestDio).put(path, data: body)
+        : await (client ?? requestDio).post(path, data: body);
     return RepairRecord.fromJson(asMap(data, '报修'));
   } finally {
     repairListPreloader.invalidate();

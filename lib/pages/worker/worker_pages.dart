@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../api/repair.dart';
 import '../../api/worker.dart';
 import '../../models/repair.dart';
 import '../../router/app_routes.dart';
@@ -13,6 +14,7 @@ import '../../widgets/notification_actions.dart';
 import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
+import '../../widgets/repair_schedule_card.dart';
 
 class WorkerPage extends StatefulWidget {
   const WorkerPage({
@@ -184,6 +186,7 @@ class _WorkerPageState extends State<WorkerPage> {
                             padding: const EdgeInsets.only(top: 6),
                             child: Text(
                                 '${record.repairItemName} · ${record.statusText}'
+                                '${record.priority == 'urgent' ? ' · 急' : ''}${record.autoAccepted ? ' · 超时生效' : ''}'
                                 '${record.reschedule != null || record.revokeRequest != null ? ' · 待你回应' : ''}'
                                 '\n${record.houseInfo}\n'
                                 '${record.agreedTime.isNotEmpty ? '约定' : '期望'}：'
@@ -212,6 +215,7 @@ class _WorkerPageState extends State<WorkerPage> {
                                           id: record.id,
                                           recordLoader: widget.recordLoader,
                                           readStore: _readStore,
+                                          onReassigned: _load,
                                         )));
                             if (mounted && session == _tokens.sessionId) {
                               await _load();
@@ -262,8 +266,8 @@ sealed class WorkerAction {
 }
 
 final class WorkerProposeAction extends WorkerAction {
-  const WorkerProposeAction(this.time, this.reason);
-  final DateTime time;
+  const WorkerProposeAction(this.slot, this.reason);
+  final String slot;
   final String reason;
 }
 
@@ -274,8 +278,9 @@ final class WorkerRespondAction extends WorkerAction {
 }
 
 final class WorkerProgressAction extends WorkerAction {
-  const WorkerProgressAction(this.content);
+  const WorkerProgressAction(this.content, {this.needsAdmin = false});
   final String content;
+  final bool needsAdmin;
 }
 
 final class WorkerReleaseAction extends WorkerAction {
@@ -290,12 +295,12 @@ final class WorkerAcknowledgeRevokeAction extends WorkerAction {
 Future<RepairRecord?> runWorkerAction(
     RepairRecord record, WorkerAction action) async {
   switch (action) {
-    case WorkerProposeAction(:final DateTime time, :final String reason):
-      return proposeWorkerRescheduleApi(record, time, reason);
+    case WorkerProposeAction(:final String slot, :final String reason):
+      return proposeWorkerRescheduleApi(record, slot, reason);
     case WorkerRespondAction(:final bool accept, :final String reason):
       return respondWorkerRescheduleApi(record, accept: accept, reason: reason);
-    case WorkerProgressAction(:final String content):
-      return workerProgressApi(record, content);
+    case WorkerProgressAction(:final String content, :final bool needsAdmin):
+      return workerProgressApi(record, content, needsAdmin: needsAdmin);
     case WorkerReleaseAction(:final String reason):
       await releaseWorkerRepairApi(record, reason);
       return null;
@@ -309,7 +314,10 @@ class WorkerDetailPage extends StatefulWidget {
     required this.id,
     this.recordLoader = getWorkerRepairApi,
     this.processor = _defaultProcessor,
+    this.acceptor = _defaultAcceptor,
     this.actionLoader = runWorkerAction,
+    this.slotsLoader = getRepairSlotsApi,
+    this.onReassigned,
     this.readStore,
     super.key,
   });
@@ -319,6 +327,9 @@ class WorkerDetailPage extends StatefulWidget {
   final Future<RepairRecord> Function(RepairRecord record,
       {required bool complete, String result}) processor;
   final WorkerActionLoader actionLoader;
+  final Future<RepairRecord> Function(RepairRecord, {String? slot, String reason}) acceptor;
+  final RepairSlotsLoader slotsLoader;
+  final Future<void> Function()? onReassigned;
   @override
   State<WorkerDetailPage> createState() => _WorkerDetailPageState();
 }
@@ -327,7 +338,21 @@ Future<RepairRecord> _defaultProcessor(RepairRecord record,
         {required bool complete, String result = ''}) =>
     processWorkerRepairApi(record, complete: complete, result: result);
 
-class _WorkerDetailPageState extends State<WorkerDetailPage> {
+Future<RepairRecord> _defaultAcceptor(RepairRecord record, {String? slot, String reason = ''}) =>
+    processWorkerRepairApi(record, complete: false, slot: slot, reason: reason);
+
+class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBindingObserver {
+  String _proposalReason = '';
+  String? _proposalSlot;
+  String _progressText = '';
+  bool _needsAdmin = false;
+  bool _preparing = false;
+  bool _reassigned = false;
+  Future<void> _handleReassigned() async {
+    if (!mounted) return;
+    setState(() { _record = null; _reassigned = true; _error = '该工单已不再指派给你（可能已由物业改派）'; });
+    await widget.onReassigned?.call();
+  }
   RepairRecord? _record;
   final _result = TextEditingController();
   final _resultFocus = FocusNode();
@@ -361,8 +386,10 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
       setState(() => _record = updated);
     } on Object catch (error) {
       if (!mounted || session != tokenManager.sessionId) return;
+      if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
       if (error is NetworkException && error.statusCode == 409) {
-        await PromptAction.showWarning('工单已被更新，已为你刷新，请确认后再操作');
+        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        if (!mounted) return;
         if (mounted) setState(() => _saving = false);
         await _load();
         return;
@@ -377,20 +404,23 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
   Future<void> _propose() async {
     final RepairRecord? record = _record;
     if (record == null) return;
-    final DateTime? time = await pickVisitTime(context,
-        initial: DateTime.tryParse(record.visitTime)?.toLocal(),
+    final RepairSlot? time = await pickVisitTime(context,
+        initialSlot: _proposalSlot ?? record.slot, excludeId: record.id, loader: widget.slotsLoader,
         title: '选择新的上门时间');
     if (time == null || !mounted) return;
+    _proposalSlot = time.slot;
     final String? reason = await askReason(context,
-        title: '修改预约',
+        title: record.agreedTime.isEmpty ? '首次提议上门时间' : '修改预约',
         label: '改约原因',
-        message: '新时间：${formatVisitTime(time.toIso8601String())}\n'
+        initialText: _proposalReason,
+        message: '新时间：${formatSlotWindow(slot: time.slot, start: time.start, end: time.end)}\n'
             '请先电话告知住户。住户同意后新时间才生效，之前按原约定。',
         phone: record.mobile,
         notifyHint: '我已电话告知住户',
         confirmText: '发起改约');
     if (reason != null && mounted) {
-      await _act(WorkerProposeAction(time, reason), '改约已发起，等待住户同意');
+      _proposalReason = reason;
+      await _act(WorkerProposeAction(time.slot, reason), '时间已提议，等待住户回应');
     }
   }
 
@@ -410,13 +440,11 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
   }
 
   Future<void> _progress() async {
-    final String? content = await askReason(context,
-        title: '补充进展',
-        label: '进展说明',
-        message: '例如：已电话联系住户、等待材料到货。不会改变工单状态。',
-        confirmText: '提交');
-    if (content != null && mounted) {
-      await _act(WorkerProgressAction(content), '进展已记录');
+    final ({String content, bool needsAdmin})? value = await showDialog<({String content, bool needsAdmin})>(
+      context: context, builder: (_) => _ProgressDialog(content: _progressText, needsAdmin: _needsAdmin));
+    if (value != null && mounted) {
+      _progressText = value.content; _needsAdmin = value.needsAdmin;
+      await _act(WorkerProgressAction(value.content, needsAdmin: value.needsAdmin), '进展已记录');
     }
   }
 
@@ -470,15 +498,21 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_load());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _result.dispose();
     _resultFocus.dispose();
     _cost.dispose();
     super.dispose();
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_load());
   }
 
   Future<void> _load() async {
@@ -495,6 +529,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
         _rememberDisplayed(record, session);
       }
     } on Object catch (error) {
+      if (!mounted || session != tokenManager.sessionId) return;
+      if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
       if (mounted) {
         setState(() {
           _record = null;
@@ -506,56 +542,49 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
     }
   }
 
-  /// 接单时确认上门时间：沿用住户期望时间，或选择其他时间（需住户同意）。
-  /// 返回 null 表示取消；返回空记录表示按期望时间。
-  Future<({DateTime? time, String reason})?> _confirmVisitTime(
+  /// 有安排直接沿用；无安排可仅接单，也可同时向住户提出首次时段。
+  Future<({String? slot, String reason})?> _confirmVisitTime(
       RepairRecord record) async {
-    final DateTime? expected = DateTime.tryParse(record.expectedTime)?.toLocal();
-    final bool expectedValid = expected != null && expected.isAfter(DateTime.now());
+    if (record.slot.isNotEmpty || record.agreedTime.isNotEmpty) return (slot: null, reason: '');
     final String? choice = await showDialog<String>(
       context: context,
       builder: (BuildContext dialog) => AlertDialog(
         title: const Text('确认上门时间'),
-        content: Text(expectedValid
-            ? '住户期望：${formatVisitTime(record.expectedTime)}'
-            : record.expectedTime.isEmpty
-                ? '住户未选择具体时间，请选择上门时间'
-                : '住户期望时间（${formatVisitTime(record.expectedTime)}）已过，请选择新的上门时间'),
+        content: const Text('当前等待安排上门时间，可以只接单，或同时提出首次时段。'),
         actions: <Widget>[
           TextButton(
               onPressed: () => Navigator.pop(dialog),
               child: const Text('返回')),
           OutlinedButton(
               onPressed: () => Navigator.pop(dialog, 'other'),
-              child: const Text('选择其他时间')),
-          if (expectedValid)
-            FilledButton(
-                onPressed: () => Navigator.pop(dialog, 'expected'),
-                child: const Text('按期望时间')),
+              child: const Text('接单并提议时间')),
+          FilledButton(onPressed: () => Navigator.pop(dialog, 'accept'), child: const Text('只接单')),
         ],
       ),
     );
     if (choice == null || !mounted) return null;
-    if (choice == 'expected') return (time: null, reason: '');
-    final DateTime? time = await pickVisitTime(context, initial: expected);
+    if (choice == 'accept') return (slot: null, reason: '');
+    final RepairSlot? time = await pickVisitTime(context, initialSlot: _proposalSlot, excludeId: record.id, loader: widget.slotsLoader);
     if (time == null || !mounted) return null;
     final String? reason = await askReason(context,
         title: '说明原因',
         label: '为什么选择这个时间',
-        message: '新时间：${formatVisitTime(time.toIso8601String())}\n'
-            '建议先电话与住户沟通。住户同意后生效。',
+        initialText: _proposalReason,
+        message: '新时间：${formatSlotWindow(slot: time.slot, start: time.start, end: time.end)}\n请先电话告知住户。',
+        notifyHint: '我已电话告知住户',
         phone: record.mobile,
         confirmText: '接单');
-    if (reason == null) return null;
-    return (time: time, reason: reason);
+    if (reason == null || !mounted) return null;
+    _proposalReason = reason; _proposalSlot = time.slot;
+    return (slot: time.slot, reason: reason);
   }
 
   Future<void> _process() async {
     final record = _record;
-    if (_saving || _loading || record == null) return;
+    if (_saving || _loading || _preparing || record == null) return;
     final bool complete = record.status == RepairStatus.processing;
     num cost = 0;
-    ({DateTime? time, String reason})? visit;
+    ({String? slot, String reason})? visit;
     if (complete) {
       if (_result.text.trim().isEmpty) {
         setState(() => _resultError = '请填写处理结果后再完成维修');
@@ -571,19 +600,21 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
       }
       cost = parsed;
     } else if (_usingDefaultProcessor) {
-      visit = await _confirmVisitTime(record);
+      _preparing = true;
+      try { visit = await _confirmVisitTime(record); } finally { _preparing = false; }
       if (visit == null || !mounted) return;
     }
     final session = tokenManager.sessionId;
     setState(() => _saving = true);
     try {
       final RepairRecord updated = _usingDefaultProcessor
-          ? await processWorkerRepairApi(record,
+          ? complete ? await processWorkerRepairApi(record,
               complete: complete,
               result: _result.text.trim(),
               cost: cost,
-              time: visit?.time,
+              slot: visit?.slot,
               reason: visit?.reason ?? '')
+            : await widget.acceptor(record, slot: visit?.slot, reason: visit?.reason ?? '')
           : await widget.processor(record,
               complete: complete, result: _result.text.trim());
       if (!mounted || session != tokenManager.sessionId) return;
@@ -599,8 +630,10 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
       if (complete) Navigator.pop(context);
     } on Object catch (error) {
       if (!mounted || session != tokenManager.sessionId) return;
+      if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
       if (error is NetworkException && error.statusCode == 409) {
-        await PromptAction.showWarning('工单已被更新，已为你刷新，请确认后再操作');
+        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        if (!mounted) return;
         if (mounted) setState(() => _saving = false);
         await _load();
         return;
@@ -633,7 +666,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
                       Text(_error ?? '工单不存在'),
-                      TextButton(onPressed: _load, child: const Text('重试'))
+                      if (_reassigned) TextButton(onPressed: () => Navigator.pop(context), child: const Text('返回工单列表'))
+                      else TextButton(onPressed: _load, child: const Text('重试'))
                     ]))
               : Align(
                   alignment: Alignment.topCenter,
@@ -643,6 +677,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
                           padding: const EdgeInsets.all(16),
                           children: <Widget>[
                             RepairProgress(record: record),
+                            RepairScheduleBadges(record: record),
+                            if (record.hasActiveSchedule) RepairScheduleCard(record: record, isResident: false),
                             const SizedBox(height: 12),
                             Text(record.repairItemName,
                                 style: Theme.of(context).textTheme.titleLarge),
@@ -710,7 +746,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
                                   if (record.canReschedule)
                                     OutlinedButton(
                                         onPressed: _saving ? null : _propose,
-                                        child: const Text('修改预约')),
+                                        child: Text(record.agreedTime.isEmpty ? '首次提议时间' : '修改预约')),
                                   OutlinedButton(
                                       onPressed: _saving ? null : _progress,
                                       child: const Text('补充进展')),
@@ -762,7 +798,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
                 child: const Text('已知晓')),
           ]));
     }
-    if (reschedule != null) {
+    if (reschedule != null && record.firstSchedule == null) {
       cards.add(_WorkerNotice(
           reschedule.by == 'worker' ? '你发起的改约，等待住户同意' : '住户提议修改上门时间',
           '新时间：${formatVisitTime(reschedule.proposedTime)}\n原因：${reschedule.reason}\n同意前按原约定时间执行',
@@ -777,17 +813,42 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
                       child: const Text('同意新时间')),
                 ]));
     }
-    if (record.status == RepairStatus.processing &&
-        record.agreedTime.isEmpty &&
-        reschedule == null) {
-      cards.add(const _WorkerNotice('尚未约定上门时间', '请电话联系住户后，点“修改预约”提出时间'));
-    }
     if (record.status == RepairStatus.confirming) {
       cards.add(_WorkerNotice('已提交完工，等待住户确认',
           '${formatVisitTime(record.confirmDeadline)} 前住户未操作将自动确认'));
     }
     return cards;
   }
+}
+
+class _ProgressDialog extends StatefulWidget {
+  const _ProgressDialog({required this.content, required this.needsAdmin});
+  final String content;
+  final bool needsAdmin;
+  @override
+  State<_ProgressDialog> createState() => _ProgressDialogState();
+}
+
+class _ProgressDialogState extends State<_ProgressDialog> {
+  late final TextEditingController _content = TextEditingController(text: widget.content);
+  late bool _needsAdmin = widget.needsAdmin;
+  @override
+  void dispose() { _content.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('补充进展'),
+    content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      TextField(controller: _content, maxLength: 1000, maxLines: 3,
+        onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: '进展说明（必填）')),
+      CheckboxListTile(title: const Text('需要物业协助'), value: _needsAdmin,
+        onChanged: (value) => setState(() => _needsAdmin = value ?? false)),
+    ])),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+      FilledButton(onPressed: _content.text.trim().isEmpty ? null : () => Navigator.pop(context,
+        (content: _content.text.trim(), needsAdmin: _needsAdmin)), child: const Text('提交进展')),
+    ],
+  );
 }
 
 class _WorkerNotice extends StatelessWidget {

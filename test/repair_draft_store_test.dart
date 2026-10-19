@@ -24,6 +24,19 @@ void main() {
     final RepairDraft restored = (await RepairDraftStore().load('user-a'))!;
     expect(restored.record.toJson(), draft.record.toJson());
     expect(restored.resultUnconfirmed, isTrue);
+    expect(restored.record.appointment, draft.record.appointment);
+  });
+
+  test('phase3 draft preserves slot urgency waiting choice and legacy timestamp', () async {
+    final store = RepairDraftStore();
+    await store.save('user-a', const RepairDraft(record: RepairRecord(slot:'2030-10-20#10',urgentRequest:true),waitingSchedule:false));
+    final selected = (await store.load('user-a'))!;
+    expect(selected.record.slot,'2030-10-20#10'); expect(selected.record.urgentRequest,isTrue); expect(selected.waitingSchedule,isFalse);
+    await store.save('user-a', const RepairDraft(record: RepairRecord(urgentRequest:true,asap:true),waitingSchedule:true));
+    final waiting = (await store.load('user-a'))!;
+    expect(waiting.record.asap,isTrue); expect(waiting.waitingSchedule,isTrue); expect(waiting.record.slot,isEmpty);
+    await store.save('user-a',const RepairDraft(record:RepairRecord(expectedTime:'2030-10-20T18:00:00+08:00')));
+    expect((await store.load('user-a'))!.record.expectedTime,'2030-10-20T18:00:00+08:00');
   });
 
   test('accounts cannot read or delete each other drafts', () async {

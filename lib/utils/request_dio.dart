@@ -514,6 +514,13 @@ class RequestDio {
       case dio.DioExceptionType.cancel:
         return const NetworkException('请求已取消');
       case dio.DioExceptionType.badResponse:
+        final Object? body = error.response?.data;
+        if (error.response?.statusCode == 409 && body is Map && body.containsKey('code')) {
+          final Object? message = body['message'];
+          if (message is String && message.trim().isNotEmpty) {
+            return NetworkException(message.trim(), statusCode: 409);
+          }
+        }
         return _mapHttpStatus(error.response?.statusCode);
       case dio.DioExceptionType.unknown:
         return NetworkException('未知网络错误：${error.message ?? ''}');

@@ -29,17 +29,15 @@ String formatVisitTime(String value) {
   return '$date ${_two(local.hour)}:${_two(local.minute)}';
 }
 
-/// “早、中、晚”只是快捷选项和统计分类，住户仍须选择具体时间。
-enum VisitPeriod {
-  morning('早', 9, 12),
-  noon('中', 14, 17),
-  evening('晚', 18, 21);
-
-  const VisitPeriod(this.label, this.startHour, this.endHour);
-  final String label;
-  final int startHour;
-  final int endHour;
-
-  List<int> get hours =>
-      List<int>.generate(endHour - startHour, (int index) => startHour + index);
+/// 只格式化服务端时段窗口；保留原 formatVisitTime 的历史时间与截止时间语义。
+String formatSlotWindow({String slot = '', String start = '', String end = ''}) {
+  final List<String> parts = slot.split('#');
+  final String wallStart = start.isNotEmpty ? start : parts.length != 2 ? '' : '${parts[0]}T${parts[1]}:00:00';
+  if (wallStart.length < 16) return slot.isNotEmpty ? slot : start;
+  final DateTime? date = DateTime.tryParse(wallStart.substring(0, 10));
+  if (date == null) return wallStart;
+  final String endTime = end.length >= 16 ? end.substring(11, 16)
+      : '${_two((int.tryParse(wallStart.substring(11, 13)) ?? 0) + 1)}:00';
+  const List<String> days = <String>['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  return '${date.month}月${date.day}日 ${days[date.weekday - 1]} ${wallStart.substring(11, 16)}–$endTime';
 }

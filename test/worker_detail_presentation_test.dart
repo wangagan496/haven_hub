@@ -124,6 +124,7 @@ void main() {
     });
     unawaited(GlobalVariable.navigatorKey.currentState!.pushNamed<void>('/worker-test'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('修了什么（必填）'), 180, scrollable: find.byType(Scrollable).first);
     expect(find.text('修了什么（必填）'), findsOneWidget);
     await tester.tap(find.text('提交完工'));
     await tester.pumpAndSettle();
@@ -167,6 +168,7 @@ void main() {
     await tester.tap(find.text('接单'));
     await tester.pumpAndSettle();
     expect(calls, 1);
+    await tester.scrollUntilVisible(find.text('修了什么（必填）'), 180, scrollable: find.byType(Scrollable).first);
     expect(find.text('修了什么（必填）'), findsOneWidget);
     await finishPage(tester);
   });

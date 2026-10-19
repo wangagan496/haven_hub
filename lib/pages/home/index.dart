@@ -9,6 +9,7 @@ import '../../models/notice_data.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
+import '../../widgets/repair_availability_hint.dart';
 import 'components/home_list.dart';
 import 'components/home_nav.dart';
 
@@ -123,6 +124,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               const HomeNav(),
+              const RepairAvailabilityHint(),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: ClipRRect(

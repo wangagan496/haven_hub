@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:haven_hub/api/repair.dart';
+import 'package:haven_hub/api/worker.dart';
 import 'package:haven_hub/models/repair.dart';
 import 'package:haven_hub/utils/app_exception.dart';
 import 'package:haven_hub/utils/logger.dart';
@@ -160,5 +161,55 @@ void main() {
     expect(adapter.requests.single.method, 'PUT');
     expect(adapter.requests.single.path, 'cancel/repair/test%2Fid');
     expect(adapter.requests.single.data, isNull);
+  });
+
+  test('P3 slot lookup forwards optional date and excludeId and rejects malformed data', () async {
+    final adapter = _RepairAdapter((_) => ResponseBody.fromString(jsonEncode({
+      'code':10000, 'data':{'today':'2030-10-20','dates':['2030-10-20'],'slots':[]}
+    }),200,headers:{Headers.contentTypeHeader:[Headers.jsonContentType]}));
+    final client = RequestDio(client: Dio()..httpClientAdapter=adapter);
+    expect((await getRepairSlotsApi(client:client)).today,'2030-10-20');
+    await getRepairSlotsApi(date:'2030-10-20',excludeId:'repair/id',client:client);
+    expect(adapter.requests.first.path,'repair/slots');
+    expect(adapter.requests.first.queryParameters,isEmpty);
+    expect(adapter.requests.last.queryParameters,{'date':'2030-10-20','excludeId':'repair/id'});
+    expect(() => RepairSlots.fromJson({'today':null,'dates':[],'slots':[]}),throwsFormatException);
+  });
+
+  test('P3 creation sends chosen slot or urgent ASAP without legacy date fields', () async {
+    for(final record in [const RepairRecord(slot:'2030-10-20#10'),const RepairRecord(urgentRequest:true,asap:true)]) {
+      final adapter=_RepairAdapter((_) => page([]));
+      await submitRepairApi(record,client:RequestDio(client:Dio()..httpClientAdapter=adapter));
+      final data=adapter.requests.single.data as Map;
+      expect(data['slot'],record.slot); expect(data['urgentRequest'],record.urgentRequest); expect(data['asap'],record.asap);
+      expect(data.containsKey('expectedTime'),isFalse); expect(data.containsKey('appointment'),isFalse);
+    }
+  });
+
+  test('P3 resident and worker actions use slot notified revision and existing response route', () async {
+    final adapter=_RepairAdapter((_) => ResponseBody.fromString(jsonEncode({'code':10000,'data':{'id':'p3'}}),200,
+      headers:{Headers.contentTypeHeader:[Headers.jsonContentType]}));
+    final client=RequestDio(client:Dio()..httpClientAdapter=adapter);
+    const record=RepairRecord(id:'p3',revision:7);
+    await proposeRescheduleApi(record,'2030-10-20#10',' 原因 ',client:client);
+    await proposeWorkerRescheduleApi(record,'2030-10-20#10',' 原因 ',client:client);
+    for(final request in adapter.requests) {
+      expect(request.method,'POST');
+      expect(request.data,{'revision':7,'slot':'2030-10-20#10','reason':'原因','notified':true});
+    }
+    expect(adapter.requests[0].path,'repair/p3/reschedule');
+    expect(adapter.requests[1].path,'worker/repairs/p3/reschedule');
+    for(final accept in [true,false]) {
+      await respondRescheduleApi(record,accept:accept,reason:accept?'':'不在家',client:client);
+      expect(adapter.requests.last.method,'PUT'); expect(adapter.requests.last.path,'repair/p3/reschedule');
+      expect(adapter.requests.last.data,{'revision':7,'accept':accept,'reason':accept?'':'不在家'});
+    }
+    await processWorkerRepairApi(record,complete:false,client:client);
+    expect(adapter.requests.last.data,{'revision':7});
+    await processWorkerRepairApi(record,complete:false,slot:'2030-10-20#10',reason:' 电话已沟通 ',client:client);
+    expect(adapter.requests.last.data,{'revision':7,'slot':'2030-10-20#10','reason':'电话已沟通'});
+    await workerProgressApi(record,' 请协助 ',needsAdmin:true,client:client);
+    expect(adapter.requests.last.path,'worker/repairs/p3/progress');
+    expect(adapter.requests.last.data,{'revision':7,'content':'请协助','needsAdmin':true});
   });
 }

@@ -14,7 +14,7 @@ import 'helpers/widget_harness.dart';
 import 'repair_flow_test.dart' show fillRepair, form;
 
 const _deadline = '2030-10-20T10:00:00+08:00';
-const _warning = '工单已被更新，已为你刷新，请确认后再操作';
+const _warning = '冲突，已刷新最新状态';
 
 RepairRecord _record(int status,
         {bool second = false,
@@ -39,6 +39,7 @@ Future<void> _tap(WidgetTester tester, String text) async {
         scrollable: find.byType(Scrollable).first);
   }
   await tester.ensureVisible(find.text(text).last);
+  await tester.pumpAndSettle();
   await tester.tap(find.text(text).last);
   await tester.pumpAndSettle();
 }
@@ -98,9 +99,9 @@ void main() {
     expect(record.reschedule!.reason, '新提议');
     expect(record.reschedule!.proposedTime, _deadline);
     expect(record.reschedule!.deadline, _deadline);
-    expect(record.toJson()['expectedTime'], _deadline);
+    expect(record.toJson().containsKey('expectedTime'), isFalse);
     expect(record.toJson().containsKey('appointment'), isFalse);
-    expect(const RepairRecord(appointment: '2026-10-20').toJson()['appointment'], '2026-10-20');
+    expect(const RepairRecord(appointment: '2026-10-20').toJson().containsKey('appointment'), isFalse);
     expect(RepairRecord.fromJson(<String, dynamic>{'status': 3}).rounds, isEmpty);
   });
 
@@ -223,7 +224,7 @@ void main() {
     await _tap(tester, '确认修好');
     expect(calls, 1);
     expect(loads, 2);
-    expect(find.text(_warning), findsOneWidget);
+    expect(find.text('版本冲突，已刷新最新状态'), findsOneWidget);
     expect(find.text('确认修好'), findsNothing);
     expect(find.text('申请售后返修'), findsOneWidget);
     await tester.pump(const Duration(seconds: 2));
@@ -264,7 +265,7 @@ void main() {
       }));
     await _tap(tester, '补充进展');
     await tester.enterText(find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField)), '等配件');
-    await _tap(tester, '提交');
+    await _tap(tester, '提交进展');
     expect(calls, 1);
     expect(loads, 2);
     expect(find.text(_warning), findsOneWidget);
@@ -282,6 +283,7 @@ void main() {
         expect(result, '换水管');
         throw const NetworkException('冲突', statusCode: 409);
       }));
+    await tester.scrollUntilVisible(find.text('修了什么（必填）'), 180, scrollable: find.byType(Scrollable).first);
     await tester.enterText(find.byType(TextField).first, '换水管');
     await _tap(tester, '提交完工');
     expect(calls, 1);
@@ -342,7 +344,7 @@ void main() {
     });
   }
 
-  testWidgets('P1 successful form String id opens new detail with specific expected time', (tester) async {
+  testWidgets('P1 successful form String id opens new detail with server slot', (tester) async {
     RepairRecord? submitted;
     String? openedId;
     await pumpPage(tester, form((record) async { submitted = record; return 'new-repair'; }),
@@ -355,10 +357,8 @@ void main() {
     expect(openedId, 'new-repair');
     expect(find.text('新报修详情'), findsOneWidget);
     expect(submitted, isNotNull);
-    final expected = DateTime.parse(submitted!.expectedTime).toLocal();
-    expect(expected.hour, 10);
-    expect(expected.minute, 0);
-    expect(expected.isAfter(DateTime.now()), isTrue);
+    expect(submitted!.slot, '2030-10-20#10');
+    expect(submitted!.expectedTime, isEmpty);
     await finishPage(tester);
   });
 }

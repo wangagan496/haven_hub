@@ -1,3 +1,6 @@
+import 'repair_slots.dart';
+export 'repair_slots.dart';
+
 class RepairItem {
   const RepairItem({required this.id, required this.name});
 
@@ -32,6 +35,17 @@ class RepairRecord {
     this.appointment = '',
     this.expectedTime = '',
     this.agreedTime = '',
+    this.slot = '',
+    this.slotWindow,
+    this.pendingSchedule,
+    this.expectedSlot = '',
+    this.autoAccepted = false,
+    this.shiftCount = 0,
+    this.priority = '',
+    this.priorityPending = false,
+    this.urgentRequest = false,
+    this.asap = false,
+    this.needsAdmin = false,
     this.description = '',
     this.status = unknownStatus,
     this.attachment = const <String>[],
@@ -68,6 +82,19 @@ class RepairRecord {
         appointment: json['appointment']?.toString().trim() ?? '',
         expectedTime: json['expectedTime']?.toString().trim() ?? '',
         agreedTime: json['agreedTime']?.toString().trim() ?? '',
+        slot: json['slot']?.toString() ?? '',
+        slotWindow: json['slotWindow'] is Map<String, dynamic>
+            ? RepairSlotWindow.fromJson(json['slotWindow'] as Map<String, dynamic>) : null,
+        pendingSchedule: json['pendingSchedule'] is Map<String, dynamic>
+            ? RepairPending.fromJson(json['pendingSchedule'] as Map<String, dynamic>) : null,
+        expectedSlot: json['expectedSlot']?.toString() ?? '',
+        autoAccepted: json['autoAccepted'] == true,
+        shiftCount: int.tryParse('${json['shiftCount']}') ?? 0,
+        priority: json['priority']?.toString() ?? '',
+        priorityPending: json['priorityPending'] == true,
+        urgentRequest: json['urgentRequest'] == true,
+        asap: json['asap'] == true,
+        needsAdmin: json['needsAdmin'] == true,
         description: json['description']?.toString().trim() ?? '',
         status: _toInt(json['status']),
         attachment: (json['attachment'] is List<dynamic>)
@@ -107,6 +134,36 @@ class RepairRecord {
 
   /// 双方约定的上门时间；空表示尚未约定（例如返修开始后需要重新约）。
   final String agreedTime;
+  final String slot;
+  final RepairSlotWindow? slotWindow;
+  final RepairPending? pendingSchedule;
+  final String expectedSlot;
+  final bool autoAccepted;
+  final int shiftCount;
+  final String priority;
+  final bool priorityPending;
+  final bool urgentRequest;
+  final bool asap;
+  final bool needsAdmin;
+
+  RepairPending? get firstSchedule => pendingSchedule ??
+      ((reschedule?.firstSchedule ?? false) ? reschedule : null);
+
+  bool get hasActiveSchedule => const <int>{RepairStatus.pending, RepairStatus.assigned, RepairStatus.processing}.contains(status);
+
+  RepairEvent? get propertyScheduleEvent {
+    for (final RepairEvent event in timeline.reversed) {
+      if (const <String>{'admin_shifted', 'urgent_dispatched', 'rescheduled',
+        'schedule_auto_accepted', 'rework_started'}.contains(event.action)) {
+        return event.action == 'admin_shifted' || event.action == 'urgent_dispatched' ? event : null;
+      }
+    }
+    return null;
+  }
+  bool get propertyAdjusted => propertyScheduleEvent != null;
+  // 旧事件未记录此前排期，使用中性的“已安排”，不猜测是否调整。
+  bool get propertyFirstScheduled => propertyScheduleEvent?.action == 'urgent_dispatched' &&
+      (propertyScheduleEvent?.firstSchedule ?? true);
   final String description;
   final int status;
   final List<String> attachment;
@@ -183,8 +240,9 @@ class RepairRecord {
         'houseId': houseId,
         'repairItemId': repairItemId,
         'mobile': mobile,
-        if (expectedTime.isNotEmpty) 'expectedTime': expectedTime,
-        if (expectedTime.isEmpty) 'appointment': appointment,
+        'slot': slot,
+        'urgentRequest': urgentRequest,
+        'asap': asap,
         if (description.isNotEmpty) 'description': description,
         'attachment': attachment,
       };
@@ -236,6 +294,8 @@ class RepairPending {
     this.at = '',
     this.reason = '',
     this.proposedTime = '',
+    this.proposedSlot = '',
+    this.firstSchedule = false,
     this.deadline = '',
     this.resolved = false,
     this.reply = '',
@@ -247,6 +307,8 @@ class RepairPending {
         at: json['at']?.toString() ?? '',
         reason: json['reason']?.toString() ?? '',
         proposedTime: json['proposedTime']?.toString() ?? '',
+        proposedSlot: json['proposedSlot']?.toString() ?? '',
+        firstSchedule: json['firstSchedule'] == true,
         deadline: json['deadline']?.toString() ?? '',
         resolved: (json['resolvedAt']?.toString() ?? '').isNotEmpty,
         reply: json['reply']?.toString() ?? '',
@@ -257,6 +319,8 @@ class RepairPending {
   final String at;
   final String reason;
   final String proposedTime;
+  final String proposedSlot;
+  final bool firstSchedule;
   final String deadline;
   final bool resolved;
   final String reply;
@@ -267,15 +331,18 @@ class RepairEvent {
       {required this.action,
       required this.label,
       required this.at,
+      this.firstSchedule,
       this.detail = ''});
   factory RepairEvent.fromJson(Map<String, dynamic> json) => RepairEvent(
       action: json['action']?.toString() ?? '',
       label: json['label']?.toString() ?? '',
       at: json['at']?.toString() ?? '',
+      firstSchedule: json['firstSchedule'] is bool ? json['firstSchedule'] as bool : null,
       detail: json['detail']?.toString() ?? '');
   final String action;
   final String label;
   final String at;
+  final bool? firstSchedule;
   final String detail;
 }
 

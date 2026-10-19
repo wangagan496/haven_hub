@@ -14,6 +14,7 @@ import 'package:haven_hub/utils/repair_draft_store.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/repair_slots_fixture.dart';
 import 'helpers/widget_harness.dart';
 
 const RepairRecord pendingRepair = RepairRecord(
@@ -37,14 +38,7 @@ Future<void> fillRepair(WidgetTester tester) async {
   await tester.enterText(find.byType(TextFormField).first, '13800138000');
   await tester.tap(find.text('请选择期望上门时间'));
   await tester.pumpAndSettle();
-  // 选下个月，避免当天快捷时间已过或月底“明天”不在当前月份。
-  await tester.tap(find.byIcon(Icons.chevron_right));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('15').last);
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('确定'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('10:00'));
+  await tester.tap(find.text('10:00–11:00'));
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextFormField).last, '水管漏水');
   await tester.scrollUntilVisible(find.text('提交报修'), 200,
@@ -70,6 +64,7 @@ RepairFormPage form(
       itemLoader: () async =>
           const <RepairItem>[RepairItem(id: 'item-test', name: '水管维修')],
       submitter: submitter,
+      slotsLoader: loadSlotsFixture,
     );
 
 void main() {

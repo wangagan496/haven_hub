@@ -13,6 +13,7 @@ import 'package:haven_hub/utils/repair_draft_store.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/repair_slots_fixture.dart';
 import 'helpers/widget_harness.dart';
 import 'repair_flow_test.dart' show fillRepair;
 
@@ -29,6 +30,7 @@ RepairFormPage _form(RepairDraftStore store,
         Future<UserInfo> Function()? userInfoLoader,
         Future<void> Function(RepairRecord)? submitter}) =>
     RepairFormPage(
+      slotsLoader: loadSlotsFixture,
       draftStore: store,
       userInfoLoader: userInfoLoader ?? () async => const UserInfo.empty(),
       houseLoader: houseLoader ?? () async => _houses,

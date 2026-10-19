@@ -2,6 +2,18 @@ import 'package:flutter/material.dart';
 import '../models/repair.dart';
 import '../theme/app_colors.dart';
 
+String repairEventLabel(RepairEvent event) => switch (event.action) {
+  'admin_shifted' => '物业已调整时间',
+  'urgent_dispatched' => '物业已调度急单',
+  'schedule_auto_accepted' => '首次上门时间超时已生效',
+  'priority_changed' => '物业已调整优先级',
+  'reschedule_voided' => '原时间提议已作废',
+  'reschedule_proposed' when event.detail.startsWith('未约定') => '首次上门时间待住户确认',
+  'rescheduled' when event.detail.startsWith('未约定') => '住户已同意首次上门时间',
+  'reschedule_declined' => event.label,
+  _ => event.label,
+};
+
 /// 状态由服务端操作推进；记录只展示实际发生的时间。
 class RepairProgress extends StatelessWidget {
   const RepairProgress({required this.record, super.key});
@@ -115,8 +127,8 @@ class RepairProgress extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: <Widget>[
                                   Text(event.detail.isEmpty
-                                      ? event.label
-                                      : '${event.label} · ${event.detail}'),
+                                      ? repairEventLabel(event)
+                                      : '${repairEventLabel(event)} · ${event.detail}'),
                                   const SizedBox(height: 4),
                                   Text(_time(event.at),
                                       style: const TextStyle(

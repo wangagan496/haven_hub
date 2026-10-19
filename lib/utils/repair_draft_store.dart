@@ -6,13 +6,16 @@ import '../models/repair.dart';
 
 /// 当前账号的一份待提交草稿。未确认状态只记录本地事实，不推断服务端结果。
 class RepairDraft {
-  const RepairDraft({required this.record, this.resultUnconfirmed = false});
+  const RepairDraft({required this.record, this.resultUnconfirmed = false, this.waitingSchedule});
 
   final RepairRecord record;
   final bool resultUnconfirmed;
+  final bool? waitingSchedule;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
-        'record': record.toJson(),
+        'record': <String, dynamic>{...record.toJson(), 'appointment': record.appointment},
+        'waitingSchedule': waitingSchedule,
+        'legacyExpectedTime': record.slot.isEmpty ? record.expectedTime : '',
         'resultUnconfirmed': resultUnconfirmed,
       };
 }
@@ -40,8 +43,11 @@ class RepairDraftStore {
       final Object? record = body['record'];
       if (record is! Map<String, dynamic>) return null;
       return RepairDraft(
-        record: RepairRecord.fromJson(record),
+        record: RepairRecord.fromJson(<String, dynamic>{...record,
+          if ((record['expectedTime']?.toString() ?? '').isEmpty) 'expectedTime': body['legacyExpectedTime'] ?? '',
+        }),
         resultUnconfirmed: body['resultUnconfirmed'] == true,
+        waitingSchedule: body['waitingSchedule'] is bool ? body['waitingSchedule'] as bool : null,
       );
     } on FormatException {
       return null;

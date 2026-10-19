@@ -27,6 +27,8 @@ import '../../widgets/notification_actions.dart';
 import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
+import '../../widgets/repair_schedule_card.dart';
+import '../../widgets/repair_slot_picker.dart';
 
 /// 报修状态筛选枚举
 enum RepairStatusFilter {
@@ -297,16 +299,29 @@ class RepairDetailPage extends StatefulWidget {
       {this.loader = getRepairDetailApi,
       this.cancelLoader = cancelRepairApi,
       this.actionLoader = runRepairAction,
+      this.slotsLoader = getRepairSlotsApi,
       super.key});
   static const String routeName = AppRoutes.repairDetail;
   final RepairDetailLoader loader;
   final CancelRepairLoader cancelLoader;
   final RepairActionLoader actionLoader;
+  final RepairSlotsLoader slotsLoader;
   @override
   State<RepairDetailPage> createState() => _RepairDetailPageState();
 }
 
-class _RepairDetailPageState extends State<RepairDetailPage> {
+class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBindingObserver {
+  String _proposalReason = '';
+  String? _proposalSlot;
+  String _responseReason = '';
+  @override
+  void initState() { super.initState(); WidgetsBinding.instance.addObserver(this); }
+  @override
+  void dispose() { WidgetsBinding.instance.removeObserver(this); super.dispose(); }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_load());
+  }
   String _id = '';
   RepairRecord? _record;
   String? _error;
@@ -332,7 +347,8 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
     } on Object catch (error) {
       if (!mounted || tokenManager.sessionId != sessionId) return;
       if (error is NetworkException && error.statusCode == 409) {
-        await PromptAction.showWarning('工单已被更新，已为你刷新，请确认后再操作');
+        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        if (!mounted) return;
         if (mounted) setState(() => _acting = false);
         await _load();
         return;
@@ -418,36 +434,42 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
   Future<void> _propose() async {
     final RepairRecord? record = _record;
     if (record == null) return;
-    final DateTime? time = await pickVisitTime(context,
-        initial: DateTime.tryParse(record.visitTime)?.toLocal(),
+    final RepairSlot? time = await pickVisitTime(context,
+        initialSlot: _proposalSlot ?? record.slot, excludeId: record.id, loader: widget.slotsLoader,
         title: '选择新的上门时间');
     if (time == null || !mounted) return;
+    _proposalSlot = time.slot;
     final String? reason = await askReason(context,
         title: '修改预约',
         label: '改约原因',
-        message: '新时间：${formatVisitTime(time.toIso8601String())}\n'
+        initialText: _proposalReason,
+        message: '新时间：${formatSlotWindow(slot: time.slot, start: time.start, end: time.end)}\n'
             '请先电话告知师傅。师傅同意后新时间才生效，之前按原约定。',
         phone: record.workerMobile,
         notifyHint: '我已电话告知师傅',
         confirmText: '发起改约');
     if (reason != null && mounted) {
-      await _act(ProposeAction(time, reason), '改约已发起，等待师傅同意', '改约失败，请重试');
+      _proposalReason = reason;
+      await _act(ProposeAction(time.slot, reason), '改约已发起，等待师傅同意', '改约失败，请重试');
     }
   }
 
   Future<void> _respond(bool accept) async {
+    final bool first = _record?.firstSchedule != null;
     String reason = '';
     if (!accept) {
       final String? value = await askReason(context,
-          title: '不同意改约',
+          title: first ? '拒绝首次上门时间' : '不同意改约',
           label: '原因',
-          message: '将保持原约定时间，建议电话与师傅再沟通。',
-          confirmText: '保持原约定');
+          initialText: _responseReason,
+          message: first ? '拒绝后等待师傅或物业重新提议，请填写原因。' : '将保持原约定时间，建议电话与师傅再沟通。',
+          confirmText: first ? '确认拒绝' : '保持原约定');
       if (value == null || !mounted) return;
       reason = value;
+      _responseReason = reason;
     }
     await _act(RespondAction(accept: accept, reason: reason),
-        accept ? '已同意新时间' : '已保持原约定', '操作失败，请重试');
+        accept ? '已同意新时间' : first ? '已拒绝，等待重新安排' : '已保持原约定', '操作失败，请重试');
   }
   @override
   void didChangeDependencies() {
@@ -464,16 +486,17 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
 
   Future<void> _load() async {
     if (_loading || _id.isEmpty) return;
+    final int session = tokenManager.sessionId;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final value = await widget.loader(_id);
-      if (mounted) setState(() => _record = value);
+      if (mounted && session == tokenManager.sessionId) setState(() => _record = value);
     } on Object catch (error) {
       final msg = describeError(error, fallback: '获取报修详情失败，请重试');
-      if (mounted) {
+      if (mounted && session == tokenManager.sessionId) {
         setState(() => _error = msg);
         await PromptAction.showError(msg);
       }
@@ -556,6 +579,8 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
                     if (record.workflowVersion == 1)
                       RepairProgress(record: record),
                     ..._notices(record),
+                    if (record.hasActiveSchedule) RepairScheduleCard(record: record, isResident: true, onAccept: () => _respond(true),
+                      onDecline: () => _respond(false), onInconvenient: record.canFeedback ? _feedback : null),
                     const _Section('报修信息'),
                     _Row('维修项目', record.repairItemName),
                     _Row(
@@ -601,7 +626,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
               ? ''
               : '${formatVisitTime(record.confirmDeadline)} 前未操作，将自动确认完成'));
     }
-    if (reschedule != null) {
+    if (reschedule != null && record.firstSchedule == null) {
       cards.add(_Notice(
           reschedule.by == 'resident' ? '你发起的改约，等待师傅同意' : '师傅提议修改上门时间',
           '新时间：${formatVisitTime(reschedule.proposedTime)}\n原因：${reschedule.reason}\n'
@@ -620,9 +645,6 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
     if (record.revokeRequest != null) {
       cards.add(_Notice('撤销申请已提交，等待师傅确认',
           '${formatVisitTime(record.revokeRequest!.deadline)} 前师傅未回应将自动通过'));
-    }
-    if (record.status == RepairStatus.processing && record.agreedTime.isEmpty) {
-      cards.add(const _Notice('等待与师傅重新约定上门时间', '师傅会联系你确认时间，也可以主动发起改约'));
     }
     if (record.status == RepairStatus.pending &&
         record.timeline.any((RepairEvent e) => e.action == 'released')) {
@@ -667,7 +689,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
         FilledButton(onPressed: _confirmRepair, child: const Text('确认修好')),
       if (record.canReject)
         OutlinedButton(onPressed: _rejectRepair, child: const Text('还没修好')),
-      if (record.canReschedule)
+      if (record.canReschedule && record.agreedTime.isNotEmpty)
         OutlinedButton(onPressed: _propose, child: const Text('修改预约')),
       if (record.canApplyAftersale)
         FilledButton(onPressed: _aftersale, child: const Text('申请售后返修')),
@@ -756,6 +778,7 @@ class RepairFormPage extends StatefulWidget {
       this.photoUploader = uploadPhotoAPI,
       this.draftStore,
       this.draftUserKey,
+      this.slotsLoader = getRepairSlotsApi,
       super.key});
   static const String routeName = AppRoutes.repairForm;
   final HouseListLoader houseLoader;
@@ -766,6 +789,7 @@ class RepairFormPage extends StatefulWidget {
   final UploadPhotoLoader photoUploader;
   final RepairDraftStore? draftStore;
   final String Function()? draftUserKey;
+  final RepairSlotsLoader slotsLoader;
   @override
   State<RepairFormPage> createState() => _RepairFormPageState();
 }
@@ -782,7 +806,11 @@ class _RepairFormPageState extends State<RepairFormPage>
   List<RepairItem> _items = const <RepairItem>[];
   String? _houseId;
   String? _itemId;
-  DateTime? _date;
+  String _slot = '';
+  bool _waitingSchedule = false;
+  bool _urgentRequest = false;
+  bool _asap = false;
+  String? _scheduleWarning;
   bool _loading = false;
   bool _submitting = false;
   bool _waitingForConfirmation = false;
@@ -839,6 +867,7 @@ class _RepairFormPageState extends State<RepairFormPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _slot.isNotEmpty) unawaited(_refreshSlot());
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       _draftTimer?.cancel();
@@ -923,8 +952,7 @@ class _RepairFormPageState extends State<RepairFormPage>
         houseId: _houseId ?? '',
         repairItemId: _itemId ?? '',
         mobile: _mobile.text.trim(),
-        appointment: _date == null ? '' : formatDate(_date!),
-        expectedTime: _date == null ? '' : formatLocalTime(_date!),
+        slot: _slot, urgentRequest: _urgentRequest, asap: _asap,
         description: _description.text.trim(),
         attachment: List<String>.of(_photos),
       );
@@ -935,6 +963,7 @@ class _RepairFormPageState extends State<RepairFormPage>
     if (!_draftLoaded || _submitted) return;
     _lastOwnedDraft = RepairDraft(
       record: _formRecord(),
+      waitingSchedule: _waitingSchedule,
       resultUnconfirmed: _resultUnconfirmed,
     );
     _draftTimer?.cancel();
@@ -950,6 +979,7 @@ class _RepairFormPageState extends State<RepairFormPage>
     if (record == null) return;
     final RepairDraft draft = RepairDraft(
       record: record,
+      waitingSchedule: _sameOwner ? _waitingSchedule : _lastOwnedDraft?.waitingSchedule,
       resultUnconfirmed: _resultUnconfirmed,
     );
     _lastOwnedDraft = draft;
@@ -984,6 +1014,17 @@ class _RepairFormPageState extends State<RepairFormPage>
     try {
       final RepairDraft? draft = await _draftStore.load(_draftUserKey);
       if (!mounted || !_sameOwner) return;
+      RepairSlot? migrated;
+      String? migrationError;
+      final bool legacy = draft != null && draft.record.slot.isEmpty && draft.record.expectedTime.isNotEmpty;
+      if (legacy && !_formEdited) {
+        try {
+          migrated = await matchDraftSlot(draft.record.expectedTime, widget.slotsLoader);
+        } on Object catch (error) {
+          migrationError = describeError(error, fallback: '旧草稿时段查询失败，请重新选择');
+        }
+        if (!mounted || !_sameOwner) return;
+      }
       setState(() {
         if (draft != null) {
           // 即使已有新输入，也不能丢掉旧草稿的未确认提交记录。
@@ -1002,15 +1043,14 @@ class _RepairFormPageState extends State<RepairFormPage>
               _mobile.text = draft.record.mobile;
               _description.text = draft.record.description;
               _photos = List<String>.of(draft.record.attachment.take(8));
-              // 草稿只恢复仍在未来一年内的具体时间；只有日期的旧草稿需重新选时间。
-              final DateTime now = DateTime.now();
-              final DateTime? time =
-                  DateTime.tryParse(draft.record.expectedTime)?.toLocal();
-              _date = time != null &&
-                      time.isAfter(now) &&
-                      !time.isAfter(now.add(const Duration(days: 366)))
-                  ? time
-                  : null;
+              _slot = legacy ? migrated?.slot ?? '' : draft.record.slot;
+              _urgentRequest = draft.record.urgentRequest;
+              _asap = _urgentRequest && draft.record.asap;
+              if (_asap) _slot = '';
+              _waitingSchedule = _slot.isEmpty && ((draft.waitingSchedule ?? false) || _asap);
+              if ((legacy && migrated == null) || draft.record.appointment.isNotEmpty) {
+                _scheduleWarning = migrationError ?? '旧草稿时间无法对应可预约时段，请重新选择或提交待安排';
+              }
               _draftRestored = true;
             } finally {
               _restoringDraft = false;
@@ -1021,9 +1061,11 @@ class _RepairFormPageState extends State<RepairFormPage>
         _draftReadFailed = false;
         _lastOwnedDraft = RepairDraft(
           record: _formRecord(),
+          waitingSchedule: _waitingSchedule,
           resultUnconfirmed: _resultUnconfirmed,
         );
       });
+      if (!_formEdited && _slot.isNotEmpty) await _refreshSlot();
       if (_formEdited) await _saveDraft();
     } on Object {
       // 未能读取时不覆盖磁盘草稿，也不允许跳过可能存在的二次确认。
@@ -1063,12 +1105,27 @@ class _RepairFormPageState extends State<RepairFormPage>
     }
   }
 
-  /// 选择期望上门的具体时间：日期 + “早中晚”快捷选项中的具体几点。
+  Future<void> _refreshSlot() async {
+    final String selected = _slot;
+    if (selected.isEmpty) return;
+    try {
+      final RepairSlots data = await widget.slotsLoader(date: selected.split('#').first);
+      if (!mounted || !_sameOwner || selected != _slot) return;
+      final bool valid = data.slots.any((RepairSlot item) => item.slot == selected && item.selectable);
+      setState(() {
+        _scheduleWarning = valid ? null : '原时段已不可选，请重新选择或提交待安排';
+        if (!valid) { _slot = ''; _waitingSchedule = false; }
+      });
+    } on Object catch (error) {
+      if (mounted && _sameOwner && selected == _slot) setState(() => _scheduleWarning = describeError(error, fallback: '时段查询失败，请重试'));
+    }
+  }
+
   Future<void> _pickDate() async {
-    final DateTime? selected =
-        await pickVisitTime(context, initial: _date, title: '选择期望上门日期');
-    if (selected != null && mounted) {
-      setState(() => _date = selected);
+    final RepairSlot? selected =
+        await pickVisitTime(context, initialSlot: _slot, title: '选择期望上门日期', loader: widget.slotsLoader);
+    if (selected != null && mounted && _sameOwner) {
+      setState(() { _slot = selected.slot; _waitingSchedule = false; _asap = false; _scheduleWarning = null; });
       _scheduleDraftSave();
     }
   }
@@ -1186,12 +1243,12 @@ class _RepairFormPageState extends State<RepairFormPage>
       if (_submitting || _submitted) return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    if (_date == null) {
-      await PromptAction.showWarning('请选择期望上门时间');
+    if (_slot.isEmpty && !_waitingSchedule) {
+      await PromptAction.showWarning('请选择上门时段或提交后等待安排');
       return;
     }
-    if (!_date!.isAfter(DateTime.now())) {
-      await PromptAction.showWarning('期望上门时间已过，请重新选择');
+    if (_slot.isNotEmpty && _scheduleWarning != null) {
+      await PromptAction.showWarning('请重新查询并选择上门时段');
       return;
     }
     setState(() => _submitting = true);
@@ -1268,6 +1325,10 @@ class _RepairFormPageState extends State<RepairFormPage>
         await PromptAction.showWarning(error is SessionChangedException
             ? '${error.message}；提交结果请先查看“我的报修”'
             : '提交结果未确认，服务器可能已收到，请先查看“我的报修”，避免重复提交');
+      } else if (error is NetworkException && error.statusCode == 409) {
+        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        if (!mounted || !_sameOwner) return;
+        await _refreshSlot();
       } else {
         await PromptAction.showError(
             describeError(error, fallback: '报修提交失败，请重试'));
@@ -1388,12 +1449,24 @@ class _RepairFormPageState extends State<RepairFormPage>
                                     .chain(Validators.mobile())
                                     .validate),
                             const SizedBox(height: 14),
+                            CheckboxListTile(value: _waitingSchedule, contentPadding: EdgeInsets.zero,
+                              title: const Text('提交后等待安排'), onChanged: (bool? value) {
+                                setState(() { _waitingSchedule = value ?? false; if (_waitingSchedule) { _slot = ''; } else { _asap = false; } _scheduleWarning = null; });
+                                _scheduleDraftSave();
+                              }),
+                            CheckboxListTile(value: _urgentRequest, contentPadding: EdgeInsets.zero,
+                              title: const Text('紧急诉求'), onChanged: (bool? value) {
+                                setState(() { _urgentRequest = value ?? false; if (!_urgentRequest) _asap = false; }); _scheduleDraftSave();
+                              }),
+                            if (_urgentRequest) CheckboxListTile(value: _asap, contentPadding: EdgeInsets.zero,
+                              title: const Text('尽快上门'), onChanged: (bool? value) {
+                                setState(() { _asap = value ?? false; if (_asap) { _slot = ''; _waitingSchedule = true; _scheduleWarning = null; } }); _scheduleDraftSave();
+                              }),
+                            if (_scheduleWarning != null) Text(_scheduleWarning!),
                             ListTile(
                                 contentPadding: EdgeInsets.zero,
-                                title: Text(_date == null
-                                    ? '请选择期望上门时间'
-                                    : formatVisitTime(formatLocalTime(_date!))),
-                                subtitle: const Text('师傅接单时会确认上门时间'),
+                                title: Text(_slot.isEmpty ? '请选择期望上门时间' : formatSlotWindow(slot: _slot)),
+                                subtitle: const Text('以服务端可选时段为准；选时段后取消尽快上门'),
                                 trailing:
                                     const Icon(Icons.calendar_today_outlined),
                                 onTap: _pickDate),
