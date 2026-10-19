@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../constant/index.dart';
 import '../models/building_info.dart';
+import '../models/device_map_location.dart';
 import '../utils/app_exception.dart';
 import '../utils/request_dio.dart';
 
@@ -32,6 +33,8 @@ class TencentBuilding {
     required this.name,
     required this.address,
     required this.label,
+    this.latitude,
+    this.longitude,
   });
 
   final String id;
@@ -40,6 +43,9 @@ class TencentBuilding {
 
   /// 仅移除名称中已有的小区前缀，不推算楼号、单元或房间。
   final String label;
+  // 地图服务返回的 GCJ-02 楼栋标记，不使用小区中心代替。
+  final double? latitude;
+  final double? longitude;
 }
 
 class TencentBuildingPage {
@@ -134,16 +140,21 @@ Future<TencentBuildingPage> searchCommunityBuildings(
   }
   final TencentBuildingPage? primary = results[0].page;
   final TencentBuildingPage? supplemental = results[1].page;
-  final Set<String> labels = <String>{};
-  final List<TencentBuilding> buildings = <TencentBuilding>[
-    for (final TencentBuilding building in <TencentBuilding>[
-      ...?primary?.buildings,
-      ...?supplemental?.buildings,
-    ])
-      if (labels.add(building.label.trim().toLowerCase())) building,
-  ];
+  final Map<String, TencentBuilding> byLabel = <String, TencentBuilding>{};
+  for (final TencentBuilding building in <TencentBuilding>[
+    ...?primary?.buildings,
+    ...?supplemental?.buildings,
+  ]) {
+    final String label = building.label.trim().toLowerCase();
+    final TencentBuilding? previous = byLabel[label];
+    if (previous == null ||
+        (!validMapCoordinate(previous.latitude, previous.longitude) &&
+            validMapCoordinate(building.latitude, building.longitude))) {
+      byLabel[label] = building;
+    }
+  }
   return TencentBuildingPage(
-    buildings: List<TencentBuilding>.unmodifiable(buildings),
+    buildings: List<TencentBuilding>.unmodifiable(byLabel.values),
     poiIds: List<String>.unmodifiable(<String>[
       ...?primary?.poiIds,
       ...?supplemental?.poiIds,
@@ -235,6 +246,12 @@ TencentBuildingPage parseTencentCommunityBuildings(
       name: title,
       address: address,
       label: label,
+      latitude: value['location'] is Map<dynamic, dynamic>
+          ? _toDouble((value['location'] as Map<dynamic, dynamic>)['lat'])
+          : null,
+      longitude: value['location'] is Map<dynamic, dynamic>
+          ? _toDouble((value['location'] as Map<dynamic, dynamic>)['lng'])
+          : null,
     ));
   }
   return TencentBuildingPage(
@@ -276,11 +293,16 @@ TencentBuildingPage parseAmapCommunityBuildings(
     if (community.communityId == 'amap:$id') continue;
     final String? label = _buildingLabel(community, title, address);
     if (label == null) continue;
+    final List<String> coordinate = item['location'] is String
+        ? (item['location'] as String).split(',')
+        : const <String>[];
     buildings.add(TencentBuilding(
       id: 'amap:$id',
       name: title,
       address: address,
       label: label,
+      latitude: coordinate.length == 2 ? double.tryParse(coordinate[1]) : null,
+      longitude: coordinate.length == 2 ? double.tryParse(coordinate[0]) : null,
     ));
   }
   return TencentBuildingPage(
@@ -320,12 +342,20 @@ class LocationLookupResult {
     required this.communities,
     this.ipAddress,
     this.isIpBased = false,
+    this.city = '',
+    this.mapLatitude,
+    this.mapLongitude,
   });
 
   final String address;
   final List<NearbyCommunity> communities;
   final String? ipAddress;
   final bool isIpBased;
+  final String city;
+
+  /// 设备坐标转换后的 GCJ-02 位置；IP 结果不提供设备位置。
+  final double? mapLatitude;
+  final double? mapLongitude;
 }
 
 typedef LocationLookup = Future<LocationLookupResult> Function(
@@ -340,6 +370,55 @@ typedef TencentExternalGet = Future<dynamic> Function(
 });
 
 typedef IpLocationLookup = Future<LocationLookupResult> Function();
+
+typedef CommunitySearch = Future<List<NearbyCommunity>> Function(
+    String city, String keyword);
+
+/// 按用户指定城市查询，不依赖设备坐标或当前已加载的附近列表。
+Future<List<NearbyCommunity>> searchCommunitiesByName(
+  String city,
+  String keyword, {
+  TencentExternalGet externalGet = _getTencentExternal,
+  String? apiKey,
+}) async {
+  final String region = city.trim();
+  final String query = keyword.trim();
+  if (region.isEmpty || query.isEmpty) {
+    throw const FormatException('请填写城市和小区名称');
+  }
+  // boundary 是地图接口的表达式，不能允许输入改变区域参数。
+  if (region.length > 50 || RegExp(r'[,，()（）\r\n]').hasMatch(region)) {
+    throw const FormatException('请输入有效的城市名称，例如佛山市');
+  }
+  if (query.length > 100) throw const FormatException('小区名称过长');
+  final String key = (apiKey ?? GlobalVariable.tencentMapKey).trim();
+  if (key.isEmpty) throw const FormatException('暂未配置地图搜索服务');
+  final dynamic response = await externalGet(
+    HttpPath.tencentPlaceSearch,
+    params: <String, dynamic>{
+      'key': key,
+      'keyword': query,
+      'boundary': 'region($region,0)',
+      'filter': 'category=住宅小区,住宅区',
+      'page_size': 20,
+      'page_index': 1,
+      'output': 'json',
+    },
+  );
+  return parseTencentNearbyCommunities(response).where((NearbyCommunity item) {
+    final double? lat = item.latitude;
+    final double? lon = item.longitude;
+    return item.id.isNotEmpty &&
+        lat != null &&
+        lon != null &&
+        lat.isFinite &&
+        lon.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lon >= -180 &&
+        lon <= 180;
+  }).toList(growable: false);
+}
 
 const List<({String keyword, int autoExtend})> _nearbySearchAttempts =
     <({String keyword, int autoExtend})>[
@@ -424,6 +503,14 @@ Future<LocationLookupResult> getTencentLocationInfo(
   return LocationLookupResult(
     address: address,
     communities: List<NearbyCommunity>.unmodifiable(communities),
+    mapLatitude: gcjLatitude,
+    mapLongitude: gcjLongitude,
+    city: result['address_component'] is Map<dynamic, dynamic>
+        ? (result['address_component'] as Map<dynamic, dynamic>)['city']
+                ?.toString()
+                .trim() ??
+            ''
+        : '',
   );
 }
 
@@ -494,6 +581,7 @@ Future<LocationLookupResult> getTencentIpLocationInfo({
     communities: List<NearbyCommunity>.unmodifiable(communities),
     ipAddress: result['ip']?.toString().trim(),
     isIpBased: true,
+    city: adInfo['city']?.toString().trim() ?? '',
   );
 }
 

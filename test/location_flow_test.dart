@@ -173,7 +173,7 @@ void main() {
     (TimeoutException('provider timeout'), '设备定位等待超时'),
     (const PermissionDeniedException('denied'), '设备定位权限被拒绝'),
   ]) {
-    testWidgets('IP fallback stays automatic: ${failure.$2}',
+    testWidgets('IP fallback explains the cause: ${failure.$2}',
         (WidgetTester tester) async {
       await pumpPage(
           tester,
@@ -183,7 +183,9 @@ void main() {
             ipLocationLookup: () async => ipResult,
           ));
       await tester.pump(const Duration(seconds: 4));
-      expect(find.textContaining(failure.$2), findsNothing);
+      expect(find.textContaining(failure.$2), findsOneWidget);
+      expect(
+          find.byKey(const Key('location-approximate-notice')), findsOneWidget);
       expect(find.textContaining('测试城市'), findsOneWidget);
       await finishPage(tester);
     });

@@ -7,9 +7,11 @@ import 'package:get/get.dart';
 import '../../api/location.dart';
 import '../../controller/build_controller.dart';
 import '../../models/building_info.dart';
+import '../../models/device_map_location.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
+import '../../utils/building_recommendations.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
 import '../../widgets/section_title.dart';
@@ -19,9 +21,11 @@ class BuildingList extends StatefulWidget {
   const BuildingList({
     super.key,
     this.buildingLookup = searchCommunityBuildings,
+    this.deviceLocation,
   });
 
   final CommunityBuildingLookup buildingLookup;
+  final DeviceMapLocation? deviceLocation;
 
   static const String routeName = AppRoutes.buildingList;
 
@@ -41,6 +45,7 @@ class _BuildingListState extends State<BuildingList> {
   String? _lookupError;
   int _nextPage = 1;
   bool _isSelecting = false;
+  Timer? _positionExpiry;
 
   @override
   void initState() {
@@ -48,6 +53,19 @@ class _BuildingListState extends State<BuildingList> {
     _controller = BuildController.instance();
     _buildingInput = TextEditingController(text: _controller.build);
     _community = _controller.buildingInfo;
+    final DeviceMapLocation? position = widget.deviceLocation;
+    if (position != null &&
+        position.unavailableReason(DateTime.now()) == null) {
+      _positionExpiry = Timer(
+        position.timestamp
+                .add(const Duration(minutes: 5))
+                .difference(DateTime.now()) +
+            const Duration(milliseconds: 1),
+        () {
+          if (mounted) setState(() {});
+        },
+      );
+    }
     if (_canLookup) unawaited(_loadBuildings());
   }
 
@@ -199,8 +217,82 @@ class _BuildingListState extends State<BuildingList> {
 
   @override
   void dispose() {
+    _positionExpiry?.cancel();
     _buildingInput.dispose();
     super.dispose();
+  }
+
+  Widget _nearbyRecommendations() {
+    if (!_sameCommunity || !_canLookup) return const SizedBox.shrink();
+    final DeviceMapLocation? position = widget.deviceLocation;
+    final String? reason = position == null
+        ? '暂无可用的设备位置，仍可下拉选择或手动填写楼栋'
+        : position.unavailableReason(DateTime.now());
+    final List<NearbyBuilding> nearby =
+        recommendBuildings(_buildings, position, now: DateTime.now());
+    if (reason != null || nearby.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+        child: Text(reason ??
+            (_isLoading
+                ? '正在查找当前位置附近的楼栋'
+                : '已加载的地图结果中，没有可按当前位置推荐的楼栋，可下拉选择或手动填写')),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text('附近楼栋推荐', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(
+                  '定位误差约 ${position!.accuracy.ceil()} 米。以下为地图标记距离，请核对楼号；最近的不一定是你住的楼。'),
+              for (final NearbyBuilding candidate in nearby)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      Text(
+                          '${candidate.building.name} · 约 ${candidate.distance.ceil()} 米'),
+                      if (candidate.building.address.isNotEmpty)
+                        Text(candidate.building.address,
+                            style: Theme.of(context).textTheme.bodySmall),
+                      OutlinedButton(
+                        key: ValueKey<String>(
+                            'confirm-building-${candidate.building.id}'),
+                        onPressed: _isSelecting
+                            ? null
+                            : () => _confirmNearby(candidate.building),
+                        child: Text('确认 ${candidate.building.label}，下一步'),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmNearby(TencentBuilding building) async {
+    if (_isSelecting || !_sameCommunity) return;
+    final bool stillAvailable = recommendBuildings(
+            _buildings, widget.deviceLocation,
+            now: DateTime.now())
+        .any((NearbyBuilding item) => item.building.id == building.id);
+    if (!stillAvailable) {
+      setState(() {});
+      await PromptAction.showWarning('定位推荐已失效，请重新核对楼栋');
+      return;
+    }
+    _buildingInput.text = building.label;
+    await _continue();
   }
 
   Future<void> _continue() async {
@@ -250,6 +342,7 @@ class _BuildingListState extends State<BuildingList> {
                 address: address,
               ),
               const SectionTitle('楼栋信息'),
+              _nearbyRecommendations(),
               if (controller.buildingInfo.hasCommunity) _lookupStatus(),
               ManualHouseInput(
                 controller: _buildingInput,

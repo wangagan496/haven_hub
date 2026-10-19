@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/home.dart';
+import '../models/device_map_location.dart';
 import '../pages/building/building_list.dart';
 import '../pages/house/house_detail.dart';
 import '../pages/house/house_form.dart';
@@ -75,7 +76,9 @@ Widget? getRouteWidget(
     AppRoutes.buildingList => _requireLogin(
         AppRoutes.buildingList,
         arguments,
-        () => const BuildingList(),
+        () => BuildingList(
+          deviceLocation: arguments is DeviceMapLocation ? arguments : null,
+        ),
       ),
     AppRoutes.roomList => _requireLogin(
         AppRoutes.roomList,
