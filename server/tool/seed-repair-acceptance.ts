@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { backup } from 'node:sqlite';
 import { Store, type RecordData } from '../src/database.js';
-import { repairSchema } from '../src/community.js';
+import { repairSchema } from '../src/repair/service.js';
 
 // Explicitly targets the already running 3010 acceptance environment.
 // Existing records outside the two original fixture repairs are preserved.

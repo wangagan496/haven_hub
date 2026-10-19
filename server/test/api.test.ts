@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
-import { CommunityService } from '../src/community.js';
+import { CommunityService } from '../src/community/service.js';
 import { registerPhaseOneTests } from './repair-phase-one-cases.js';
 
 export type ApiFixtureFactory = typeof fixture;
@@ -20,10 +20,10 @@ test('version one database migration preserves resident data and defaults role s
   const original = await fixture(t, path);
   const session = await original.login();
   const house = await original.room(session.token);
-  original.store.db.exec('ALTER TABLE users DROP COLUMN role; PRAGMA user_version = 1;');
+  original.store.db.exec('DROP TABLE repair_capacity_weekdays; ALTER TABLE users DROP COLUMN role; PRAGMA user_version = 1;');
   await original.close();
   const migrated = await fixture(t, path);
-  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 3);
+  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 5);
   assert.equal((await migrated.request('GET', '/userInfo', session.token)).data.role, 'resident');
   assert.equal((await migrated.request('GET', `/room/${house.record.id}`, session.token)).data.name, house.record.name);
   await migrated.close();
@@ -67,7 +67,7 @@ test('one repair flows through assignment, worker acceptance and completion with
   const other = await f.login('13800138092');
   f.store.run("UPDATE users SET role = 'worker' WHERE mobile = ?", '13800138092');
   const house = await f.room(resident.token);
-  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',appointment:'2026-10-20',attachment:[house.body.idcardFrontUrl]});
+  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10',attachment:[house.body.idcardFrontUrl]});
   const id = created.data.rows[0].id;
   const assign = `/management/repairs/${id}/assign`;
   assert.equal((await f.request('PUT',assign,worker.token,{revision:1,workerId})).status,403);
@@ -90,14 +90,14 @@ test('one repair flows through assignment, worker acceptance and completion with
     const unchanged = await f.request('GET', `/worker/repairs/${id}`, worker.token);
     assert.equal(unchanged.data.status, 2);
     assert.equal(unchanged.data.revision, 3);
-    assert.deepEqual(unchanged.data.timeline.map((event:any) => event.action), ['submitted', 'assigned', 'accept', 'reschedule_proposed']);
+    assert.deepEqual(unchanged.data.timeline.map((event:any) => event.action), ['submitted', 'assigned', 'accept']);
   }
   const completed = await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:3,result:'已修复漏水'});
   assert.equal(completed.data.status,6);
   const detail = await f.request('GET',`/repair/${id}`,resident.token);
   assert.equal(detail.data.completionNote,'已修复漏水');
   assert.equal(detail.data.workerName,'张师傅');
-  assert.deepEqual(detail.data.timeline.map((event:any)=>event.action),['submitted','assigned','accept','reschedule_proposed','complete']);
+  assert.deepEqual(detail.data.timeline.map((event:any)=>event.action),['submitted','assigned','accept','complete']);
   assert.equal(detail.data.attachment.length,1);
   const staleCompletion = await f.request('PUT',`/worker/repairs/${id}/complete`,worker.token,{revision:3,result:'重复提交完工'});
   assert.equal(staleCompletion.status,409,`stale completion code=${staleCompletion.code} message=${staleCompletion.message}`);
@@ -109,7 +109,7 @@ test('repair photos enforce eight and ownership; public profile cannot escalate 
   const other = await f.login('13800138001');
   const house = await f.room(resident.token);
   const foreign = await f.upload(other.token);
-  const body = {houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',appointment:'2026-10-20'};
+  const body = {houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10'};
   assert.equal((await f.request('POST','/repair',resident.token,{...body,attachment:Array(8).fill(house.body.idcardFrontUrl)})).code,10000);
   assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:Array(9).fill(house.body.idcardFrontUrl)})).code,10000);
   assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:[foreign]})).code,10000);
@@ -131,7 +131,7 @@ test('reassignment revokes previous worker access and old version acceptance', a
   const workerB=b.data.find((r:any)=>r.mobile==='13800138092').id;
   const tokenA=await f.login('13800138091');
   const house=await f.room(resident.token);
-  const created=await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',appointment:'2026-10-20'});
+  const created=await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10'});
   const id=created.data.rows[0].id;
   await f.request('PUT',`/management/repairs/${id}/assign`,admin.token,{revision:1,workerId:workerA});
   const reassigned=await f.request('PUT',`/management/repairs/${id}/assign`,admin.token,{revision:2,workerId:workerB});
@@ -139,7 +139,7 @@ test('reassignment revokes previous worker access and old version acceptance', a
   assert.equal((await f.request('PUT',`/worker/repairs/${id}/accept`,tokenA.token,{revision:2})).status,404);
   assert.equal((await f.request('GET','/worker/repairs',tokenA.token)).data.length,0);
 });
-async function fixture(t: TestContext, path = ':memory:', now?: () => number) {
+async function fixture(t: TestContext, path = ':memory:', now: () => number = () => Date.parse('2026-10-17T00:00:00Z')) {
   const config = { ...readConfig({}), databasePath: path };
   const logs: object[] = [];
   const { app, store } = createApp(config, { now, log: event => logs.push(event) });
@@ -206,7 +206,7 @@ test('optional floors round trip through HTTP and invalid floors explain the err
   const id = created.data.rows[0].id;
   assert.equal((await f.request('GET', `/room/${id}`, session.token)).data.floor, '63');
   const repair = await f.request('POST', '/repair', session.token, {
-    houseId: id, repairItemId: '1001', mobile: '13800138000', appointment: '2026-10-20',
+    houseId: id, repairItemId: '1001', mobile: '13800138000', slot: '2026-10-20#10',
   });
   assert.equal(repair.code, 10000);
   assert.equal(repair.data.rows[0].houseInfo, '学习小区 1栋 63层 101');
@@ -351,7 +351,7 @@ test('repair creation returns all rows beyond a page, cancellation updates statu
   const a = await f.login();
   const b = await f.login('13800138001');
   const { record: house } = await f.room(a.token);
-  const body = { houseId: house.id, repairItemId: '1001', mobile: '13800138000', appointment: '2026-10-20', attachment: [] };
+  const body = { houseId: house.id, repairItemId: '1001', mobile: '13800138000', slot: '2026-10-20#10', attachment: [] };
   let response: any;
   for (let i = 0; i < 23; i++) {
     response = await f.request('POST', '/repair', a.token, { ...body, description: `记录${i}` });

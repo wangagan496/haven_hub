@@ -1,6 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { initialCapacities, scheduleDefaults } from './repair/schedule.js';
 
 export type Collection = 'rooms' | 'repairs' | 'visitors';
 export type RecordData = { id: string; [key: string]: unknown };
@@ -15,7 +16,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-    if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('数据库版本不兼容');
+    if (![0, 1, 2, 3, 4, 5].includes(Number(version))) throw new Error('数据库版本不兼容');
     if (version === 0) this.transaction(() => {
       this.db.exec(`
         CREATE TABLE users (id TEXT PRIMARY KEY, mobile TEXT NOT NULL UNIQUE, nickName TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT '');
@@ -36,7 +37,7 @@ export class Store {
       this.db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'resident' CHECK(role IN ('resident','admin','worker')); PRAGMA user_version = 2;");
     });
     // 推送表。早期版本在 user_version 2 下直接建过这些表，所以用 IF NOT EXISTS 兼容。
-    if (version !== 3) this.transaction(() => {
+    if (Number(version) < 3) this.transaction(() => {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS push_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS push_devices (id TEXT PRIMARY KEY, userId TEXT NOT NULL REFERENCES users(id), platform TEXT NOT NULL,
@@ -53,6 +54,28 @@ export class Store {
         this.db.exec("ALTER TABLE push_deliveries ADD COLUMN lease TEXT NOT NULL DEFAULT ''");
       }
       this.db.exec('PRAGMA user_version = 3;');
+    });
+    if (Number(version) < 4) this.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS repair_capacity_defaults (hour TEXT PRIMARY KEY, capacity INTEGER NOT NULL CHECK(capacity >= 0));
+        CREATE TABLE IF NOT EXISTS repair_capacity_overrides (date TEXT NOT NULL, hour TEXT NOT NULL,
+          capacity INTEGER NOT NULL CHECK(capacity >= 0), PRIMARY KEY(date,hour));
+        CREATE INDEX IF NOT EXISTS repairs_slot ON repairs(json_extract(payload,'$.slot')) WHERE json_valid(payload);
+      `);
+      for (const [hour, capacity] of Object.entries(initialCapacities)) {
+        this.run('INSERT OR IGNORE INTO repair_capacity_defaults(hour,capacity) VALUES (?,?)', hour, capacity);
+      }
+      for (const row of this.db.prepare("SELECT id,userId,payload FROM repairs WHERE json_valid(payload) AND json_type(payload) = 'object'").all()) {
+        const record = JSON.parse(String(row.payload)) as RecordData;
+        this.save('repairs', String(row.userId), { ...scheduleDefaults(record), ...record }, true);
+      }
+      this.db.exec('PRAGMA user_version = 4;');
+    });
+    if (Number(version) < 5) this.transaction(() => {
+      this.db.exec(`CREATE TABLE repair_capacity_weekdays (
+        weekday INTEGER NOT NULL CHECK(weekday BETWEEN 1 AND 7), hour TEXT NOT NULL,
+        capacity INTEGER NOT NULL CHECK(capacity >= 0), PRIMARY KEY(weekday,hour));
+        PRAGMA user_version = 5;`);
     });
   }
   private depth = 0;

@@ -7,7 +7,7 @@ import { mobileSchema } from './auth.js';
 const revision = z.number().int().min(0);
 const note = z.string().trim().max(1000);
 
-/** 角色校验、房屋审核和维修人员名册。报修工单流转见 repair-service.ts。 */
+/** 角色校验、房屋审核和维修人员名册。报修工单流转见 repair/service.ts。 */
 export class WorkflowService {
   constructor(private readonly store: Store, private readonly now: () => number = Date.now) {}
 

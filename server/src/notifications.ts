@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Store, RecordData } from './database.js';
 import { ApiError, requireValue } from './errors.js';
-import { repairNotificationTasks } from './notification-tasks.js';
+import { notificationKind, repairNotificationTasks } from './repair/notification-tasks.js';
 import type { PushTransport, PushDevice } from './push-transport.js';
 
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -127,9 +127,12 @@ export class Notifications {
   }
 
   list(userId: string) {
-    return this.store.db.prepare('SELECT id,repairId,role,title,body,active,createdAt,readAt FROM notifications WHERE userId = ? ORDER BY active DESC,createdAt DESC LIMIT 100').all(userId).map(note => ({
+    return this.store.db.prepare(`SELECT id,repairId,taskKey,role,title,body,active,createdAt,readAt FROM notifications
+      WHERE userId = ? ORDER BY active DESC,
+      CASE WHEN active = 1 AND taskKey IN ('urgent_dispatch', 'urgent_request') THEN 0 ELSE 1 END, createdAt DESC LIMIT 100`).all(userId).map(note => ({
       id: String(note.id), repairId: String(note.repairId), role: String(note.role), title: String(note.title),
       body: String(note.body), active: Number(note.active), createdAt: Number(note.createdAt), readAt: note.readAt,
+      kind: notificationKind(String(note.taskKey)),
       deliveries: this.store.db.prepare('SELECT status,attempts,reason FROM push_deliveries WHERE notificationId = ?').all(String(note.id))
         // stopped：失败次数已到上限，不会再自动重试，只能手动重试。
         .map(item => ({ status: String(item.status), attempts: Number(item.attempts), reason: String(item.reason),

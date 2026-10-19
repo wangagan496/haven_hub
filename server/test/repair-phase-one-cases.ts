@@ -8,7 +8,7 @@ const R = '13800138000', A = '13800138090', W = '13800138091';
 type Role = 'resident' | 'admin' | 'worker';
 type Row = Record<string, any>;
 const iso = (ms: number) => new Date(ms).toISOString();
-const local = (ms: number) => iso(ms).slice(0, 19) + '+00:00';
+const local = (ms: number) => iso(ms + 8 * H).slice(0, 19) + '+08:00';
 
 export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
   async function setup(t: TestContext) {
@@ -329,7 +329,8 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     row = await f.detail(row.id);
     assert.equal(row.status, 1);
     assert.equal(row.round, 1);
-    assert.equal(row.agreedTime, '');
+    assert.equal(row.agreedTime, row.expectedTime);
+    assert.equal(row.slot, row.expectedSlot);
     assert.equal((await f.raw('worker', 'GET', `/worker/repairs/${row.id}`)).status, 404);
   });
 
@@ -367,7 +368,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     const f = await setup(t);
     let row = await f.create();
     const agreed = row.agreedTime;
-    const time = local(f.now() + 100 * H);
+    const time = local(f.now() + 102 * H);
     await f.denied('resident', row, 'reschedule', { time, reason: '时间冲突' }, 'POST');
     row = await f.change('resident', row, 'reschedule', { time, reason: '时间冲突', notified: true }, 'POST');
     assert.equal(row.agreedTime, agreed);
@@ -390,41 +391,45 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     assert.equal(row.round, 1);
   });
 
-  test('P1-06 acceptance adopts expected time; alternatives require reason and consent', async t => {
+  test('P1-06 acceptance retains selected slot; alternatives use a separate proposal and consent', async t => {
     const f = await setup(t);
     const direct = await f.create();
     assert.equal(direct.agreedTime, direct.expectedTime);
-    let row = await f.create(5);
+    let row = await f.create(5, 25);
     const time = local(f.now() + 48 * H);
     await f.denied('worker', row, 'accept', { time });
-    row = await f.change('worker', row, 'accept', { time, reason: '已有安排' });
+    await f.denied('worker', row, 'accept', { time, reason: '已有安排' });
+    row = await f.change('worker', row, 'accept');
+    row = await f.change('worker', row, 'reschedule', { time, reason: '已有安排', notified: true }, 'POST');
     assert.equal(row.agreedTime, row.expectedTime);
     assert.equal(row.pendings[0].proposedTime, time);
     row = await f.change('resident', row, 'reschedule', { accept: true });
     assert.equal(row.agreedTime, time);
   });
 
-  test('P1-06 expired expected time requires a new future time', async t => {
+  test('P1-06 late acceptance retains its slot; a future arrangement requires reschedule consent', async t => {
     const f = await setup(t);
-    let row = await f.create(5, 1);
-    await f.at(f.now() + 2 * H);
-    await f.denied('worker', row, 'accept');
-    row = await f.change('worker', row, 'accept', { time: local(f.now() + H), reason: '重新预约' });
-    assert.equal(row.agreedTime, '');
+    let row = await f.create(5, 2);
+    const previous = row.slot;
+    await f.at(f.now() + 3 * H);
+    row = await f.change('worker', row, 'accept');
+    row = await f.change('worker', row, 'reschedule', { time: local(f.now() + 3 * H), reason: '重新预约', notified: true }, 'POST');
+    assert.equal(row.slot, previous);
     assert.equal(row.pendings[0].kind, 'reschedule');
   });
 
-  test('P1-06 regression: repeating the expired expected time is not a new appointment', async t => {
+  test('P1-06 repeating an elapsed selected slot never creates a new reservation', async t => {
     const f = await setup(t);
-    const row = await f.create(5, 1);
-    await f.at(f.now() + 2 * H);
+    const row = await f.create(5, 2);
+    await f.at(f.now() + 3 * H);
     const response = await f.raw('worker', 'PUT', `/worker/repairs/${row.id}/accept`,
       { revision: row.revision, time: row.expectedTime, reason: '重复过期时间' });
     const persisted = f.stored(row.id);
     assert.deepEqual({ code: response.code, status: persisted.status, agreedTime: persisted.agreedTime,
       revision: persisted.revision, pendings: persisted.pendings.length },
-    { code: 40001, status: 5, agreedTime: '', revision: row.revision, pendings: 0 },
-    'Expired expectedTime must be rejected without accepting the work order');
+    { code: 10000, status: 2, agreedTime: row.agreedTime, revision: row.revision + 1, pendings: 0 },
+    'Acceptance must preserve the selected appointment without reserving another slot');
+    assert.equal(persisted.slot, row.slot);
   });
 
   test('P1-07 direct revoke states 1/5 and legacy empty-body complete list', async t => {
@@ -446,7 +451,8 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
   for (const hours of [1, 24]) {
     test(`P1-07 revoke deadline min(2h, appointment ${hours}h), auto and objection lifecycle`, async t => {
       const f = await setup(t);
-      let row = await f.create(2, hours);
+      let row = await f.create(2, Math.max(2, hours));
+      if (hours === 1) await f.at(f.now() + H);
       await f.denied('resident', row, 'revoke', { reason: '需要撤销' });
       row = await f.change('resident', row, 'revoke', { reason: '需要撤销', notified: true });
       const deadline = f.now() + Math.min(2, hours) * H;
@@ -495,7 +501,8 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
       await f.denied('worker', row, 'progress', { content: '无权访问' }, 'POST', 404);
       row = await f.detail(row.id);
       assert.equal(row.status, 1);
-      assert.equal(row.agreedTime, '');
+      assert.equal(row.agreedTime, round === 1 ? row.expectedTime : '');
+      assert.equal(row.slot, round === 1 ? row.expectedSlot : '');
       assert.equal(row.round, round);
       assert.equal(row.previousWorkers[0].reason, '临时有事');
       assert((await f.call('admin', 'GET', '/management/repairs'))[0].todo.includes('师傅退出待重派'));

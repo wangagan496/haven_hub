@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { backup } from 'node:sqlite';
 import { Store } from '../src/database.js';
-import { repairSchema } from '../src/community.js';
+import { repairSchema } from '../src/repair/service.js';
 
 // Add variety to the primary worker's acceptance data without resetting any
 // existing records, assignments, or actions taken during user verification.

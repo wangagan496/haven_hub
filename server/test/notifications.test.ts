@@ -9,7 +9,7 @@ import { MAX_ATTEMPTS, Notifications, validatePushEndpoint } from '../src/notifi
 import { createPushTransport, huaweiJwt, huaweiResult, type PushTransport, type PushMessage, type PushResult } from '../src/push-transport.js';
 import { createApp, pushRootCandidates } from '../src/app.js';
 import { readConfig } from '../src/config.js';
-import { RepairService } from '../src/repair-service.js';
+import { RepairService } from '../src/repair/service.js';
 
 function fixture() {
   let now = Date.parse('2026-10-17T00:00:00Z');
@@ -392,14 +392,14 @@ test('FIX migration upgrades a version-two database that already has early push 
   const path = join(folder, 'database.sqlite');
   try {
     const old = new Store(path);
-    old.db.exec(`DROP TABLE push_deliveries;
+    old.db.exec(`DROP TABLE repair_capacity_weekdays; DROP TABLE push_deliveries;
       CREATE TABLE push_deliveries (notificationId TEXT NOT NULL REFERENCES notifications(id), deviceId TEXT NOT NULL, status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(notificationId,deviceId));
       PRAGMA user_version = 2;`);
     old.close();
     const upgraded = new Store(path);
     try {
-      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 3);
+      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 5);
       assert.ok(upgraded.db.prepare('PRAGMA table_info(push_deliveries)').all().some(column => column.name === 'lease'));
     } finally { upgraded.close(); }
   } finally { rmSync(folder, { recursive: true, force: true }); }

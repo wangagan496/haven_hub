@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import sharp from 'sharp';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
-import { CommunityService } from '../src/community.js';
+import { CommunityService } from '../src/community/service.js';
 
 // 独立演示数据库，所有资料均为虚构；不会修改原 haven.sqlite。
 const config = { ...readConfig({}), port: 3010, publicBaseUrl: 'http://127.0.0.1:3010', databasePath: resolve('data/workflow-demo.sqlite') };
@@ -27,7 +27,8 @@ if (!store.list('rooms',resident).length) {
   store.run('INSERT INTO uploads VALUES (?,?,?,?)',id,resident,'image/png',image);
   const url=`${config.publicBaseUrl}/media/${id}`;
   const house=service.saveRoom(resident,{point:'演示小区',building:'1栋',room:'101',name:'测试住户',gender:1,mobile:accounts[0].mobile,idcardFrontUrl:url,idcardBackUrl:url}).rows[0]!;
-  service.createRepair(resident,{houseId:house.id,repairItemId:'1001',mobile:accounts[0].mobile,appointment:'2026-10-20',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[url]});
+  // 演示种子使用“等待安排”，避免写死日期过期或绕过时段规则。
+  service.createRepair(resident,{houseId:house.id,repairItemId:'1001',mobile:accounts[0].mobile,slot:'',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[url]});
 }
 const server=app.listen(config.port,config.host,()=>process.stdout.write('物业后台：http://127.0.0.1:3010/admin/\n维修工作台：http://127.0.0.1:3010/workflow/#/worker\n住户19900000001 / 物业19900000002 / 师傅19900000003，均使用开发验证码。\n'));
 server.on('error',error=>{process.stderr.write(`${error.message}\n`);store.close();process.exitCode=1;});
