@@ -3,15 +3,21 @@ const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('haven-admin-token') || '';
 let tab = 'rooms', rows = [], workers = [], loading = false, epoch = 0, selectedId = '';
 let dataset = {rooms: [], repairs: [], workers: []};
+let queueRows = [], shiftDate = '', capacityDate = '', capacityData = null, weekdayData = {};
 let pushChanging = false, pushGeneration = 0, pushDisabling = null;
 const roomStatus = {1:'待审核',2:'已通过',3:'已打回'};
 const repairStatus = {0:'已取消',1:'待派单',2:'处理中',3:'已完成',4:'已取消',5:'待接单',6:'待住户确认'};
-// 选中“待办”时只显示有待办标签的工单；急单优先，其余按时间倒序。
+// 各列表保持服务端顺序；待安排队列单独来自 repair-queue。
 const TODO='todo';
+const QUEUE='queue';
+const WEEKDAY_NAMES=['周一','周二','周三','周四','周五','周六','周日'];
+const isRepairTab=()=>tab==='repairs'||tab==='shifts';
 const pages = {
   rooms: {title:'房屋审核',description:'查看住户提交的房屋资料，及时完成审核。',list:'房屋资料',search:'搜索房屋、业主或手机号'},
   repairs: {title:'报修管理',description:'安排合适的维修师傅，跟进每一条报修记录。',list:'报修记录',search:'搜索维修项目、房屋或师傅'},
-  workers: {title:'维修人员',description:'管理师傅联系方式，为社区报修安排维修人员。',list:'维修人员名册',search:'搜索师傅姓名或手机号'}
+  workers: {title:'维修人员',description:'管理师傅联系方式，为社区报修安排维修人员。',list:'维修人员名册',search:'搜索师傅姓名或手机号'},
+  shifts: {title:'顺延建议',description:'系统只给建议，不会自动挪单。请核实后选择更晚的可选时段。',list:'顺延候选',search:'搜索维修项目、房屋或师傅'},
+  capacities: {title:'容量设置',description:'本日覆盖 > 星期模板 > 默认。0 表示该时段不再接受普通预约。',list:'预约容量',search:''}
 };
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -39,6 +45,7 @@ function logout() {
   message();
   rows=[]; workers=[];
   dataset={rooms:[],repairs:[],workers:[]};
+  queueRows=[]; capacityData=null; weekdayData={}; shiftDate=''; capacityDate='';
   $('notification-list').replaceChildren();
 }
 async function api(path, method='GET', body) {
@@ -53,7 +60,9 @@ async function api(path, method='GET', body) {
     if(requestToken===token) logout();
     throw Error('登录已过期，请重新登录');
   }
-  if(!response.ok||data.code!==10000) throw Error(data.message||'操作失败，请重试');
+  if(!response.ok||data.code!==10000) {
+    const error=Error(data.message||'操作失败，请重试'); error.status=response.status; throw error;
+  }
   return data.data;
 }
 async function guarded(button, action) {
@@ -131,14 +140,18 @@ function setTab(value) {
   $('list-title').textContent=page.list;
   $('search').placeholder=page.search;
   $('search').value='';
-  $('filter-label').hidden=tab==='workers';
-  $('quick-filters').hidden=tab==='workers';
+  const special=tab==='capacities'||tab==='shifts';
+  $('filter-label').hidden=tab==='workers'||special;
+  $('quick-filters').hidden=tab==='workers'||special;
+  document.querySelector('.toolbar').hidden=tab==='capacities';
+  document.querySelector('.desk-grid').classList.toggle('capacity-layout',tab==='capacities');
+  $('detail-panel').hidden=tab==='capacities';
   $('filter').replaceChildren();
   $('filter').value='';
   $('quick-filters').replaceChildren();
   const states=tab==='rooms'?roomStatus:repairStatus;
   const entries=Object.entries(states).filter(([key])=>key!=='4');
-  for(const [value,label] of tab==='repairs'?[[TODO,'待办'],['','全部'],...entries]:[['','全部'],...entries]) {
+  for(const [value,label] of tab==='repairs'?[[TODO,'待办'],[QUEUE,'待安排'],['unrated','未定级'],['','全部'],...entries]:[['','全部'],...entries]) {
     const option=node('option',label); option.value=value; $('filter').append(option);
     const quick=node('button',label); quick.type='button'; quick.dataset.status=value;
     quick.onclick=()=>{$('filter').value=value;renderQuickFilters();renderStats();render();};
@@ -166,10 +179,16 @@ async function load(keep=false) {
   message();
   if(!keep) { skeleton(); renderDetail(null); }
   try {
-    const results=await Promise.all(['rooms','repairs','workers'].map(name=>api(`/management/${name}`)));
+    const extra=tab==='capacities'
+      ? Promise.all([api('/management/repair-capacities'+(capacityDate?`?date=${encodeURIComponent(capacityDate)}`:'')),api('/management/repair-capacities/weekdays')])
+      : tab==='shifts'?api('/management/repair-shift-suggestions'+(shiftDate?`?date=${encodeURIComponent(shiftDate)}`:''))
+      : tab==='repairs'?api('/management/repair-queue'):Promise.resolve([]);
+    const results=await Promise.all([...['rooms','repairs','workers'].map(name=>api(`/management/${name}`)),extra]);
     if(generation!==epoch) return;
     dataset={rooms:results[0],repairs:results[1],workers:results[2]};
-    rows=dataset[tab]; workers=dataset.workers;
+    if(tab==='capacities') [capacityData,weekdayData]=results[3];
+    if(tab==='repairs') queueRows=results[3];
+    rows=tab==='shifts'?results[3]:dataset[tab]||[]; workers=dataset.workers;
     if(!rows.some(row=>row.id===selectedId)) selectedId=rows[0]?.id||'';
     $('rooms-count').textContent=dataset.rooms.filter(row=>row.status===1).length;
     $('repairs-count').textContent=dataset.repairs.filter(row=>(row.todo||[]).length).length;
@@ -200,6 +219,7 @@ async function load(keep=false) {
   }
 }
 function renderStats() {
+  if(tab==='capacities') { $('stats').replaceChildren(); return; }
   const count=status=>rows.filter(row=>row.status===status).length;
   let cards;
   if(tab==='rooms') cards=[
@@ -208,7 +228,7 @@ function renderStats() {
     ['已打回',count(3),'等待住户修改','3'],
     ['全部房屋',rows.length,'当前提交的房屋资料','']
   ];
-  else if(tab==='repairs') cards=[
+  else if(isRepairTab()) cards=[
     ['待办',rows.filter(row=>(row.todo||[]).length).length,'需要物业跟进的工单',TODO],
     ['待派单',count(1),'等待安排维修师傅','1'],
     ['处理中',count(2),'师傅正在处理','2'],
@@ -258,19 +278,27 @@ function renderQuickFilters() {
   });
 }
 function render() {
+  if(tab==='capacities') { renderCapacities(); return; }
   const root=$('content');
   const existingForm=root.querySelector('.worker-form');
   root.replaceChildren();
   if(tab==='workers') root.append(existingForm||workerForm());
+  if(tab==='shifts') {
+    const controls=node('div',null,'schedule-section');
+    const date=node('input'); date.type='date'; date.value=shiftDate; date.setAttribute('aria-label','顺延建议日期');
+    const search=node('button','查询顺延建议');
+    search.onclick=()=>guarded(search,async()=>{shiftDate=date.value;await load(true);});
+    controls.append(date,search,node('p','系统只给建议，不会自动挪单。留空查询全部候选。','muted'));root.append(controls);
+  }
   const query=$('search').value.trim().toLowerCase();
   const selected=$('filter').value;
-  const filtered=rows.filter(row=>{
+  const source=tab==='repairs'&&selected===QUEUE?queueRows:rows;
+  const filtered=source.filter(row=>{
     const status=tab==='repairs'&&row.status===4?0:row.status;
-    const matchesStatus=tab==='workers'||!selected||(selected===TODO?(row.todo||[]).length>0:String(status)===selected);
+    const matchesStatus=tab==='workers'||tab==='shifts'||!selected||selected===QUEUE||(selected==='unrated'?row.priorityPending:selected===TODO?(row.todo||[]).length>0:String(status)===selected);
     const text=[row.point,row.building,row.room,row.name,row.mobile,row.nickName,row.repairItemName,row.houseInfo,row.workerName,...(row.todo||[])].filter(Boolean).join(' ').toLowerCase();
     return matchesStatus&&(!query||text.includes(query));
   });
-  if(tab==='repairs'&&selected===TODO) filtered.sort((a,b)=>Number(Boolean(b.urgent))-Number(Boolean(a.urgent)));
   $('result-count').textContent=`${filtered.length} 条`;
   if(!filtered.some(row=>row.id===selectedId)) selectedId=filtered[0]?.id||'';
   if(!filtered.length) {
@@ -297,13 +325,23 @@ function render() {
     }
     const subtitle=tab==='rooms'?`${row.name||'住户'} · ${row.mobile||'未留电话'}`:tab==='workers'?row.mobile:`${row.houseInfo||'房屋待确认'} · ${timeText(row.agreedTime||row.expectedTime)||row.appointment||'未预约'}`;
     copy.append(headline,node('span',subtitle,'request-subtitle'));
-    if(tab==='repairs'&&(row.todo||[]).length) {
+    if(isRepairTab()) {
+      const tags=node('span',null,'schedule-tags');
+      const priority={urgent:'急',medium:'中',light:'轻'}[row.priority];
+      for(const text of [priority,row.priorityPending?'未定级':'',row.urgentRequest?'紧急诉求':'',...(row.preferenceTags||[]),
+        row.shiftCount>0?`已顺延 ${row.shiftCount} 次`:'',row.autoAccepted?'超时生效':'']) {
+        if(text) tags.append(node('span',text,'schedule-tag'+(text==='急'?' urgent':'')));
+      }
+      copy.append(tags);
+      if(tab==='shifts'&&!row.canShift) copy.append(node('span',row.shiftReason,'shift-reason'));
+    }
+    if(isRepairTab()&&(row.todo||[]).length) {
       const tags=node('span',null,'todo-tags');
       for(const tag of row.todo) tags.append(node('span',tag,'todo-tag'));
       copy.append(tags);
     }
     const meta=node('span',null,'request-meta');
-    if(tab==='repairs') meta.append(node('span',row.workerName||([0,4].includes(row.status)?'已取消':'待派单')));
+    if(isRepairTab()) meta.append(node('span',row.workerName||([0,4].includes(row.status)?'已取消':'待派单')));
     else if(tab==='workers') meta.append(node('span','维修师傅'));
     else meta.append(node('span',roomStatus[row.status]||'待审核'));
     item.append(icon,copy,meta,node('span','›','row-chevron'));
@@ -315,7 +353,140 @@ function render() {
 function timeText(value) {
   if(!value) return '';
   const date=new Date(value);
-  return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{month:'numeric',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit'});
+  return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'numeric',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit'});
+}
+function windowText(window) {
+  if(!window?.start||!window?.end)return '';
+  const end=new Date(window.end);
+  return timeText(window.start)+'–'+end.toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit'});
+}
+function slotText(slot) {
+  // 仅格式化服务端时段编码，不用于判断可预约性。历史 agreedTime 使用 timeText。
+  return typeof slot==='string'&&/^\d{4}-\d{2}-\d{2}#\d{2}$/.test(slot)?slot.replace('#',' ') + ':00':'';
+}
+function labeledInput(root,text,tag) {
+  const label=node('label',text),input=node(tag);label.append(input);root.append(label);return input;
+}
+function slotPicker(record,shift=false) {
+  const element=node('div',null,'slot-picker');
+  const date=labeledInput(element,'预约日期','select');date.disabled=true;
+  const slots=labeledInput(element,shift?'更晚的可选时段':'可选时段','select');slots.disabled=true;
+  const status=node('p','请查询服务端可选时段。','muted'),retry=node('button','查询可选时段');
+  element.append(status,retry);
+  const generation=epoch;let sequence=0;
+  async function query() {
+    const request=++sequence;const selected=date.value;
+    date.disabled=true;slots.disabled=true;slots.replaceChildren();status.textContent='正在查询…';
+    try {
+      const data=await api('/repair/slots?excludeId='+encodeURIComponent(record.id)+(selected?'&date='+encodeURIComponent(selected):''));
+      if(generation!==epoch||request!==sequence||!element.isConnected)return;
+      date.replaceChildren(...data.dates.map(value=>{const option=node('option',value+(value===data.today?'（今天）':''));option.value=value;return option;}));
+      date.value=data.date;
+      const available=data.slots.filter(slot=>shift?slot.shiftSelectable:slot.selectable);
+      const placeholder=node('option','请选择时段');placeholder.value='';slots.append(placeholder);
+      for(const period of [...new Set(available.map(slot=>slot.period))]) {
+        const group=node('optgroup');group.label={morning:'上午',afternoon:'下午',evening:'晚上'}[period]||period;
+        for(const slot of available.filter(slot=>slot.period===period)) {const option=node('option',windowText(slot));option.value=slot.slot;group.append(option);}
+        slots.append(group);
+      }
+      slots.disabled=!available.length;status.textContent=available.length?'以服务端最新可选时段为准。':'没有可选时段，可选择其他日期。';
+    } catch(error) {if(generation===epoch&&request===sequence&&element.isConnected)status.textContent=error.message+'，请重试';}
+    finally {if(generation===epoch&&request===sequence)date.disabled=!date.options.length;}
+  }
+  retry.onclick=()=>guarded(retry,query);date.onchange=()=>guarded(retry,query);
+  return {element,value:()=>slots.disabled?'':slots.value};
+}
+function dispatchPanel(record,mutate) {
+  const section=node('section',null,'schedule-section');section.append(node('h3','急单调度'));
+  const list=node('div'),fetchOptions=node('button','查询空闲师傅'),reason=labeledInput(section,'调度原因（选填）','textarea');reason.maxLength=1000;
+  section.append(fetchOptions,list);const generation=epoch;
+  fetchOptions.onclick=()=>guarded(fetchOptions,async()=>{
+    list.replaceChildren(node('p','正在查询空闲师傅…','muted'));
+    try {
+      const data=await api(`/management/repairs/${record.id}/dispatch-options`);
+      if(generation!==epoch||!section.isConnected)return;
+      list.replaceChildren();
+      for(const slot of data.slots) {
+        const group=node('div',null,'dispatch-slot');group.append(node('strong',windowText(slot)+(slot.current?'（当前时段）':'')));
+        if(!slot.workers.length)group.append(node('p','暂无空闲师傅，可先手动顺延其他工单','muted'));
+        else {
+          const workers=labeledInput(group,'空闲师傅','select');
+          const placeholder=node('option','请选择师傅');placeholder.value='';workers.append(placeholder);
+          for(const worker of slot.workers) {const option=node('option',`${worker.nickName} · ${worker.mobile}`);option.value=worker.id;workers.append(option);}
+          const send=node('button',record.workerId?'改派/重新调度':'确认急单调度','primary');
+          send.onclick=()=>{if(!workers.value){message('请选择空闲师傅');return;}mutate(send,`/management/repairs/${record.id}/dispatch`,{revision:record.revision,slot:slot.slot,workerId:workers.value,reason:reason.value.trim()});};
+          group.append(send);
+        }
+        list.append(group);
+      }
+      const shift=node('button','查看顺延建议');shift.onclick=()=>{if(loading)return;setTab('shifts');void load();};list.append(shift);
+    } catch(error) {if(generation===epoch&&section.isConnected)list.replaceChildren(node('p',error.message+'，请重新查询','shift-reason'));}
+  });return section;
+}
+function renderCapacities() {
+  const root=$('content');root.replaceChildren();$('result-count').textContent='';
+  if(!capacityData)return;
+  const generation=epoch,values=capacityData;let saving=false;
+  const hours=Object.keys(values.defaults).sort();
+  const feedback=node('p');feedback.setAttribute('role','alert');
+  root.append(node('p','优先级：本日覆盖 > 星期模板 > 默认。0 表示该时段不再接受普通预约。参考 500：参考值，不是上限。','detail-guidance'),feedback);
+  async function save(button,path,body,method='PUT') {
+    if(saving||loading||button.disabled)return;saving=true;
+    const controls=[...root.querySelectorAll('button,input,select')].map(control=>[control,control.disabled]);
+    await guarded(button,async()=>{
+      controls.forEach(([control])=>control.disabled=true);
+      try {await api(path,method,body);if(generation===epoch)await load(true);}
+      finally {controls.forEach(([control,disabled])=>control.disabled=disabled);}
+    });saving=false;
+  }
+  function read(inputs) {
+    const capacities={};
+    for(const [hour,input] of Object.entries(inputs)) {
+      if(input.value==='')continue;
+      if(!/^\d+$/.test(input.value)||!input.reportValidity()){feedback.textContent='容量只允许 0 及以上的整数';return null;}
+      capacities[hour]=Number(input.value);
+    }
+    if(!Object.keys(capacities).length){feedback.textContent='请至少填写一个时段，清空整天请使用清空按钮';return null;}
+    return {capacities};
+  }
+  function input(hour,value,placeholder,context) {
+    const cell=node('input');cell.type='number';cell.min='0';cell.step='1';cell.value=value??'';
+    cell.placeholder=String(placeholder);cell.setAttribute('aria-label',`${context} ${hour}:00`);return cell;
+  }
+  const defaults=node('section',null,'schedule-section');defaults.append(node('h3','默认容量'));
+  const defaultInputs={},grid=node('div',null,'capacity-grid');
+  for(const hour of hours){const label=node('label',hour+':00');const cell=input(hour,values.defaults[hour],values.defaults[hour],'默认容量');defaultInputs[hour]=cell;label.append(cell);grid.append(label);}
+  const saveDefaults=node('button','保存默认容量','primary');saveDefaults.onclick=()=>{const body=read(defaultInputs);if(body)save(saveDefaults,'/management/repair-capacities',body);};
+  defaults.append(grid,saveDefaults);root.append(defaults);
+  const weekdays=node('section',null,'schedule-section');weekdays.append(node('h3','星期模板'),node('p','空格沿用默认容量，灰色占位为默认值。保存为部分更新；要移除已设值，请先按天清空。','muted'));
+  const scroller=node('div',null,'capacity-scroll'),table=node('table',null,'capacity-table');const head=node('tr');
+  for(const text of ['星期',...hours.map(hour=>hour+':00'),'操作'])head.append(node('th',text));const thead=node('thead');thead.append(head);table.append(thead);
+  const tbody=node('tbody');
+  for(const [day,template] of Object.entries(weekdayData)) {
+    const name=WEEKDAY_NAMES[Number(day)-1],row=node('tr'),inputs={};row.append(node('th',name));
+    for(const hour of hours){const cell=node('td'),box=input(hour,template[hour],values.defaults[hour],name+'模板');inputs[hour]=box;cell.append(box);row.append(cell);}
+    const actions=node('td'),put=node('button','保存'),clear=node('button','清空');
+    put.setAttribute('aria-label','保存'+name+'模板');clear.setAttribute('aria-label','清空'+name+'模板');
+    put.onclick=()=>{const body=read(inputs);if(body)save(put,`/management/repair-capacities/weekdays/${day}`,body);};
+    clear.onclick=()=>save(clear,`/management/repair-capacities/weekdays/${day}`,undefined,'DELETE');
+    actions.append(put,clear);row.append(actions);tbody.append(row);
+  }table.append(tbody);scroller.append(table);weekdays.append(scroller);root.append(weekdays);
+  const day=node('section',null,'schedule-section');day.append(node('h3','单日覆盖'));
+  const date=labeledInput(day,'容量日期','input');date.type='date';date.value=capacityDate;
+  const query=node('button','查看日期容量');query.onclick=()=>guarded(query,async()=>{capacityDate=date.value;await load(true);});day.append(query);
+  if(capacityDate) {
+    const inputs={},grid=node('div',null,'capacity-grid');
+    for(const hour of hours){
+      const source=values.sources[hour];const origin=source==='date'?'本日覆盖':source==='weekday'?WEEKDAY_NAMES[values.weekday-1]+'模板':'默认';
+      const label=node('label',hour+':00'),box=input(hour,values.overrides[hour],values.effective[hour],'单日覆盖');inputs[hour]=box;
+      label.append(box,node('small',`${origin} · 生效 ${values.effective[hour]}`));grid.append(label);
+    }
+    const put=node('button','保存单日覆盖','primary'),clear=node('button','删除单日覆盖，恢复模板/默认');
+    put.onclick=()=>{const body=read(inputs);if(body)save(put,`/management/repair-capacities/${capacityDate}`,body);};
+    clear.onclick=()=>save(clear,`/management/repair-capacities/${capacityDate}`,undefined,'DELETE');day.append(grid,put,clear);
+  }
+  day.append(node('p',`默认合计 ${values.defaultTotal} · ${capacityDate?'当日':'默认'}生效合计 ${values.effectiveTotal} · 维修人员 ${values.workerCount} 人`,'detail-guidance'));
+  for(const warning of values.warnings)day.append(node('p',warning.message,'muted'));root.append(day);
 }
 function repairProgress(record) {
   const list=node('ol',null,'progress');
@@ -363,10 +534,10 @@ function renderDetail(record) {
     return;
   }
   const heading=node('div',null,'detail-heading');
-  heading.append(node('span',tab==='repairs'?'报修工单 / 记录详情':'住户资料 / 审核详情','eyebrow'));
+  heading.append(node('span',isRepairTab()?'报修工单 / 记录详情':'住户资料 / 审核详情','eyebrow'));
   const title=tab==='rooms'?[record.point,record.building,record.room].filter(Boolean).join(' '):record.repairItemName;
   heading.append(node('h2',title||pages[tab].title));
-  if(tab==='repairs') {
+  if(isRepairTab()) {
     const remind=node('button','提醒对方处理待办','quiet');
     remind.onclick=()=>guarded(remind,async()=>{
       await api('/notifications/repairs/'+encodeURIComponent(record.id)+'/remind','POST');
@@ -380,7 +551,10 @@ function renderDetail(record) {
     heading.append(node('span',status,`status ${tone}`));
   }
   root.append(heading);
-  if(tab==='repairs') root.append(repairProgress(record));
+  if(isRepairTab()) {
+    if(record.needsAdmin) root.append(node('p','师傅请求物业协助','detail-guidance urgent'));
+    root.append(repairProgress(record));
+  }
   if(tab==='rooms') {
     for(const [label,value] of [['房屋',[record.point,record.building,record.floor,record.room].filter(Boolean).join(' ')],['业主',record.name],['联系电话',record.mobile],['审核状态',roomStatus[record.status]],['打回原因',record.reviewReason]]) field(root,label,value);
   } else {
@@ -389,7 +563,9 @@ function renderDetail(record) {
     for(const [label,value] of [
       ['房屋',record.houseInfo],['住户电话',record.mobile],['期望时间',timeText(record.expectedTime)||record.appointment],
       ['约定时间',timeText(record.agreedTime)||'未约定'],
-      ['待回应改约',reschedule?`${reschedule.by==='resident'?'住户':'师傅'}提议改为 ${timeText(reschedule.proposedTime)}：${reschedule.reason}`:''],
+      ['当前时段',windowText(record.slotWindow)],['最初期望时段',slotText(record.expectedSlot)],
+      ['顺延次数',String(record.shiftCount||0)],
+      ['待回应改约',reschedule?`${{resident:'住户',worker:'师傅',admin:'物业'}[reschedule.by]||'对方'}提议 ${slotText(reschedule.proposedSlot)||timeText(reschedule.proposedTime)}${reschedule.reason?`：${reschedule.reason}`:''}`:''],
       ['问题描述',record.description],['维修人员',record.workerName?`${record.workerName} · ${record.workerMobile||''}`:''],
       ['维修轮次',`第 ${record.round||1} 轮${record.reworkUsed?'（返修机会已用）':''}`],
       ['确认期限',timeText(record.confirmDeadline)],['售后期至',timeText(record.warrantyEnd)]
@@ -405,22 +581,28 @@ function renderDetail(record) {
   const actionError=node('p'); actionError.setAttribute('role','alert'); root.append(actionError);
   let saving=false;
   async function mutate(button,path,body,method='PUT') {
-    if(saving) return;
+    if(saving||loading||button.disabled) return;
+    if(root.querySelector('[aria-busy="true"]')) { actionError.textContent='正在查询可选安排，请稍后提交'; return; }
     saving=true;
     const generation=epoch;
     actionError.textContent='';
-    const controls=[...root.querySelectorAll('button, select, textarea, input')];
-    controls.forEach(control=>control.disabled=true);
+    const controls=[...root.querySelectorAll('button, select, textarea, input')].map(control=>[control,control.disabled]);
+    controls.forEach(([control])=>control.disabled=true);
     button.setAttribute('aria-busy','true');
     try {
       await api(path,method,body);
       if(generation!==epoch) return;
       await load(true);
+      if(generation===epoch) await loadNotifications();
     } catch(error) {
-      if(generation===epoch) actionError.textContent=error.message;
+      if(generation!==epoch) return;
+      if(error.status===409) {
+        await load(true);
+        if(generation===epoch) message(error.message+'；已刷新最新状态');
+      } else actionError.textContent=error.message;
     } finally {
       saving=false;
-      controls.forEach(control=>control.disabled=false);
+      controls.forEach(([control,disabled])=>control.disabled=disabled);
       button.removeAttribute('aria-busy');
     }
   }
@@ -435,11 +617,12 @@ function renderDetail(record) {
     };
     actions.append(reject,approve); root.append(actions);
   }
-  if(tab==='repairs') {
+  if(isRepairTab()) {
     if(Array.isArray(record.timeline)) {
       const history=node('ol',null,'history');
       for(const event of record.timeline) {
         const item=node('li',event.label+(event.detail?` · ${event.detail}`:''));
+        if(event.previousWorkerId) item.append(node('small',`原师傅：${(workers.find(worker=>worker.id===event.previousWorkerId)||{}).nickName||event.previousWorkerId}`));
         item.append(node('small',new Date(event.at).toLocaleString('zh-CN')));
         history.append(item);
       }
@@ -454,7 +637,43 @@ function renderDetail(record) {
       return input;
     };
     const require=(input,text)=>{ if(input.value.trim()) return true; actionError.textContent=text; input.focus(); return false; };
-    if(record.status===1||record.status===5) {
+    const active=[1,5,2].includes(record.status);
+    if(active) {
+      const section=node('section',null,'schedule-section'); section.append(node('h3','工单定级'));
+      const priority=labeledInput(section,'等级','select');
+      for(const [value,text] of [['','请选择等级'],['urgent','急'],['medium','中'],['light','轻']]) {const option=node('option',text);option.value=value;priority.append(option);}
+      priority.value=record.priority||'';
+      const reason=labeledInput(section,'定级原因','textarea');reason.maxLength=500;
+      const save=node('button','保存等级');
+      save.onclick=()=>{if(!priority.value){actionError.textContent='请选择等级';return;}if(require(reason,'请填写定级原因'))mutate(save,`${base}/priority`,{revision,priority:priority.value,reason:reason.value.trim()});};
+      section.append(save);root.append(section);
+      if(!record.slot&&!record.agreedTime) {
+        const proposal=node('section',null,'schedule-section'); proposal.append(node('h3','首次上门时间提议'),node('p','住户同意或超时后才生效。','muted'));
+        const picker=slotPicker(record);proposal.append(picker.element);
+        const reason=labeledInput(proposal,'提议原因','textarea');reason.maxLength=500;
+        const notified=labeledInput(proposal,'已电话告知住户','input');notified.type='checkbox';
+        const send=node('button','发送首次提议','primary');
+        send.onclick=()=>{
+          if(!picker.value()){actionError.textContent='请选择可用时段';return;}
+          if(!require(reason,'请填写提议原因'))return;
+          if(!notified.checked){actionError.textContent='请先电话告知住户并勾选确认';return;}
+          mutate(send,`${base}/reschedule`,{revision,slot:picker.value(),reason:reason.value.trim(),notified:true},'POST');
+        };proposal.append(send);root.append(proposal);
+      }
+      if(record.priority==='urgent') root.append(dispatchPanel(record,mutate));
+    }
+    if(tab==='shifts') {
+      const section=node('section',null,'schedule-section');section.append(node('h3','手动顺延'));
+      const shift=node('button','确认顺延','primary');shift.disabled=!record.canShift;
+      if(!record.canShift) section.append(node('p',record.shiftReason,'shift-reason'));
+      else {
+        const picker=slotPicker(record,true);section.append(picker.element);
+        const reason=labeledInput(section,'顺延原因','textarea');reason.maxLength=500;
+        shift.onclick=()=>{if(!picker.value()){actionError.textContent='请选择更晚的可用时段';return;}if(require(reason,'请填写顺延原因'))mutate(shift,`${base}/shift`,{revision,slot:picker.value(),reason:reason.value.trim()});};
+      }
+      section.append(shift);root.append(section);
+    }
+    if(record.priority!=='urgent'&&(record.status===1||record.status===5)) {
       const label=node('label','指派维修人员'),select=node('select');
       const option=node('option','请选择维修人员'); option.value=''; select.append(option);
       for(const worker of workers) {
@@ -481,7 +700,12 @@ function renderDetail(record) {
       actions.append(reject,approve); root.append(actions);
     }
     const reschedule=open('reschedule');
-    if(reschedule) {
+    if(reschedule?.firstSchedule) {
+      const pending=node('section',null,'schedule-section');pending.append(node('h3','等待住户确认'));
+      field(pending,'提议时段',slotText(reschedule.proposedSlot)||timeText(reschedule.proposedTime));
+      field(pending,'确认期限',timeText(reschedule.deadline));
+      pending.append(node('p','住户同意或超时后才生效，物业不能代为确认。','muted'));root.append(pending);
+    } else if(reschedule) {
       root.append(node('p','改约待对方回应。已与双方电话核实后，可代为确认或保持原约定。','detail-guidance'));
       const reason=textBox('跟进说明（保持原约定时必填）','例如：已电话联系师傅，同意下午上门');
       const actions=node('div',null,'actions'),decline=node('button','保持原约定'),accept=node('button','确认新时间','primary');
@@ -496,7 +720,7 @@ function renderDetail(record) {
     // 回复反馈、处理异议、核实内容与费用、一般跟进：只追加记录，不改变工单状态。
     const label=node('label','物业记录'),target=node('select');
     for(const [value,text,show] of [['feedback','回复问题反馈',Boolean(feedback)],['objection','处理撤销异议',Boolean(objection)],
-      ['verify','核实处理内容和费用',(record.rounds||[]).some(round=>round.completedAt)],['follow','跟进记录',true]]) {
+      ['verify','核实处理内容和费用',(record.rounds||[]).some(round=>round.completedAt)],['resolveNeedsAdmin','已处理协助请求',Boolean(record.needsAdmin)],['follow','跟进记录',true]]) {
       if(!show) continue;
       const item=node('option',text); item.value=value; target.append(item);
     }
@@ -509,7 +733,8 @@ function renderDetail(record) {
     const save=node('button','保存记录');
     save.onclick=()=>{
       if(!require(content,'请填写记录内容')) return;
-      const body={revision,target:target.value,content:content.value.trim()};
+      const body={revision,target:target.value==='resolveNeedsAdmin'?'follow':target.value,content:content.value.trim()};
+      if(target.value==='resolveNeedsAdmin')body.resolveNeedsAdmin=true;
       if(target.value==='verify'&&cost.value!=='') body.cost=Number(cost.value);
       mutate(save,`${base}/notes`,body,'POST');
     };
@@ -598,9 +823,11 @@ async function revokePush() {
   localStorage.removeItem('haven-admin-push-revoke-pending');
 }
 async function openNotification(id) {
+  if (loading) { message('正在刷新数据，请稍后打开工单'); return; }
   const generation = epoch;
   const note = await api('/notifications/'+encodeURIComponent(id)+'/read','POST');
   if (generation !== epoch) return;
+  if (loading) { message('正在刷新数据，请稍后打开工单'); return; }
   setTab('repairs');
   await load();
   if (generation !== epoch) return;
@@ -617,15 +844,18 @@ async function loadNotifications() {
   const items=notes.filter(note=>note.active).map(note=>{
     const item=node('div',null,'panel-heading');
     const content=node('div');
-    content.append(node('strong',note.body));
+    content.append(node('strong',note.title||note.body));
+    if(note.title)content.append(node('p',note.body));
     const states=note.deliveries.map(d=>d.status==='accepted'?'推送服务已接收，送达未确认'
-      :d.stopped?'已停止自动重试，请点“重试提醒”':d.status==='failed'?`${d.reason}（第 ${d.attempts} 次失败）`:d.reason||'等待发送');
-    content.append(node('p',states.length?[...new Set(states)].join('；'):'尚未登记接收设备，待办已保存','muted'));
+      :d.stopped?(note.kind==='info'?'已停止自动重试':'已停止自动重试，请点“重试提醒”'):d.status==='failed'?`${d.reason}（第 ${d.attempts} 次失败）`:d.reason||'等待发送');
+    content.append(node('p',states.length?[...new Set(states)].join('；'):(note.kind==='info'?'尚未登记接收设备，通知已保存':'尚未登记接收设备，待办已保存'),'muted'));
     const open=node('button','打开工单','quiet');
     open.onclick=()=>guarded(open,()=>openNotification(note.id));
     const retry=node('button','重试提醒','quiet');
     retry.onclick=()=>guarded(retry,async()=>{await api('/notifications/'+encodeURIComponent(note.id)+'/retry','POST');await loadNotifications();});
-    item.append(content,open,retry);return item;
+    item.append(content,open);
+    if(note.kind!=='info')item.append(retry);
+    return item;
   });
   $('notification-list').replaceChildren(...(items.length?items:[node('p','暂无待处理通知','muted')]));
 }

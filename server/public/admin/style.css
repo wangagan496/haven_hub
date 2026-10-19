@@ -239,3 +239,25 @@ dialog::backdrop { background: #19382b66; backdrop-filter: blur(3px); }
 }
 .todo-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .todo-tag { padding: 1px 6px; border-radius: 4px; background: #fbeeed; color: #af6259; font-size: 9px; }
+.schedule-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.schedule-tag { padding: 2px 6px; border-radius: 4px; color: #42614f; background: #eef4ef; font-size: 10px; }
+.schedule-tag.urgent, .detail-guidance.urgent { color: #a63d30; background: #fff0ec; }
+.shift-reason { display: block; color: #975042; font-size: 12px; }
+.schedule-section { margin: 16px 0; padding: 14px; border: 1px solid #dfe8e2; border-radius: 8px; }
+.schedule-section h3 { margin: 0 0 12px; font-size: 15px; color: #355643; }
+.schedule-section label { display: block; margin: 10px 0; }
+.schedule-section input[type=checkbox] { width: auto; margin-left: 10px; }
+.schedule-section button { margin: 6px 6px 0 0; }
+.schedule-section select, .schedule-section textarea { width: 100%; }
+.dispatch-slot { margin: 12px 0; padding: 12px 0; border-top: 1px solid #e2ece5; }
+.capacity-layout { grid-template-columns: minmax(0, 1fr); }
+.capacity-layout #content { padding: 0 16px 16px; }
+.capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 10px; }
+.capacity-grid input { width: 100%; min-width: 0; }
+.capacity-grid small { display: block; color: #60776a; margin-top: 6px; }
+.capacity-scroll { overflow-x: auto; }
+.capacity-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.capacity-table th, .capacity-table td { padding: 7px 4px; border-bottom: 1px solid #e2ece5; text-align: left; white-space: nowrap; }
+.capacity-table input { width: 65px; padding: 7px 4px; }
+.capacity-table input::placeholder { color: #929d96; }
+.capacity-table button { padding: 6px; font-size: 11px; }
