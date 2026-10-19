@@ -252,7 +252,7 @@ class _LoginPageState extends State<LoginPage> {
         backgroundColor: Colors.transparent,
         centerTitle: true,
       ),
-      body: Container(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: <Widget>[

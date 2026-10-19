@@ -350,7 +350,8 @@ class _MinePageState extends State<MinePage> {
           color: _backgroundColor,
           child: SafeArea(
             bottom: false,
-            child: Column(
+            child: ListView(
+              padding: EdgeInsets.zero,
               children: <Widget>[
                 const SizedBox(
                   height: 64,
@@ -528,7 +529,6 @@ class _MinePageState extends State<MinePage> {
                         .toList(growable: false),
                   ),
                 ),
-                const Spacer(),
               ],
             ),
           ),

@@ -13,6 +13,10 @@
       "value": "米范社区"
     },
     {
+      "name": "pasteboard_permission_reason",
+      "value": "用于将复制的手机号或验证码粘贴到输入框"
+    },
+    {
       "name": "camera_permission_reason",
       "value": "Used to take a profile photo"
     },
