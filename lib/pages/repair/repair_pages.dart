@@ -23,6 +23,7 @@ import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
 import '../../widgets/async_state_view.dart';
+import '../../widgets/notification_actions.dart';
 import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
@@ -180,7 +181,7 @@ class _RepairListPageState extends State<RepairListPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: AppColors.background,
-        appBar: AppBar(title: const Text('我的报修')),
+        appBar: AppBar(title: const Text('我的报修'), actions: const [NotificationInboxButton()]),
         body: Column(children: <Widget>[
           // 筛选按钮行
           Container(
@@ -535,6 +536,8 @@ class _RepairDetailPageState extends State<RepairDetailPage> {
       child: Scaffold(
         backgroundColor: AppColors.background,
         appBar: AppBar(title: const Text('报修详情'), actions: <Widget>[
+          if (record != null) RepairReminderButton(repairId: record.id),
+          const NotificationInboxButton(),
           IconButton(
               tooltip: '刷新进度',
               onPressed: _loading ? null : _load,

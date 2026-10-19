@@ -9,6 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="./brand.svg">
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
+  <script src="./push.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">跳到主要内容</a>
@@ -60,6 +61,11 @@
       <div class="breadcrumb">社区管理 <span>/</span> <span id="breadcrumb-page">房屋审核</span></div>
       <div class="page-heading"><div><h1 id="title">房屋审核</h1><p id="page-description" class="muted">查看住户提交的房屋资料，及时完成审核。</p></div><div class="date-block"><time id="today"></time><small id="updated-at">尚未更新</small></div></div>
       <div id="stats" class="stats" aria-label="业务概览"></div>
+      <section class="records-panel" aria-label="报修通知与待办">
+        <div class="panel-heading"><h2>报修通知与待办</h2><div><button id="enable-push" class="quiet">开启系统通知</button><button id="disable-push" class="quiet">停用本机推送</button><button id="refresh-notifications" class="quiet">刷新待办</button></div></div>
+        <p class="muted">阅读或划掉通知不会处理待办。推送服务已接收不代表设备已收到。</p>
+        <div id="notification-list" aria-live="polite"></div>
+      </section>
       <div class="desk-grid">
         <section class="records-panel queue-panel" aria-labelledby="list-title">
           <div class="panel-heading"><div><h2 id="list-title">房屋资料</h2><span id="result-count" class="muted"></span></div><button id="refresh" class="quiet">刷新 <span aria-hidden="true">↻</span></button></div>

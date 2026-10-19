@@ -48,6 +48,10 @@ class AppRoutes {
   static const String visitorDetail = '/visitor-detail';
   static const String visitorForm = '/visitor-form';
 
+  /// 报修通知与待办；带通知 id 时打开对应工单。
+  static const String notifications = '/notifications';
+  static String notificationDetail(String id) => '$notifications/$id';
+
   // ==================== 类型安全的导航方法 ====================
 
   /// 导航到登录页。

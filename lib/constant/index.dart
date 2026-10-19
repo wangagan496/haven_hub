@@ -89,6 +89,15 @@ class HttpPath {
   static const String repair = 'repair';
   static const String repairItem = 'repairItem';
   static const String visitor = 'visitor';
+  static const String notifications = 'notifications';
+  static const String notificationConfig = 'notifications/config';
+  static const String notificationDevices = 'notifications/devices';
+  static const String notificationUnregister = 'notifications/unregister';
+  static String notificationAction(String id, String action) =>
+      'notifications/${Uri.encodeComponent(id)}/$action';
+  /// 提醒对方处理该工单上的待办。
+  static String repairRemind(String repairId) =>
+      'notifications/repairs/${Uri.encodeComponent(repairId)}/remind';
   static const String workerRepairs = 'worker/repairs';
   static String workerRepair(String id) => '$workerRepairs/${Uri.encodeComponent(id)}';
   static String workerRepairAction(String id, String action) => '${workerRepair(id)}/$action';

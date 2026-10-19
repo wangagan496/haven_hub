@@ -3,10 +3,23 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { FlutterAbility, FlutterEngine, Log } from '@ohos/flutter_ohos';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
 import VisitorPassSharePlugin from '../VisitorPassSharePlugin';
+import PushPlugin from '../PushPlugin';
+import { AbilityConstant, Want } from '@kit.AbilityKit';
 
 const TAG = 'EntryAbility';
 
 export default class EntryAbility extends FlutterAbility {
+  private readonly pushPlugin: PushPlugin = new PushPlugin();
+
+  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    super.onCreate(want, launchParam);
+    this.pushPlugin.receiveWant(want);
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    super.onNewWant(want, launchParam);
+    this.pushPlugin.receiveWant(want);
+  }
   // On the Windows emulator, rebuilding the surface after the engine's
   // background GpuReclaim teardown intermittently fails in the host GL layer
   // (host qemu.log: get_host_texture_id fails, then GL error 502 for every
@@ -19,6 +32,7 @@ export default class EntryAbility extends FlutterAbility {
     super.configureFlutterEngine(flutterEngine)
     GeneratedPluginRegistrant.registerWith(flutterEngine)
     flutterEngine.getPlugins()?.add(new VisitorPassSharePlugin());
+    flutterEngine.getPlugins()?.add(this.pushPlugin);
   }
 
   onBackground() {

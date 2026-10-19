@@ -9,6 +9,7 @@ import '../pages/house/house_list.dart';
 import '../pages/location/location_list.dart';
 import '../pages/login/index.dart';
 import '../pages/notice_detail/index.dart';
+import '../pages/notifications/notification_page.dart';
 import '../pages/profile/index.dart';
 import '../pages/repair/repair_pages.dart';
 import '../pages/room/room_list.dart';
@@ -31,7 +32,8 @@ Widget _requireLogin(
       future: tokenManager.init(),
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+              body: Center(child: CircularProgressIndicator()));
         }
         if (snapshot.hasError || tokenManager.getToken().isEmpty) {
           return LoginPage(toName: routeName, toArguments: arguments);
@@ -43,6 +45,14 @@ Widget _requireLogin(
   return builder();
 }
 
+/// 冷启动初始路由的页面栈：首页之上只放目标页，不按 "/" 逐级拆分。
+///
+/// 无法识别的目标页由调用方生成路由时过滤掉，最终只剩首页。
+List<String> initialRouteNames(String initialRoute) =>
+    initialRoute.isEmpty || initialRoute == AppRoutes.home
+        ? const <String>[AppRoutes.home]
+        : <String>[AppRoutes.home, initialRoute];
+
 /// 根据路由名称生成对应的页面组件。
 ///
 /// 使用 [AppRoutes] 中定义的路由常量匹配路径。
@@ -52,6 +62,14 @@ Widget? getRouteWidget(
   required AnnouncementDetailLoader announcementDetailLoader,
   Object? arguments,
 }) {
+  final Match? notification = routeName == null
+      ? null
+      : RegExp('^${AppRoutes.notifications}(?:/([a-f0-9-]{36}))?\$')
+          .firstMatch(routeName);
+  if (notification != null) {
+    return _requireLogin(routeName!, arguments,
+        () => NotificationPage(notificationId: notification.group(1)));
+  }
   return switch (routeName) {
     AppRoutes.home => TabsPage(announcementLoader: announcementLoader),
     AppRoutes.noticeDetail => NoticeDetail(

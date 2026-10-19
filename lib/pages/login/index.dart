@@ -171,7 +171,7 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       final String? toName = widget.toName;
-      if (result['role'] == 'worker') {
+      if (result['role'] == 'worker' && !(toName?.startsWith(AppRoutes.notifications) ?? false)) {
         // 师傅工作台由 TabsPage 按角色承载，登出事件也由它统一处理。
         await Navigator.pushNamedAndRemoveUntil<void>(
             context, AppRoutes.home, (_) => false);

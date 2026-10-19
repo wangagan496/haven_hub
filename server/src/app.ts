@@ -17,7 +17,18 @@ import { CommunityService, announcements, repairItems, visitorSchema } from './c
 import { ApiError, requireValue } from './errors.js';
 import { WorkflowService } from './workflow.js';
 import { RepairService } from './repair-service.js';
-export function createApp(config: Config, options: { now?: () => number; log?: (event: object) => void; workflowWebRoot?: string } = {}) {
+import { Notifications } from './notifications.js';
+import { createPushTransport, type PushTransport } from './push-transport.js';
+
+/**
+ * web/push.js 所在目录的候选位置：tsx 直接运行 server/src/app.ts 时是 ../../web/，
+ * npm start 运行 server/dist/src/app.js 时是 ../../../web/。
+ */
+export function pushRootCandidates(moduleUrl: string) {
+  return ['../../web/', '../../../web/'].map(path => fileURLToPath(new URL(path, moduleUrl)));
+}
+
+export function createApp(config: Config, options: { now?: () => number; log?: (event: object) => void; workflowWebRoot?: string; pushTransport?: PushTransport; pushTimer?: boolean } = {}) {
   const log = options.log ?? ((event: object) => process.stdout.write(`${JSON.stringify(event)}\n`));
   const store = new Store(config.databasePath);
   const now = options.now ?? Date.now;
@@ -25,7 +36,23 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   const service = new CommunityService(store, config.publicBaseUrl, now);
   const workflow = new WorkflowService(store, now);
   const repairs = new RepairService(store, now, config.propertyPhone, log);
+  const notifications = new Notifications(store, options.pushTransport ?? createPushTransport(config, store, { log }), now, log);
+  // sync 自带保存点并吞掉异常：待办生成失败不会回滚或阻断工单保存。
+  store.onRepairSaved = (owner, record) => { notifications.sync(owner, record); };
   repairs.settleAll();
+  for (const row of store.db.prepare('SELECT userId,payload FROM repairs').all()) {
+    // 单条损坏记录只跳过并记日志，不能让服务启动失败。
+    try { notifications.sync(String(row.userId), JSON.parse(String(row.payload))); }
+    catch (error) { log({ event: 'notification_startup_sync_failed', type: error instanceof Error ? error.name : 'unknown' }); }
+  }
+  const pushTimer = options.pushTimer === false ? undefined : setInterval(() => {
+    void Promise.resolve().then(() => {
+      repairs.settleAll();
+      return notifications.dispatch();
+    }).catch(error => log({ event: 'push_dispatch_failed', type: error instanceof Error ? error.name : 'unknown' }));
+  }, 10_000);
+  pushTimer?.unref();
+  store.beforeClose = () => { clearInterval(pushTimer); void notifications.stop(); };
   service.repairList = userId => repairs.residentList(userId);
   const app = express();
   app.disable('x-powered-by');
@@ -44,6 +71,10 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   } }));
   app.use(express.json({ limit: '128kb' }));
   const sourcePublic = fileURLToPath(new URL('../public/admin/', import.meta.url));
+  const pushRoots = pushRootCandidates(import.meta.url);
+  const pushRoot = pushRoots.find(root => existsSync(join(root, 'push.js'))) ?? pushRoots[0]!;
+  app.get('/admin/push.js', (_req,res) => res.sendFile(join(pushRoot,'push.js')));
+  app.get('/admin/push/sw.js', (_req,res) => res.sendFile(join(pushRoot,'push','sw.js')));
   app.use('/admin', express.static(existsSync(sourcePublic) ? sourcePublic : fileURLToPath(new URL('../../public/admin/', import.meta.url))));
   if (options.workflowWebRoot) {
     // Only the demo opts in to serving the compiled Flutter app. API authorization stays below.
@@ -68,11 +99,15 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   const authLimit = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
     message: { code: 42900, message: '请求过于频繁，请稍后重试', data: null } });
   app.use(['/code', '/login', '/refreshToken'], authLimit);
+  // 解绑单独计数：客户端启动时重试解绑，不能占用同一 IP 的登录配额。
+  const unregisterLimit = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+    message: { code: 42900, message: '请求过于频繁，请稍后重试', data: null } });
   app.get('/health', (_req, res) => res.json(ok({ mode: 'local-learning', sms: false })));
   app.get('/ready', (_req, res) => { store.one('SELECT 1'); res.json(ok({ ready: true })); });
   app.get('/code', (req, res) => res.json(ok(auth.sendCode(req.query.mobile))));
   app.post('/login', (req, res) => res.json(ok(auth.login(req.body))));
   app.post('/refreshToken', (req, res) => res.json(ok(auth.refresh(req.get('authorization')))));
+  app.post('/notifications/unregister', unregisterLimit, (req,res) => res.json(ok(notifications.unregister(req.body))));
   app.get('/announcement', (_req, res) => res.json(ok(announcements)));
   app.get('/announcement/:id', (req, res) => {
     const value = announcements.find(item => item.id === req.params.id);
@@ -93,6 +128,21 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   app.get('/userInfo', (_req, res) => res.json(ok(service.profile(res.locals.userId))));
   app.put('/userInfo', (req, res) => res.json(ok(service.updateProfile(res.locals.userId, req.body))));
   app.get('/contacts', (_req, res) => res.json(ok({ propertyPhone: config.propertyPhone })));
+  app.get('/notifications/config', (_req,res) => res.json(ok(notifications.config(res.locals.userId))));
+  app.post('/notifications/devices', (req,res) => res.json(ok(notifications.register(res.locals.userId,req.body))));
+  app.get('/notifications', (_req,res) => {
+    repairs.settleAll();
+    res.json(ok(notifications.list(res.locals.userId)));
+  });
+  app.post('/notifications/:id/read', (req,res) => res.json(ok(notifications.read(res.locals.userId,req.params.id))));
+  app.post('/notifications/:id/retry', (req,res) => {
+    repairs.settleAll();
+    res.json(ok(notifications.retry(res.locals.userId,req.params.id)));
+  });
+  app.post('/notifications/repairs/:id/remind', (req,res) => {
+    repairs.settleAll();
+    res.json(ok(notifications.remind(res.locals.userId,req.params.id)));
+  });
   app.use('/management', (_req, res, next) => { workflow.requireRole(res.locals.userId, 'admin'); next(); });
   app.get('/management/rooms', (_req, res) => res.json(ok(workflow.rooms())));
   app.put('/management/rooms/:id/review', (req, res) => res.json(ok(workflow.review(req.params.id, res.locals.userId, req.body))));
@@ -185,5 +235,5 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
     }
   };
   app.use(handleError);
-  return { app, store };
+  return { app, store, notifications };
 }

@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('haven-admin-token') || '';
 let tab = 'rooms', rows = [], workers = [], loading = false, epoch = 0, selectedId = '';
 let dataset = {rooms: [], repairs: [], workers: []};
+let pushChanging = false, pushGeneration = 0, pushDisabling = null;
 const roomStatus = {1:'待审核',2:'已通过',3:'已打回'};
 const repairStatus = {0:'已取消',1:'待派单',2:'处理中',3:'已完成',4:'已取消',5:'待接单',6:'待住户确认'};
 // 选中“待办”时只显示有待办标签的工单；急单优先，其余按时间倒序。
@@ -20,6 +21,7 @@ function node(tag, text, className) {
 }
 function message(text='') { $('message').textContent=text; }
 function logout() {
+  void disablePush().catch(() => {});
   epoch++;
   loading=false;
   token='';
@@ -37,6 +39,7 @@ function logout() {
   message();
   rows=[]; workers=[];
   dataset={rooms:[],repairs:[],workers:[]};
+  $('notification-list').replaceChildren();
 }
 async function api(path, method='GET', body) {
   const requestToken=token;
@@ -95,6 +98,14 @@ async function enter() {
   $('today').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
   setTab('rooms');
   await load();
+  try { await loadNotifications(); }
+  catch (error) { if (generation === epoch) message(error.message); }
+  void enablePush(true).catch(() => {});
+  const notificationId = new URL(location.href).searchParams.get('notification');
+  if (notificationId && /^[a-f0-9-]{36}$/.test(notificationId)) {
+    try { await openNotification(notificationId); }
+    catch (error) { if (generation === epoch) message(error.message); }
+  }
 }
 $('logout').onclick=logout;
 $('refresh').onclick=()=>load();
@@ -355,6 +366,14 @@ function renderDetail(record) {
   heading.append(node('span',tab==='repairs'?'报修工单 / 记录详情':'住户资料 / 审核详情','eyebrow'));
   const title=tab==='rooms'?[record.point,record.building,record.room].filter(Boolean).join(' '):record.repairItemName;
   heading.append(node('h2',title||pages[tab].title));
+  if(tab==='repairs') {
+    const remind=node('button','提醒对方处理待办','quiet');
+    remind.onclick=()=>guarded(remind,async()=>{
+      await api('/notifications/repairs/'+encodeURIComponent(record.id)+'/remind','POST');
+      message('已加入提醒队列，实际送达以系统通知为准。');
+    });
+    heading.append(remind);
+  }
   if(tab!=='workers') {
     const status=(tab==='rooms'?roomStatus:repairStatus)[record.status]||'状态未知';
     const tone=(tab==='rooms'?record.status===2:record.status===3)?'done':tab==='rooms'&&record.status===3?'rejected':tab==='repairs'&&record.status===2?'processing':[0,4].includes(record.status)?'cancelled':'';
@@ -497,4 +516,122 @@ function renderDetail(record) {
     const actions=node('div',null,'actions'); actions.append(save); root.append(actions);
   }
 }
+async function pushCall(request) {
+  if (!window.havenPush) throw Error('通知服务尚未加载，请刷新页面');
+  const result = JSON.parse(await window.havenPush(JSON.stringify(request)));
+  if (result.error) throw Error(result.error);
+  return result;
+}
+async function enablePush(resume=false) {
+  if (!token) return;
+  if (pushChanging) {
+    if (resume) return;
+    throw Error('通知设置正在处理，请稍后再试');
+  }
+  pushChanging = true;
+  const generation = epoch;
+  const settingGeneration = pushGeneration;
+  const cancelled = () => generation !== epoch || settingGeneration !== pushGeneration || !token;
+  let registeredId = '';
+  try {
+  if (!resume) await pushCall({action:'requestPermission'});
+  await pushDisabling;
+  if (cancelled()) return;
+  if (localStorage.getItem('haven-admin-push-revoke-pending')) {
+    await disablePush();
+    if (resume) return;
+    throw Error('旧订阅已解绑，请再次开启系统通知');
+  }
+  if (!resume && localStorage.getItem('haven-admin-push-stale')) {
+    // 上次平台解绑没成功：开启前尽力再清理一次，失败也继续。
+    try { await pushCall({action:'disable'}); } catch { /* 服务端早已解绑。 */ }
+    localStorage.removeItem('haven-admin-push-stale');
+  }
+  const config = await api('/notifications/config');
+  if (cancelled()) return;
+  const registration = await pushCall({action:resume?'resume':'enable', publicKey:config.webPublicKey, profileId:config.profileId});
+  if (!registration.platform) return;
+  if (cancelled()) { await pushCall({action:'disable'}); return; }
+  registeredId = registration.installationId;
+  localStorage.setItem('haven-admin-push-installation',registration.installationId);
+  await api('/notifications/devices','POST',registration);
+  if (cancelled()) throw Error('登录或通知设置已变化，请重试');
+  // 登记已完成，后面待办加载失败不能回滚订阅。
+  registeredId = '';
+  if (!resume) message('设备已登记，实际送达请以系统通知为准。');
+  await loadNotifications();
+  } catch (error) {
+    if (resume && !cancelled()) {
+      // 同一会话的恢复失败（断网、超时）保留订阅，提示后下次进入页面再试。
+      message('系统通知暂时无法恢复：'+(error.message||'请稍后重试')+'；待办仍保留。');
+      throw error;
+    }
+    if (registeredId) {
+      try { await pushDisabling; } catch { /* Retry after the previous cleanup. */ }
+      localStorage.setItem('haven-admin-push-installation',registeredId);
+      try { await disablePush(); } catch { /* Preserve the registration error. */ }
+    }
+    throw error;
+  } finally { pushChanging = false; }
+}
+function disablePush() {
+  pushGeneration++;
+  return pushDisabling ||= revokePush().finally(() => { pushDisabling = null; });
+}
+// 与 App 一致：账号隔离以服务端解绑为准；浏览器订阅解绑失败只记为待清理，不阻塞再次开启。
+async function revokePush() {
+  const id = localStorage.getItem('haven-admin-push-installation');
+  localStorage.setItem('haven-admin-push-revoke-pending','true');
+  let platformDisabled = false;
+  try { await pushCall({action:'disable'}); platformDisabled = true; } catch { /* 见下方 stale 标记。 */ }
+  if (id) {
+    let done = false;
+    try {
+      const response = await fetch('/notifications/unregister',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({installationId:id})});
+      const result = await response.json();
+      done = response.ok && result.code === 10000;
+    } catch { /* 网络失败，保留 pending。 */ }
+    if (!done) throw Error('服务端解绑未完成，请联网后重试');
+    localStorage.removeItem('haven-admin-push-installation');
+  }
+  if (!platformDisabled) localStorage.setItem('haven-admin-push-stale','true');
+  localStorage.removeItem('haven-admin-push-revoke-pending');
+}
+async function openNotification(id) {
+  const generation = epoch;
+  const note = await api('/notifications/'+encodeURIComponent(id)+'/read','POST');
+  if (generation !== epoch) return;
+  setTab('repairs');
+  await load();
+  if (generation !== epoch) return;
+  $('filter').value='';
+  selectedId=note.repairId;
+  renderQuickFilters();renderStats();render();
+  $('detail-panel').scrollIntoView({block:'start',behavior:'smooth'});
+}
+async function loadNotifications() {
+  if (!token) return;
+  const generation=epoch;
+  const notes=await api('/notifications');
+  if (generation!==epoch) return;
+  const items=notes.filter(note=>note.active).map(note=>{
+    const item=node('div',null,'panel-heading');
+    const content=node('div');
+    content.append(node('strong',note.body));
+    const states=note.deliveries.map(d=>d.status==='accepted'?'推送服务已接收，送达未确认'
+      :d.stopped?'已停止自动重试，请点“重试提醒”':d.status==='failed'?`${d.reason}（第 ${d.attempts} 次失败）`:d.reason||'等待发送');
+    content.append(node('p',states.length?[...new Set(states)].join('；'):'尚未登记接收设备，待办已保存','muted'));
+    const open=node('button','打开工单','quiet');
+    open.onclick=()=>guarded(open,()=>openNotification(note.id));
+    const retry=node('button','重试提醒','quiet');
+    retry.onclick=()=>guarded(retry,async()=>{await api('/notifications/'+encodeURIComponent(note.id)+'/retry','POST');await loadNotifications();});
+    item.append(content,open,retry);return item;
+  });
+  $('notification-list').replaceChildren(...(items.length?items:[node('p','暂无待处理通知','muted')]));
+}
+$('enable-push').onclick=()=>guarded($('enable-push'),()=>enablePush());
+$('disable-push').onclick=()=>guarded($('disable-push'),async()=>{await disablePush();message('本机推送已停用，待办仍保留。');});
+$('refresh-notifications').onclick=()=>guarded($('refresh-notifications'),loadNotifications);
+window.addEventListener('haven-notification',event=>{if(token)void openNotification(event.detail).catch(error=>message(error.message));});
+setInterval(()=>{if(token && !document.hidden)void loadNotifications().catch(()=>{});},30000);
 if(token) enter().catch(error=>{logout();message(error.message);});

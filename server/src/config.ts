@@ -12,6 +12,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     CORS_ORIGINS: z.string().default('http://localhost:8080,http://127.0.0.1:8080'),
     DATABASE_PATH: z.string().default('data/haven.sqlite'),
     AUTH_MODE: z.literal('development').default('development'),
+    WEB_PUSH_SUBJECT: z.string().regex(/^(mailto:|https:)/).default('https://localhost'),
+    HUAWEI_PUSH_PROJECT_ID: z.string().regex(/^[0-9]*$/).default(''),
+    HUAWEI_PUSH_KEY_FILE: z.string().default(''),
+    HUAWEI_PUSH_CATEGORY: z.string().regex(/^[A-Z_]+$/).default('MARKETING'),
+    HUAWEI_PUSH_TEST_MESSAGE: z.enum(['true','false']).default('true'),
     // 物业联系电话对住户和师傅可见；默认是虚构号码，演示时可在 .env 中修改。
     PROPERTY_PHONE: z.string().trim().regex(/^[0-9+\- ]{5,20}$/, 'PROPERTY_PHONE 格式不正确').default('020-88888888'),
   }).parse(env);
@@ -30,6 +35,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     origins: config.CORS_ORIGINS.split(',').map(value => value.trim()).filter(Boolean),
     databasePath: config.DATABASE_PATH === ':memory:' ? ':memory:' : resolve(config.DATABASE_PATH),
     propertyPhone: config.PROPERTY_PHONE,
+    webPushSubject: config.WEB_PUSH_SUBJECT,
+    huaweiProjectId: config.HUAWEI_PUSH_PROJECT_ID,
+    huaweiKeyFile: config.HUAWEI_PUSH_KEY_FILE ? resolve(config.HUAWEI_PUSH_KEY_FILE) : '',
+    huaweiPushCategory: config.HUAWEI_PUSH_CATEGORY,
+    huaweiTestMessage: config.HUAWEI_PUSH_TEST_MESSAGE === 'true',
   };
 }
 export type Config = ReturnType<typeof readConfig>;

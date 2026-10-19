@@ -7,13 +7,15 @@ export type RecordData = { id: string; [key: string]: unknown };
 
 // 同步 SQLite 连接串行运行短事务。仅面向本地学习，无连接池或后台任务。
 export class Store {
+  onRepairSaved?: (owner: string, record: RecordData) => void;
+  beforeClose?: () => void;
   readonly db: DatabaseSync;
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-    if (version !== 0 && version !== 1 && version !== 2) throw new Error('数据库版本不兼容');
+    if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('数据库版本不兼容');
     if (version === 0) this.transaction(() => {
       this.db.exec(`
         CREATE TABLE users (id TEXT PRIMARY KEY, mobile TEXT NOT NULL UNIQUE, nickName TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT '');
@@ -32,6 +34,25 @@ export class Store {
     });
     if (version === 0 || version === 1) this.transaction(() => {
       this.db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'resident' CHECK(role IN ('resident','admin','worker')); PRAGMA user_version = 2;");
+    });
+    // 推送表。早期版本在 user_version 2 下直接建过这些表，所以用 IF NOT EXISTS 兼容。
+    if (version !== 3) this.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS push_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS push_devices (id TEXT PRIMARY KEY, userId TEXT NOT NULL REFERENCES users(id), platform TEXT NOT NULL,
+          endpointHash TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, updatedAt INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, userId TEXT NOT NULL REFERENCES users(id), repairId TEXT NOT NULL,
+          taskKey TEXT NOT NULL, role TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, active INTEGER NOT NULL, createdAt INTEGER NOT NULL,
+          readAt INTEGER, remindedAt INTEGER NOT NULL DEFAULT 0, UNIQUE(userId,repairId,taskKey));
+        CREATE TABLE IF NOT EXISTS push_deliveries (notificationId TEXT NOT NULL REFERENCES notifications(id), deviceId TEXT NOT NULL,
+          status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '',
+          lease TEXT NOT NULL DEFAULT '', PRIMARY KEY(notificationId,deviceId));
+        CREATE INDEX IF NOT EXISTS notifications_user ON notifications(userId,active,createdAt);
+      `);
+      if (!this.db.prepare('PRAGMA table_info(push_deliveries)').all().some(column => column.name === 'lease')) {
+        this.db.exec("ALTER TABLE push_deliveries ADD COLUMN lease TEXT NOT NULL DEFAULT ''");
+      }
+      this.db.exec('PRAGMA user_version = 3;');
     });
   }
   private depth = 0;
@@ -86,6 +107,7 @@ export class Store {
       .run(JSON.stringify(record), userId, record.id);
     else this.db.prepare(`INSERT INTO ${table}(id, userId, payload) VALUES (?, ?, ?)`)
       .run(record.id, userId, JSON.stringify(record));
+      if (table === 'repairs') this.onRepairSaved?.(userId, record);
     });
   }
   delete(table: Collection, userId: string, id: string) {
@@ -93,5 +115,5 @@ export class Store {
   }
   one(sql: string, ...values: SQLInputValue[]) { return this.db.prepare(sql).get(...values); }
   run(sql: string, ...values: SQLInputValue[]) { return this.db.prepare(sql).run(...values); }
-  close() { this.db.close(); }
+  close() { this.beforeClose?.(); this.db.close(); }
 }

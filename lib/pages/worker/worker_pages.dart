@@ -9,6 +9,7 @@ import '../../utils/date_utils.dart';
 import '../../utils/toast.dart';
 import '../../utils/token_manager.dart';
 import '../../utils/worker_repair_read_store.dart';
+import '../../widgets/notification_actions.dart';
 import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
@@ -112,6 +113,7 @@ class _WorkerPageState extends State<WorkerPage> {
           title: const Text('维修工作台'),
           automaticallyImplyLeading: false,
           actions: <Widget>[
+            const NotificationInboxButton(),
             IconButton(
                 tooltip: '刷新工单',
                 onPressed: _loading ? null : _load,
@@ -616,6 +618,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('维修工单'), actions: <Widget>[
+        if (record != null) RepairReminderButton(repairId: record.id),
+        const NotificationInboxButton(),
         IconButton(
             tooltip: '刷新工单',
             onPressed: _loading || _saving ? null : _load,

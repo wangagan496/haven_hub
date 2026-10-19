@@ -23,7 +23,7 @@ test('version one database migration preserves resident data and defaults role s
   original.store.db.exec('ALTER TABLE users DROP COLUMN role; PRAGMA user_version = 1;');
   await original.close();
   const migrated = await fixture(t, path);
-  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 2);
+  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 3);
   assert.equal((await migrated.request('GET', '/userInfo', session.token)).data.role, 'resident');
   assert.equal((await migrated.request('GET', `/room/${house.record.id}`, session.token)).data.name, house.record.name);
   await migrated.close();

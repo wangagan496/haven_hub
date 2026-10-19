@@ -13,6 +13,7 @@ import 'router/index.dart';
 import 'theme/app_theme.dart';
 import 'utils/logger.dart';
 import 'widgets/error_boundary.dart';
+import 'widgets/push_lifecycle.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -60,7 +61,7 @@ class HavenHubApp extends StatelessWidget {
               }
             },
           },
-          child: child ?? const SizedBox.shrink(),
+          child: PushLifecycle(child: child ?? const SizedBox.shrink()),
         ),
 
         // 国际化配置
@@ -76,21 +77,14 @@ class HavenHubApp extends StatelessWidget {
         ],
 
         initialRoute: '/',
-        onGenerateRoute: (RouteSettings settings) {
-          final Widget? page = getRouteWidget(
-            settings.name,
-            announcementLoader: announcementLoader,
-            announcementDetailLoader: announcementDetailLoader,
-            arguments: settings.arguments,
-          );
-          if (page == null) return null;
-
-          // Mutation pages return true to refresh their calling list.
-          return MaterialPageRoute<bool>(
-            settings: settings,
-            builder: (BuildContext context) => ErrorBoundary(child: page),
-          );
-        },
+        // Web 冷启动时地址栏 hash（如通知点击打开的 #/notifications/<id>）会成为初始路由。
+        // 默认实现会按 "/" 逐级拆出 /、/notifications、/notifications/<id> 三层，
+        // 导致同一条通知被打开两次；这里只保留首页加目标页两层。
+        onGenerateInitialRoutes: (String initialRoute) => initialRouteNames(initialRoute)
+            .map((String name) => _route(RouteSettings(name: name)))
+            .whereType<Route<dynamic>>()
+            .toList(),
+        onGenerateRoute: _route,
         onUnknownRoute: (RouteSettings settings) {
           return MaterialPageRoute<void>(
             settings: settings,
@@ -100,6 +94,22 @@ class HavenHubApp extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+
+  Route<dynamic>? _route(RouteSettings settings) {
+    final Widget? page = getRouteWidget(
+      settings.name,
+      announcementLoader: announcementLoader,
+      announcementDetailLoader: announcementDetailLoader,
+      arguments: settings.arguments,
+    );
+    if (page == null) return null;
+
+    // Mutation pages return true to refresh their calling list.
+    return MaterialPageRoute<bool>(
+      settings: settings,
+      builder: (BuildContext context) => ErrorBoundary(child: page),
     );
   }
 }

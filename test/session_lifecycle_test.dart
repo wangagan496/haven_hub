@@ -54,6 +54,39 @@ class _FakeTokenStorage implements TokenStorage {
 }
 
 void main() {
+  test('logout completes without waiting for slow notification cleanup', () async {
+    final storage = _FakeTokenStorage(token: 'a', refreshToken: 'ra');
+    final manager = TokenManager(storage: storage);
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    manager.beforeSessionEnd = () async { entered.complete(); await release.future; };
+    final session = manager.sessionId;
+    // 解绑一直没有返回，登出照样完成。
+    expect(await manager.deleteToken(), isTrue);
+    expect(entered.isCompleted, isTrue);
+    expect(manager.getToken(), isEmpty);
+    expect(manager.sessionId, session + 1);
+    release.complete();
+  });
+
+  test('a failing notification cleanup never breaks logout or account switch', () async {
+    final manager = TokenManager(storage: _FakeTokenStorage(token: 'a'))
+      ..beforeSessionEnd = () async => throw const FormatException('offline');
+    expect(await manager.setToken('b'), isTrue);
+    expect(manager.getToken(), 'b');
+    expect(await manager.deleteToken(), isTrue);
+  });
+
+  test('token refresh retains push binding but replacement login revokes it', () async {
+    final manager = TokenManager(storage: _FakeTokenStorage(token: 'a'));
+    var calls = 0;
+    manager.beforeSessionEnd = () async { calls++; };
+    await manager.setRefreshedToken('refreshed', refreshToken: 'refresh');
+    expect(calls, 0);
+    await manager.setToken('b');
+    expect(calls, 1);
+  });
+
   test('queued old refresh cannot overwrite a newer login', () async {
     final _FakeTokenStorage storage =
         _FakeTokenStorage(token: 'a', refreshToken: 'ra');

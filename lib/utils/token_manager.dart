@@ -1,8 +1,21 @@
+import 'dart:async';
+
 import 'token_storage.dart';
 
 class TokenManager {
+  /// 会话结束（登出或换号）时触发，用于解绑系统推送。
+  ///
+  /// 只同步触发、不等待：解绑要走网络，不能拖慢登出或换号。回调自己负责串行化，
+  /// 并在同步阶段先标记"正在解绑"，让新账号的推送登记排在解绑之后。
+  Future<void> Function()? beforeSessionEnd;
   TokenManager({TokenStorage? storage})
       : _storage = storage ?? SharedPreferencesTokenStorage();
+
+  void _notifySessionEnd() {
+    final Future<void> Function()? hook = beforeSessionEnd;
+    if (hook == null) return;
+    unawaited(Future<void>.sync(hook).catchError((Object _) {}));
+  }
 
   final TokenStorage _storage;
   Future<void>? _initialization;
@@ -112,6 +125,7 @@ class TokenManager {
     required bool fromRefresh,
   }) async {
     final int writingSessionId = _sessionId;
+    if (!fromRefresh && getToken().isNotEmpty) _notifySessionEnd();
     final bool saved = await _storage.write(token, refreshToken);
     if (_sessionId != writingSessionId) {
       // 等待落盘期间内存会话被作废，不能让迟到的写入恢复登录态。
@@ -144,6 +158,7 @@ class TokenManager {
       _storage.invalidate();
       _sessionId++;
       _refreshSessionVersion = null;
+      _notifySessionEnd();
       final bool cleared = await _storage.clear();
       if (cleared) {
         _sessionVersion++;

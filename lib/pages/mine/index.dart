@@ -6,6 +6,7 @@ import 'package:get/get.dart' hide FormData, MultipartFile;
 import '../../api/user.dart';
 import '../../controller/build_controller.dart';
 import '../../controller/user_info_controller.dart';
+import '../../router/app_routes.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
 import '../../utils/toast.dart';
@@ -50,6 +51,11 @@ class _MinePageState extends State<MinePage> {
       label: '访客记录',
       icon: 'assets/images/visitor_profile_icon@2x.png',
       routeName: VisitorListPage.routeName,
+    ),
+    (
+      label: '报修通知与待办',
+      icon: 'assets/images/repair_profile_icon@2x.png',
+      routeName: AppRoutes.notifications,
     ),
   ];
 
