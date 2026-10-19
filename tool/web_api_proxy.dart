@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-const String _courseApiBaseUrl = 'https://live-api.itheima.net/';
 const String _tencentMapBaseUrl = 'https://apis.map.qq.com/';
 const String _tencentMapProxyPrefix = '/tencent-map/';
 const String _amapBaseUrl = 'https://restapi.amap.com/';
@@ -39,8 +38,7 @@ Future<void> main(List<String> arguments) async {
     options.port,
   );
 
-  stdout.writeln('Web API 开发代理已启动：http://127.0.0.1:$port/');
-  stdout.writeln('课程接口：$_courseApiBaseUrl');
+  stdout.writeln('Web 地图 API 开发代理已启动：http://127.0.0.1:$port/');
   stdout.writeln('腾讯位置服务：$_tencentMapBaseUrl');
   stdout.writeln('高德位置服务：$_amapBaseUrl');
   stdout.writeln('按 Ctrl+C 停止服务。');
@@ -142,18 +140,25 @@ Future<void> _handleRequest(
   final bool isTencentMapRequest =
       request.uri.path.startsWith(_tencentMapProxyPrefix);
   final bool isAmapRequest = request.uri.path.startsWith(_amapProxyPrefix);
+  if (!isTencentMapRequest && !isAmapRequest) {
+    request.response.statusCode = HttpStatus.notFound;
+    await _sendJson(
+      request.response,
+      <String, Object?>{
+        'code': 40400,
+        'message': '地图代理只转发 /tencent-map/ 和 /amap-map/；'
+            '业务接口请把 API_BASE_URL 设为 http://127.0.0.1:3000/',
+        'data': null,
+      },
+    );
+    return;
+  }
   final Uri upstreamBaseUri = Uri.parse(
-    isTencentMapRequest
-        ? _tencentMapBaseUrl
-        : isAmapRequest
-            ? _amapBaseUrl
-            : _courseApiBaseUrl,
+    isTencentMapRequest ? _tencentMapBaseUrl : _amapBaseUrl,
   );
   final String upstreamPath = isTencentMapRequest
       ? '/${request.uri.path.substring(_tencentMapProxyPrefix.length)}'
-      : isAmapRequest
-          ? '/${request.uri.path.substring(_amapProxyPrefix.length)}'
-          : request.uri.path;
+      : '/${request.uri.path.substring(_amapProxyPrefix.length)}';
   final Uri upstreamUri = upstreamBaseUri.replace(
     path: upstreamPath,
     query: request.uri.hasQuery ? request.uri.query : null,
@@ -192,9 +197,7 @@ Future<void> _handleRequest(
           'code': 50200,
           'message': isTencentMapRequest
               ? '开发代理连接腾讯位置服务失败'
-              : isAmapRequest
-                  ? '开发代理连接高德位置服务失败'
-                  : '开发代理连接课程接口失败',
+              : '开发代理连接高德位置服务失败',
           'data': null,
         },
       );
