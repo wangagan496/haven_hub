@@ -37,22 +37,25 @@ jobs:
             exit 0
           fi
 
-          # Collect the commits actually introduced by this event. Taking them
-          # from the payload avoids guessing a revision range, which is where
-          # the previous version silently checked nothing: on a new branch the
-          # "before" sha is all zeroes, `git rev-parse --verify` accepts it, and
-          # the resulting `0000..HEAD` range makes `git log` fail with an empty
-          # result rather than an error the step would notice.
+          # Use a revision range only when its base commit exists locally.
+          # A force push can make the old tip unreachable, so checkout with
+          # fetch-depth: 0 still may not contain it. Check the full new history
+          # in that case instead of silently resolving an empty range.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             range="$BASE_SHA..$HEAD_SHA"
             echo "Pull request range: $range"
-            shas=$(git log --format=%H "$range" || true)
+            shas=$(git log --format=%H "$range")
           elif [ "$BEFORE" != "$zero" ]; then
-            range="$BEFORE..$HEAD_SHA"
-            echo "Push range: $range"
-            shas=$(git log --format=%H "$range" || true)
+            if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              range="$BEFORE..$HEAD_SHA"
+              echo "Push range: $range"
+              shas=$(git log --format=%H "$range")
+            else
+              echo "Previous push commit is unavailable; checking the full current history."
+              shas=$(git log --format=%H "$HEAD_SHA")
+            fi
           else
-            # New branch (or the base is missing): the payload lists the commits.
+            # New branch: the payload lists the commits.
             echo "New branch; using the commit list from the event payload."
             shas=$(printf '%s' "$COMMITS_JSON" | jq -r '.[].id')
           fi
