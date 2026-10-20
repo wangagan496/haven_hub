@@ -3,6 +3,37 @@ import '../models/repair.dart';
 import '../utils/json_utils.dart';
 import '../utils/request_dio.dart';
 
+Future<List<RepairRecord>> getWorkerRepairPoolApi() async {
+  final dynamic data = await requestDio.get(HttpPath.workerRepairPool);
+  if (data is! List<dynamic>) throw const FormatException('可接单列表格式不正确');
+  return data.map((dynamic value) {
+    final row = asMap(value, '可接单');
+    return RepairRecord.fromJson(<String, dynamic>{...row,
+      'houseInfo': '${row['community'] ?? ''} ${row['building'] ?? ''}'.trim()});
+  }).toList();
+}
+
+Future<RepairRecord> claimWorkerRepairApi(RepairRecord record, {String? slot}) async =>
+    RepairRecord.fromJson(asMap(await requestDio.put(HttpPath.workerRepairAction(record.id, 'claim'),
+      data: <String, dynamic>{'revision': record.revision, if (slot != null) 'slot': slot}), '接单结果'));
+
+class WorkerSkills {
+  const WorkerSkills(this.skills, this.revision);
+  factory WorkerSkills.fromJson(Map<String, dynamic> json) => WorkerSkills(
+    (json['skills'] as List<dynamic>).whereType<String>().toList(),
+    (json['workforceRevision'] as num).toInt());
+  final List<String> skills;
+  final int revision;
+}
+
+Future<WorkerSkills> getWorkerSkillsApi() async =>
+    WorkerSkills.fromJson(asMap(await requestDio.get(HttpPath.workerSkills), '我的技能'));
+
+Future<Map<String, dynamic>> saveWorkerSkillsApi(WorkerSkills profile, List<String> skills, {bool preview = false}) async =>
+    asMap(await requestDio.put(HttpPath.workerSkills, data: <String, dynamic>{
+      'workforceRevision': profile.revision, 'skills': skills, 'preview': preview,
+    }), '技能保存');
+
 Future<List<RepairRecord>> getWorkerRepairsApi() async {
   final dynamic data = await requestDio.get(HttpPath.workerRepairs);
   if (data is! List<dynamic>) throw const FormatException('工单列表格式不正确');

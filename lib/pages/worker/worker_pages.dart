@@ -15,6 +15,7 @@ import '../../widgets/repair_dialogs.dart';
 import '../../widgets/repair_photos.dart';
 import '../../widgets/repair_progress.dart';
 import '../../widgets/repair_schedule_card.dart';
+import 'worker_pool_pages.dart';
 
 class WorkerPage extends StatefulWidget {
   const WorkerPage({
@@ -22,12 +23,14 @@ class WorkerPage extends StatefulWidget {
     this.recordLoader = getWorkerRepairApi,
     this.readStore,
     this.tokens,
+    this.skillsLoader = getWorkerSkillsApi,
     super.key,
   });
   final Future<List<RepairRecord>> Function() recordsLoader;
   final Future<RepairRecord> Function(String id) recordLoader;
   final WorkerRepairReadStore? readStore;
   final TokenManager? tokens;
+  final Future<WorkerSkills> Function() skillsLoader;
   @override
   State<WorkerPage> createState() => _WorkerPageState();
 }
@@ -42,6 +45,7 @@ class _WorkerPageState extends State<WorkerPage> {
   bool _loading = false;
   bool _loggingOut = false;
   String? _error;
+  WorkerSkills? _skills;
   @override
   void initState() {
     super.initState();
@@ -64,8 +68,13 @@ class _WorkerPageState extends State<WorkerPage> {
         _records = records;
         _unreadIds = unreadIds;
       });
+      try {
+        final skills = await widget.skillsLoader();
+        if (!mounted || session != _tokens.sessionId) return;
+        setState(() => _skills = skills);
+      } on Object catch (_) { /* 工单可独立使用；技能页可重试查询。 */ }
     } on Object catch (error) {
-      if (mounted) {
+      if (mounted && session == _tokens.sessionId) {
         setState(() {
           _records = <RepairRecord>[];
           _error = describeError(error, fallback: '工单加载失败，请重试');
@@ -125,6 +134,17 @@ class _WorkerPageState extends State<WorkerPage> {
                 child: const Text('退出登录')),
           ]),
       body: Column(children: <Widget>[
+        Wrap(spacing: 12, children: <Widget>[
+          FilledButton(onPressed: () => Navigator.push<void>(context, MaterialPageRoute(builder: (_) => const WorkerPoolPage())), child: const Text('可接单')),
+          TextButton(onPressed: () async {
+            final session = _tokens.sessionId;
+            await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const WorkerSkillsPage()));
+            if (!mounted || session != _tokens.sessionId) return;
+            await _load();
+          }, child: const Text('我的技能')),
+        ]),
+        if (_skills != null && _skills!.skills.isEmpty)
+          const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('请先登记你会的维修技能，登记后才能接新单')),
         Padding(
             padding: const EdgeInsets.all(16),
             child: Wrap(spacing: 12, children: <Widget>[
@@ -684,6 +704,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
                                 style: Theme.of(context).textTheme.titleLarge),
                             const SizedBox(height: 16),
                             ..._workerNotices(record),
+                            if (record.staffingIssue.isNotEmpty)
+                              Text('待协调：${record.staffingIssue}；请联系物业确认安排', style: const TextStyle(color: AppColors.danger)),
                             SelectableText(
                                 '房屋：${record.houseInfo}\n'
                                 '${record.agreedTime.isNotEmpty ? '约定上门' : '住户期望'}：'

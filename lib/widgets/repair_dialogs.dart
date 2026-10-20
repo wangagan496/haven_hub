@@ -6,9 +6,9 @@ import '../theme/app_colors.dart';
 import '../utils/toast.dart';
 import 'repair_slot_picker.dart';
 
-Future<RepairSlot?> pickVisitTime(BuildContext context, {String? initialSlot, String? excludeId,
+Future<RepairSlot?> pickVisitTime(BuildContext context, {String? initialSlot, String? excludeId, String? repairItemId,
   String title = '选择上门时段', RepairSlotsLoader loader = getRepairSlotsApi}) =>
-    pickRepairSlot(context, initialSlot: initialSlot, excludeId: excludeId, title: title, loader: loader);
+    pickRepairSlot(context, initialSlot: initialSlot, excludeId: excludeId, repairItemId: repairItemId, title: title, loader: loader);
 
 /// 需要填写原因的确认框。[notifyHint] 非空时额外要求勾选“已电话告知”。
 /// 返回填写的内容；取消返回 null。

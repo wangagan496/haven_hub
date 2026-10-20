@@ -1,6 +1,16 @@
 import 'repair_slots.dart';
 export 'repair_slots.dart';
 
+class RepairRescheduleOffer {
+  const RepairRescheduleOffer({required this.id, required this.deadline, this.resolvedAt = ''});
+  factory RepairRescheduleOffer.fromJson(Map<String, dynamic> json) => RepairRescheduleOffer(
+      id: json['id']?.toString() ?? '', deadline: json['deadline']?.toString() ?? '', resolvedAt: json['resolvedAt']?.toString() ?? '');
+  final String id;
+  final String deadline;
+  final String resolvedAt;
+  bool get isOpen => id.isNotEmpty && resolvedAt.isEmpty;
+}
+
 class RepairItem {
   const RepairItem({required this.id, required this.name});
 
@@ -46,6 +56,9 @@ class RepairRecord {
     this.urgentRequest = false,
     this.asap = false,
     this.needsAdmin = false,
+    this.staffingIssue = '',
+    this.staffingMessage = '',
+    this.rescheduleOffer,
     this.description = '',
     this.status = unknownStatus,
     this.attachment = const <String>[],
@@ -95,6 +108,10 @@ class RepairRecord {
         urgentRequest: json['urgentRequest'] == true,
         asap: json['asap'] == true,
         needsAdmin: json['needsAdmin'] == true,
+        staffingIssue: json['staffingIssue']?.toString() ?? '',
+        staffingMessage: json['staffingMessage']?.toString() ?? '',
+        rescheduleOffer: json['rescheduleOffer'] is Map<String, dynamic>
+            ? RepairRescheduleOffer.fromJson(json['rescheduleOffer'] as Map<String, dynamic>) : null,
         description: json['description']?.toString().trim() ?? '',
         status: _toInt(json['status']),
         attachment: (json['attachment'] is List<dynamic>)
@@ -121,6 +138,9 @@ class RepairRecord {
 
   final String id;
   final String houseId;
+  final String staffingIssue;
+  final String staffingMessage;
+  final RepairRescheduleOffer? rescheduleOffer;
   final String houseInfo;
   final String repairItemId;
   final String repairItemName;

@@ -300,22 +300,28 @@ class RepairDetailPage extends StatefulWidget {
       this.cancelLoader = cancelRepairApi,
       this.actionLoader = runRepairAction,
       this.slotsLoader = getRepairSlotsApi,
+      this.unstaffedSlotsLoader = getUnstaffedSlotsApi,
+      this.unstaffedChoiceLoader = chooseUnstaffedSlotApi,
       super.key});
   static const String routeName = AppRoutes.repairDetail;
   final RepairDetailLoader loader;
   final CancelRepairLoader cancelLoader;
   final RepairActionLoader actionLoader;
   final RepairSlotsLoader slotsLoader;
+  final RepairSlotsLoader unstaffedSlotsLoader;
+  final UnstaffedChoiceLoader unstaffedChoiceLoader;
   @override
   State<RepairDetailPage> createState() => _RepairDetailPageState();
 }
 
 class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBindingObserver {
+  bool _isLoading = false;
+  late final int _ownerSession;
   String _proposalReason = '';
   String? _proposalSlot;
   String _responseReason = '';
   @override
-  void initState() { super.initState(); WidgetsBinding.instance.addObserver(this); }
+  void initState() { super.initState(); _ownerSession = tokenManager.sessionId; WidgetsBinding.instance.addObserver(this); }
   @override
   void dispose() { WidgetsBinding.instance.removeObserver(this); super.dispose(); }
   @override
@@ -330,6 +336,43 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
   bool _confirming = false;
   bool _acting = false;
   bool _changed = false;
+
+  Future<void> _unstaffedChoice({bool keep = false}) async {
+    final RepairRecord? record = _record;
+    if (_isLoading || record == null || tokenManager.sessionId != _ownerSession) return;
+    setState(() => _isLoading = true);
+    try {
+      Future<void> submit({RepairSlot? slot}) async {
+        if (!mounted || tokenManager.sessionId != _ownerSession) return;
+        late final RepairRecord updated;
+        try {
+          updated = await widget.unstaffedChoiceLoader(_record ?? record, slot: slot?.slot, keep: keep);
+        } on Object catch (error) {
+          if (error is NetworkException && error.statusCode == 409 && mounted && tokenManager.sessionId == _ownerSession) {
+            await _load();
+          }
+          rethrow;
+        }
+        if (!mounted || tokenManager.sessionId != _ownerSession) return;
+        setState(() { _record = updated; _changed = true; });
+        await PromptAction.showSuccess(keep ? '已保持原时间，物业会联系您' : '上门时间已更新');
+      }
+      if (keep) {
+        await submit();
+      } else {
+        await pickRepairSlot(context, initialSlot: record.slot, excludeId: record.id,
+            title: '选择新的上门时间', loader: widget.unstaffedSlotsLoader,
+            onConfirm: (RepairSlot slot) => submit(slot: slot));
+      }
+    } on Object catch (error) {
+      if (!mounted || tokenManager.sessionId != _ownerSession) return;
+      await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
+      if (!mounted || tokenManager.sessionId != _ownerSession) return;
+      if (error is NetworkException && error.statusCode == 409) await _load();
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   /// 通用的工单操作：防重复提交；异步后检查 mounted 与会话；409 时刷新权威数据，不重放旧操作。
   Future<void> _act(
@@ -574,7 +617,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
           builder: (_) => record == null
               ? const SizedBox.shrink()
               : AbsorbPointer(
-                  absorbing: _acting,
+                  absorbing: _acting || _isLoading,
                   child: ListView(children: <Widget>[
                     if (record.workflowVersion == 1)
                       RepairProgress(record: record),
@@ -583,6 +626,8 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
                       onDecline: () => _respond(false), onInconvenient: record.canFeedback ? _feedback : null),
                     const _Section('报修信息'),
                     _Row('维修项目', record.repairItemName),
+                    if (record.staffingMessage.isNotEmpty)
+                      _Row('安排进展', record.staffingMessage),
                     _Row(
                         record.agreedTime.isNotEmpty ? '约定时间' : '期望时间',
                         record.visitTime.isNotEmpty
@@ -618,6 +663,15 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
   /// 顶部提示卡：待你回应的事项和截止时刻，不依赖推送。
   List<Widget> _notices(RepairRecord record) {
     final List<Widget> cards = <Widget>[];
+    final RepairRescheduleOffer? offer = record.rescheduleOffer;
+    if (offer != null && offer.isOpen) {
+      cards.add(_Notice('请选择新的上门时间',
+          '原定时间暂时排不开师傅，请在 ${formatVisitTime(offer.deadline)} 前选择新时间',
+          actions: <Widget>[
+            FilledButton(onPressed: _isLoading ? null : _unstaffedChoice, child: const Text('选择新时间')),
+            TextButton(onPressed: _isLoading ? null : () => _unstaffedChoice(keep: true), child: const Text('保持原时间，继续等')),
+          ]));
+    }
     final RepairPending? reschedule = record.reschedule;
     if (record.canConfirm) {
       cards.add(_Notice(
@@ -811,6 +865,7 @@ class _RepairFormPageState extends State<RepairFormPage>
   bool _urgentRequest = false;
   bool _asap = false;
   String? _scheduleWarning;
+  int _slotRefreshRequest = 0;
   bool _loading = false;
   bool _submitting = false;
   bool _waitingForConfirmation = false;
@@ -867,7 +922,7 @@ class _RepairFormPageState extends State<RepairFormPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _slot.isNotEmpty) unawaited(_refreshSlot());
+    if (state == AppLifecycleState.resumed && _slot.isNotEmpty && !_submitting) unawaited(_refreshSlot());
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       _draftTimer?.cancel();
@@ -1108,23 +1163,29 @@ class _RepairFormPageState extends State<RepairFormPage>
   Future<void> _refreshSlot() async {
     final String selected = _slot;
     if (selected.isEmpty) return;
+    final int request = ++_slotRefreshRequest;
     try {
-      final RepairSlots data = await widget.slotsLoader(date: selected.split('#').first);
-      if (!mounted || !_sameOwner || selected != _slot) return;
+      final RepairSlots data = await widget.slotsLoader(date: selected.split('#').first, repairItemId: _itemId);
+      if (!mounted || !_sameOwner || selected != _slot || request != _slotRefreshRequest) return;
       final bool valid = data.slots.any((RepairSlot item) => item.slot == selected && item.selectable);
       setState(() {
         _scheduleWarning = valid ? null : '原时段已不可选，请重新选择或提交待安排';
         if (!valid) { _slot = ''; _waitingSchedule = false; }
       });
     } on Object catch (error) {
-      if (mounted && _sameOwner && selected == _slot) setState(() => _scheduleWarning = describeError(error, fallback: '时段查询失败，请重试'));
+      if (mounted && _sameOwner && selected == _slot && request == _slotRefreshRequest) setState(() => _scheduleWarning = describeError(error, fallback: '时段查询失败，请重试'));
     }
   }
 
   Future<void> _pickDate() async {
+    if (_itemId == null) { await PromptAction.showWarning('请先选择维修项目'); return; }
+    if (_itemId == '1001' || _itemId == '1003') {
+      await PromptAction.showWarning('此类报修由物业明确技能后安排，请选择提交后等待安排'); return;
+    }
     final RepairSlot? selected =
-        await pickVisitTime(context, initialSlot: _slot, title: '选择期望上门日期', loader: widget.slotsLoader);
+        await pickVisitTime(context, initialSlot: _slot, repairItemId: _itemId, title: '选择期望上门日期', loader: widget.slotsLoader);
     if (selected != null && mounted && _sameOwner) {
+      _slotRefreshRequest++;
       setState(() { _slot = selected.slot; _waitingSchedule = false; _asap = false; _scheduleWarning = null; });
       _scheduleDraftSave();
     }
@@ -1277,6 +1338,17 @@ class _RepairFormPageState extends State<RepairFormPage>
         setState(() => _waitingForConfirmation = false);
       }
       if (!_sameOwner) throw const SessionChangedException();
+      if (_slot.isNotEmpty) {
+        final String selected = _slot;
+        await _refreshSlot();
+        if (!mounted || !_sameOwner) return;
+        if (_slot != selected || _scheduleWarning != null) {
+          await _saveDraft();
+          if (!mounted) return;
+          await PromptAction.showWarning(_scheduleWarning ?? '时段已变化，请重新选择');
+          return;
+        }
+      }
       _draftTimer?.cancel();
       _resultUnconfirmed = true;
       await _saveDraft();
@@ -1436,7 +1508,11 @@ class _RepairFormPageState extends State<RepairFormPage>
                                         value: item.id, child: Text(item.name)))
                                     .toList(),
                                 onChanged: (value) {
-                                  setState(() => _itemId = value);
+                                  _slotRefreshRequest++;
+                                  setState(() {
+                                    _itemId = value; _slot = ''; _scheduleWarning = null;
+                                    _waitingSchedule = value == '1003' || value == '1001';
+                                  });
                                   _scheduleDraftSave();
                                 }),
                             const SizedBox(height: 14),
@@ -1450,7 +1526,9 @@ class _RepairFormPageState extends State<RepairFormPage>
                                     .validate),
                             const SizedBox(height: 14),
                             CheckboxListTile(value: _waitingSchedule, contentPadding: EdgeInsets.zero,
-                              title: const Text('提交后等待安排'), onChanged: (bool? value) {
+                              title: const Text('提交后等待安排'),
+                              subtitle: _itemId == '1003' ? const Text('其他维修先由物业判断需要的技能，再安排上门') : null,
+                              onChanged: (bool? value) {
                                 setState(() { _waitingSchedule = value ?? false; if (_waitingSchedule) { _slot = ''; } else { _asap = false; } _scheduleWarning = null; });
                                 _scheduleDraftSave();
                               }),

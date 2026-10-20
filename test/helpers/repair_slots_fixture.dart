@@ -9,4 +9,4 @@ RepairSlots slotsFixture({String date = '2030-10-20', Set<int> unavailable = con
       period: hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening',
       selectable: !unavailable.contains(hour))]);
 
-Future<RepairSlots> loadSlotsFixture({String? date, String? excludeId}) async => slotsFixture(date: date ?? '2030-10-20');
+Future<RepairSlots> loadSlotsFixture({String? date, String? excludeId, String? repairItemId}) async => slotsFixture(date: date ?? '2030-10-20');

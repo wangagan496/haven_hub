@@ -13,12 +13,13 @@ final MutationList<RepairRecord> _repairChanges =
 typedef RepairListLoader = Future<List<RepairRecord>> Function();
 typedef RepairDetailLoader = Future<RepairRecord> Function(String id);
 typedef RepairItemLoader = Future<List<RepairItem>> Function();
-typedef RepairSlotsLoader = Future<RepairSlots> Function({String? date, String? excludeId});
+typedef RepairSlotsLoader = Future<RepairSlots> Function({String? date, String? excludeId, String? repairItemId});
 
-Future<RepairSlots> getRepairSlotsApi({String? date, String? excludeId, RequestDio? client}) async {
+Future<RepairSlots> getRepairSlotsApi({String? date, String? excludeId, String? repairItemId, RequestDio? client}) async {
   final dynamic data = await (client ?? requestDio).get(HttpPath.repairSlots, params: <String, dynamic>{
     if (date != null && date.isNotEmpty) 'date': date,
     if (excludeId != null && excludeId.isNotEmpty) 'excludeId': excludeId,
+    if (repairItemId != null && repairItemId.isNotEmpty) 'repairItemId': repairItemId,
   });
   return RepairSlots.fromJson(asMap(data, '上门时段'));
 }
@@ -140,6 +141,25 @@ Future<List<RepairRecord>> _fetchRepairList({RequestDio? client}) async {
 Future<RepairRecord> getRepairDetailApi(String id) async {
   final dynamic data = await requestDio.get(HttpPath.repairDetail(id));
   return RepairRecord.fromJson(asMap(data, '报修详情'));
+}
+
+typedef UnstaffedChoiceLoader = Future<RepairRecord> Function(RepairRecord record, {String? slot, bool keep});
+Future<RepairSlots> getUnstaffedSlotsApi({String? date, String? excludeId, String? repairItemId}) async {
+  final int session = tokenManager.sessionId;
+  final dynamic data = await requestDio.get(HttpPath.repairUnstaffedOptions(excludeId!),
+      params: <String, dynamic>{if (date != null) 'date': date});
+  if (session != tokenManager.sessionId) throw const SessionChangedException();
+  return RepairSlots.fromJson(asMap(data, '可选上门时间'));
+}
+
+Future<RepairRecord> chooseUnstaffedSlotApi(RepairRecord record, {String? slot, bool keep = false}) async {
+  final int session = tokenManager.sessionId;
+  final RepairRecord result = await _repairAction(HttpPath.repairUnstaffedChoice(record.id), <String, dynamic>{
+    'revision': record.revision, 'offerId': record.rescheduleOffer!.id,
+    if (keep) 'keep': true else 'slot': slot,
+  }, method: 'PUT');
+  if (session != tokenManager.sessionId) throw const SessionChangedException();
+  return result;
 }
 
 Future<List<RepairItem>> getRepairItemsApi() async {

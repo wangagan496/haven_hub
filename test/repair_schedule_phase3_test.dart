@@ -76,7 +76,7 @@ void main() {
   testWidgets('P3 selector uses server today and 4 4 3 groups and forwards excludeId', (tester) async {
     tallPage(tester);
     final calls = <String?>[];
-    await pumpPage(tester, Scaffold(body: RepairSlotPicker(excludeId: 'p3', loader: ({date, excludeId}) async {
+    await pumpPage(tester, Scaffold(body: RepairSlotPicker(excludeId: 'p3', loader: ({date, excludeId, repairItemId}) async {
       calls.add(excludeId); return slotsFixture(date: date ?? '2030-10-20');
     })));
     expect(find.text('今天 10-20'), findsOneWidget);
@@ -92,18 +92,18 @@ void main() {
 
   testWidgets('P3 unavailable slots are hidden and empty day offers alternatives', (tester) async {
     tallPage(tester);
-    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId}) async => slotsFixture(unavailable: {8,10,21}))));
+    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId, repairItemId}) async => slotsFixture(unavailable: {8,10,21}))));
     expect(find.text('08:00–09:00'), findsNothing); expect(find.text('10:00–11:00'), findsNothing); expect(find.text('21:00–22:00'), findsNothing);
     expect(find.byType(ActionChip), findsNWidgets(8));
     await finishPage(tester);
-    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId}) async => const RepairSlots(today: '2030-10-20', dates: ['2030-10-20'], slots: []))));
+    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId, repairItemId}) async => const RepairSlots(today: '2030-10-20', dates: ['2030-10-20'], slots: []))));
     expect(find.text('可选其他日期或提交待安排'), findsOneWidget);
     await finishPage(tester);
   });
 
   testWidgets('P3 failed lookup shows error and retry without fake empty slots', (tester) async {
     int calls = 0;
-    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId}) async {
+    await pumpPage(tester, Scaffold(body: RepairSlotPicker(loader: ({date, excludeId, repairItemId}) async {
       if (++calls == 1) throw const NetworkException('查询断网');
       return slotsFixture();
     })));
@@ -118,7 +118,7 @@ void main() {
   testWidgets('P3 resume refreshes availability and discards stale in-flight response', (tester) async {
     final first = Completer<RepairSlots>();
     int calls = 0;
-    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RepairSlotPicker(loader: ({date, excludeId}) {
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RepairSlotPicker(loader: ({date, excludeId, repairItemId}) {
       return ++calls == 1 ? first.future : Future.value(slotsFixture(unavailable: {10}));
     }))));
     await tester.pump();
@@ -205,7 +205,7 @@ void main() {
     for (final value in ['2030-10-20T10:30:00+08:00', '2030-10-20T18:00:00+08:00', '2031-10-20T10:00:00+08:00', '2030-10-20T10:00:00']) {
       expect(await matchDraftSlot(value, loadSlotsFixture), isNull);
     }
-    expect(await matchDraftSlot(_time, ({date, excludeId}) async => slotsFixture(unavailable: {10})), isNull);
+    expect(await matchDraftSlot(_time, ({date, excludeId, repairItemId}) async => slotsFixture(unavailable: {10})), isNull);
   });
 
   testWidgets('P3 invalid old draft clears time with warning and preserves all input', (tester) async {
@@ -281,7 +281,7 @@ void main() {
   testWidgets('P3 worker proposal uses excludeId and phone consent before sending', (tester) async {
     tallPage(tester); WorkerProposeAction? sent; final ids=<String?>[];
     await pumpPage(tester,WorkerDetailPage(id:'p3',recordLoader:(_) async => const RepairRecord(id:'p3',status:2),
-      slotsLoader:({date,excludeId}) async { ids.add(excludeId); return slotsFixture(); },
+      slotsLoader:({date,excludeId,repairItemId}) async { ids.add(excludeId); return slotsFixture(); },
       actionLoader:(_,action) async { sent=action as WorkerProposeAction; return _pending; }));
     await tapText(tester,'首次提议时间'); await tapText(tester,'10:00–11:00');
     await tester.enterText(find.descendant(of:find.byType(AlertDialog),matching:find.byType(TextField)),'已联系住户');
@@ -293,12 +293,12 @@ void main() {
 
   for(final state in ['available','full','error']) {
     testWidgets('P3 home availability $state queries today without date or quantities', (tester) async {
-      await pumpPage(tester,Scaffold(body:RepairAvailabilityHint(loader:({date,excludeId}) async {
+      await pumpPage(tester,Scaffold(body:RepairAvailabilityHint(loader:({date,excludeId,repairItemId}) async {
         expect(date,isNull); expect(excludeId,isNull);
         if(state=='error') throw const NetworkException('断网');
         return state=='full' ? const RepairSlots(today:'2030-10-20',dates:['2030-10-20'],slots:[]) : slotsFixture();
       })));
-      expect(find.text(state=='error'?'暂时无法获取':state=='full'?'今天已约满，可选后续日期或提交待安排':'今天可预约'),findsOneWidget);
+      expect(find.text(state=='error'?'暂时无法获取':state=='full'?'今天暂无可约时段，可选后续日期或提交待安排':'今天有可约时段，具体以维修类别为准'),findsOneWidget);
       expect(find.textContaining('剩余'),findsNothing); expect(find.textContaining('容量'),findsNothing);
       await finishPage(tester);
     });
@@ -307,7 +307,7 @@ void main() {
   testWidgets('P3 home availability refreshes login and discards pre-login response', (tester) async {
     final oldResponse = Completer<RepairSlots>();
     var queries = 0;
-    await pumpPage(tester, Scaffold(body: RepairAvailabilityHint(loader: ({date, excludeId}) {
+    await pumpPage(tester, Scaffold(body: RepairAvailabilityHint(loader: ({date, excludeId, repairItemId}) {
       queries++;
       return queries == 1 ? oldResponse.future : Future.value(slotsFixture());
     })));
@@ -315,16 +315,16 @@ void main() {
     eventBus.fire(const LoginSuccessEvent());
     await tester.pumpAndSettle();
     expect(queries, 2);
-    expect(find.text('今天可预约'), findsOneWidget);
+    expect(find.text('今天有可约时段，具体以维修类别为准'), findsOneWidget);
     oldResponse.complete(const RepairSlots(today: '2030-10-20', dates: ['2030-10-20'], slots: []));
     await tester.pumpAndSettle();
-    expect(find.text('今天可预约'), findsOneWidget);
+    expect(find.text('今天有可约时段，具体以维修类别为准'), findsOneWidget);
     await finishPage(tester);
   });
 
   testWidgets('P3 home availability clears previous account status on logout', (tester) async {
-    await pumpPage(tester, Scaffold(body: RepairAvailabilityHint(loader: ({date, excludeId}) async => slotsFixture())));
-    expect(find.text('今天可预约'), findsOneWidget);
+    await pumpPage(tester, Scaffold(body: RepairAvailabilityHint(loader: ({date, excludeId, repairItemId}) async => slotsFixture())));
+    expect(find.text('今天有可约时段，具体以维修类别为准'), findsOneWidget);
     eventBus.fire(const LogoutEvent());
     await tester.pumpAndSettle();
     expect(find.text('暂时无法获取'), findsOneWidget);

@@ -100,6 +100,8 @@ class HttpPath {
   static String repairRemind(String repairId) =>
       'notifications/repairs/${Uri.encodeComponent(repairId)}/remind';
   static const String workerRepairs = 'worker/repairs';
+  static const String workerRepairPool = 'worker/repair-pool';
+  static const String workerSkills = 'worker/skills';
   static String workerRepair(String id) => '$workerRepairs/${Uri.encodeComponent(id)}';
   static String workerRepairAction(String id, String action) => '${workerRepair(id)}/$action';
 
@@ -140,6 +142,9 @@ class HttpPath {
 
   static String cancelRepair(String id) =>
       'cancel/repair/${Uri.encodeComponent(id)}';
+
+  static String repairUnstaffedOptions(String id) => 'repair/$id/unstaffed-options';
+  static String repairUnstaffedChoice(String id) => 'repair/$id/unstaffed-choice';
 
   /// 住户对工单的操作：confirm / reject / aftersale / feedback / reschedule。
   static String repairAction(String id, String action) =>
