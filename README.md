@@ -1,414 +1,157 @@
-# Haven Hub
+# Haven Hub · 享家社区
 
-享家社区 Flutter 项目 - 社区物业管理移动应用。
+面向住户、维修师傅和物业的社区物业应用：Flutter 客户端、自建 Node.js 服务和物业网页后台。
 
-## 分支导览（面试阅读入口）
+当前仓库提供鸿蒙与 Web 工程入口；Flutter 具备 Android 支持能力，但本仓库未保留 `android/` 工程，不能直接承诺 Android 构建或设备验收。服务面向本地学习与演示，只监听回环地址，开发验证码不发送短信。
 
-这些分支记录项目逐步扩展的开发阶段，后续分支继承前序功能，并非互相隔离的单模块示例。下表按已提交代码说明各分支的重点；分支名不代表该功能已经通过真实接口、设备或发布验收。
+## 功能概览
 
-| 分支 | 中文说明 | 主要内容与面试讲解重点 |
-| --- | --- | --- |
-| `main` | 项目初始化 | Flutter 工程及 OpenHarmony、Web 平台基础配置。适合介绍项目结构与平台入口；当前停留在初始化阶段，不是完整业务展示版本。 |
-| `dev` | 基础业务与登录状态 | 首页与公告详情、验证码登录、个人资料、Token 刷新和账户状态同步。重点讲解请求封装、登录态管理与页面访问控制。 |
-| `feature/tencent-location` | 腾讯定位与选房流程 | 在基础业务上增加腾讯位置服务与房屋录入：位置 → 楼栋 → 房间 → 房屋表单。重点讲解定位权限、位置搜索与跨页面选房状态传递。 |
-| `feature/house-management` | 房屋管理与表单校验 | 增加房屋详情、编辑、删除与表单校验，并整理类型化路由、数据模型、通用组件和核心逻辑测试。重点讲解数据校验、页面参数和业务代码复用。 |
-| `feature/complete-pending-functions` | 报修与访客管理 | 在房屋管理基础上增加报修提交、列表、详情、取消，以及访客登记、列表与详情。重点讲解表单提交、业务状态展示和操作后的列表更新。 |
+- 验证码登录、个人资料、房屋录入与物业审核、腾讯定位选房、社区公告、访客通行码。
+- 报修流程：住户提交 → 物业定级 / 排单 → 派单 / 师傅接单 → 提交完工 → 住户确认 → 售后申请及一次返修。
+- 物业网页后台提供房屋审核、报修队列、人工急单调度、顺延建议、三层时段容量和维修人员管理。
+- 鸿蒙访客通行码通过自定义 MethodChannel 调用系统分享；关闭分享面板只表示操作结束，不代表接收成功。
 
-推荐阅读顺序：`main` → `dev` → `feature/tencent-location` → `feature/house-management` → `feature/complete-pending-functions`。希望先看当前已提交业务范围时，可从最后一个分支入手，再回看前序阶段。
+## 技术亮点
 
-**开发中内容（截至 2026-09-20）：** 访客通行码鸿蒙系统分享、报修稳定性补充改造和新增回归测试尚未提交，不属于上表分支现有提交的交付内容。面试介绍时应分别说明代码实现、自动化测试结果、真实接口联调和设备验证情况。
+- **集中管理状态规则**：`server/src/repair/policy.ts` 处理期限、顺延资格和待办；`server/src/repair/actions.ts` 处理状态迁移，动作接收时间参数，不直接访问数据库。状态定义在 `server/src/repair/model.ts`。
+- **revision 与事务**：`server/src/repair/repository.ts` 的 `mutate` 在授权后校验 revision，旧版本返回 HTTP 409，再执行动作、版本递增及保存。`server/src/database.ts` 使用 SQLite `BEGIN IMMEDIATE`；创建、名额检查、多步保存和通知入库在事务内完成。旧版未接单撤销存在不传 revision 的兼容入口。
+- **按订单计算名额**：`server/src/repair/schedule.ts` 每天开放 11 个一小时时段（08、09、10、11、14、15、16、17、19、20、21 点），预约窗口为含今天的 7 天，普通预约至少提前 2 小时。`repository.ts` 按默认容量 → 星期模板 → 单日覆盖合成容量；只读取订单 `slot` 计算占用，不另建占用表。
+- **人工急单调度和顺延**：`server/src/repair/service.ts` 的急单调度绕过公开容量上限，但检查师傅同一时段是否空闲；不会自动挤走其他单。急单仍写入 `slot` 并参与后续占用统计。`policy.ts` 只给顺延建议，实际移动必须由物业操作。
+- **北京时间与惰性结算**：`schedule.ts` 用 UTC+8 生成业务日期，`repository.ts` 按该日期计算星期；期限按连续小时计算。`policy.ts` 的 `settle` 在查询 / 写入前处理过期事项，不依赖定时任务才能生效；推送投递另有轮询。
+- **待办与推送分层**：`server/src/repair/notification-tasks.ts` 生成任务；`server/src/notifications.ts` 按任务与设备去重、关闭过期任务、重试失败投递；`server/src/push-transport.ts`、`ohos/entry/src/main/ets/PushPlugin.ets`、`web/push.js` 接入 HarmonyOS Push Kit 与 Web Push。接入不等于送达验证。
+- **Flutter 请求与恢复**：`lib/utils/request_dio.dart` 区分网络 / 业务错误，丢弃旧会话响应，401 刷新成功也不自动重放旧业务请求；`lib/utils/token_manager.dart` 串行写凭证。`lib/pages/repair/repair_pages.dart` 与 `lib/utils/repair_draft_store.dart` 按已确认身份保存和恢复草稿，未知提交结果保留提醒；尚无创建幂等键。
 
-**分支名称与可见性：** 房屋管理分支统一使用 `feature/house-management`。本导览位于 `feature/complete-pending-functions` 分支的 README，其他分支的 README 保留各自阶段的内容；Git 的本地 `branch.description` 不会随普通推送发布。
-
-## 项目概述
-
-Haven Hub 是一个基于 Flutter 开发的社区物业管理应用，支持多平台部署（Android、iOS、HarmonyOS、Web）。
-主要功能包括：
-
-- 用户认证与个人信息管理
-- 房屋信息录入与审核
-- 社区公告浏览
-- 基于腾讯位置服务的智能选址
-
-## 房屋业务流程
-
-登录后可从“我的”进入“我的房屋”，支持以下完整流程：
+## 目录结构
 
 ```text
-房屋列表 → 房屋详情 → 编辑 → 保存
-添加房屋 → 位置 → 楼栋 → 房间 → 房屋表单 → 提交审核
-房屋详情 → 删除房屋 → 返回房屋列表
+.githooks/    提交检查
+.github/     GitHub 工作流
+assets/      图片、字体等资源
+lib/         Flutter 页面、API、模型、工具和组件
+ohos/        鸿蒙工程及原生桥接
+server/      Node.js 24+、Express 5、SQLite 服务及物业网页
+test/        Flutter 自动化测试
+third_party/ 保留来源和许可的 image_picker_ohos 修补副本
+tool/        Flutter OH 包装器、构建、代理、设备转发脚本
+web/         Flutter Web 入口和推送脚本
+docs/        开发与学习材料，部分仅保留在本地
+server/src/repair/actions.ts             纯业务动作与状态迁移
+server/src/repair/model.ts               状态、轮次、待处理事项、时间线
+server/src/repair/notification-tasks.ts  报修通知任务生成
+server/src/repair/paths.ts               新增报修 HTTP 路径
+server/src/repair/policy.ts              期限、结算、队列和资格规则
+server/src/repair/repository.ts          数据访问、事务、版本和容量
+server/src/repair/routes.ts              HTTP 路由
+server/src/repair/schedule.ts            时段、北京时间、名额和师傅冲突
+server/src/repair/service.ts             参数、权限与业务编排
+server/src/repair/views.ts               角色视图、联系方式和字段隔离
 ```
-
-房屋相关页面统一使用 `AppRoutes` 中的路由常量，避免直接拼接旧路径。房屋详情和编辑表单通过类型化参数传递房屋 ID。
-
-## 项目结构
-
-```
-lib/
-├── api/              # API 接口层
-│   ├── home.dart    # 首页相关接口
-│   ├── house.dart   # 房屋管理接口
-│   ├── location.dart # 腾讯位置服务接口
-│   └── user.dart    # 用户相关接口
-├── constant/         # 常量定义
-│   ├── index.dart   # 全局常量和配置
-│   └── tab_config.dart # 底部导航配置
-├── controller/       # GetX 状态控制器
-│   ├── build_controller.dart # 选楼流程状态
-│   └── user_info_controller.dart # 用户信息状态
-├── models/          # 数据模型
-│   ├── building_info.dart # 建筑信息模型
-│   ├── house.dart   # 房屋信息模型
-│   ├── notice_data.dart # 公告数据模型
-│   └── user_info.dart # 用户信息模型
-├── pages/           # 页面组件
-│   ├── building/    # 楼栋选择
-│   ├── home/        # 首页
-│   ├── house/       # 房屋管理
-│   ├── location/    # 位置选择
-│   ├── login/       # 登录
-│   ├── mine/        # 我的
-│   ├── not_found/   # 404页面
-│   ├── notice_detail/ # 公告详情
-│   ├── profile/     # 个人资料
-│   ├── room/        # 房间选择
-│   └── tabs_page/   # 底部导航容器
-├── platform/        # 平台适配层
-│   ├── avatar_picker.dart # 头像选择器
-│   ├── local_image.dart # 本地图片加载接口
-│   └── local_image_io.dart # IO平台实现
-├── router/          # 路由配置
-│   └── index.dart   # 路由表
-├── theme/           # 主题配置
-│   ├── app_colors.dart # 颜色常量
-│   └── app_theme.dart # 主题定义
-├── utils/           # 工具类
-│   ├── app_exception.dart # 异常定义
-│   ├── emitter.dart # 事件总线
-│   ├── location.dart # 位置工具
-│   ├── request_dio.dart # 网络请求封装
-│   ├── toast.dart   # Toast提示
-│   └── token_manager.dart # Token管理
-├── widgets/         # 通用组件
-│   ├── async_state_view.dart # 异步状态视图
-│   ├── camera_dialog.dart # 相机选择对话框
-│   ├── community_picker.dart # 社区选择器
-│   ├── house_status_tag.dart # 房屋状态标签
-│   ├── loading_state_mixin.dart # 加载状态Mixin
-│   └── section_title.dart # 区域标题
-└── main.dart        # 应用入口
-```
-
-## 技术栈
-
-- **框架**: Flutter 3.6+
-- **状态管理**: GetX
-- **网络请求**: Dio
-- **本地存储**: SharedPreferences
-- **位置服务**: Geolocator + 腾讯地图API
-- **权限管理**: PermissionHandler
-- **图片选择**: ImagePicker
-
-## 代码质量
-
-- ✅ 类型安全：全面使用 Dart 3 null safety
-- ✅ 错误处理：统一的异常处理机制
-- ✅ 文档注释：公共API均有详细文档
-- ✅ 代码规范：遵循 Flutter Lints 规则
-- ✅ 静态检查：`flutter analyze --no-pub --no-fatal-infos` 无编译错误
-- 自动化测试位于 `test/`，覆盖基础逻辑、报修交互、路由返回值、提示浮层、通行码下载与平台桥接；真实接口与鸿蒙设备效果单独验收。
-
-## 鸿蒙分享与稳定性改造
-
-访客详情支持通过应用内自定义 MethodChannel 调用鸿蒙系统分享现有 PNG/JPEG 通行码图片。
-非鸿蒙平台显示不可用提示；已访问、已失效或缺少图片的记录不能分享。
-分享面板关闭仅表示本次操作结束，不提示“发送成功”。报修流程补充了提交、取消、失败重试、返回后刷新和异步退出的回归测试。
-
-前端请求采用保守恢复规则：会话或凭证更新后，旧请求及其外层自动重试停止。401 刷新成功保留登录，但不会重放旧 GET/POST/PUT/DELETE；用户手动重试才发起新操作。刷新失败只清理对应的旧会话，迟到的响应不能覆盖新账号数据。
-
-报修草稿按已识别的用户 ID 保存在当前设备，离开页面或切到后台时保存，再次进入时恢复。冷启动直接打开报修页且用户资料尚未加载时，页面会主动获取资料；失败时可在当前页重试。资料确认前仅保留本页输入、不写入草稿，也不允许提交，不使用匿名或进程会话编号作为草稿键。同一会话的用户资料到达后自动绑定草稿：尚未填写时恢复旧内容，已经填写时保留当前输入，但仍保留旧草稿的“结果未确认”提醒。草稿读取失败时保留磁盘原内容并单独提示，点击提交可重试读取，读取完成前不发送报修请求。提交成功清理草稿。超时、响应不确定或提交途中离开时保留“结果未确认”状态，再次提交需确认重复创建的风险。
-
-草稿和再次提交确认不能保证服务端只创建一次。本仓库尚未实现自建后端的幂等键与按提交标识查询结果，服务端结果仍需单独确认。
-
-报修列表按服务端 `current` / `pageSize` / `pageTotal` 读取全部页，任一页失败时不将部分结果当作完整列表。无附件报修显式提交 `attachment: []`。课程后端取消接口的实际拼写是 `cancel/repaire/{id}`，返回状态 `0` 表示已取消，不进入待处理筛选，也不再显示取消操作；状态缺失或无法解析时显示“状态未知”，同样不进入任何状态筛选，不猜成某个具体状态。2026-10-09 已通过现有测试账号验证正式应用创建、成功后清理草稿及该记录的接口取消；范围和设备证据见 [报修设备验证](docs/repair_device_validation.md)。
-
-运行检查：`./tool/flutter_ohos.ps1 analyze --no-pub`、`./tool/flutter_ohos.ps1 test --no-pub`。
-实现调用链、复现命令、验证边界与面试讲解见 [鸿蒙分享与报修稳定性说明](docs/harmony_share_and_reliability.md)。
-
-## 最近优化 (2026-08-05)
-
-### 架构优化
-- ✅ 将 `BuildController` 的 Map 存储改为类型安全的 `BuildingInfo` 模型
-- ✅ 优化搜索过滤性能，添加结果缓存避免重复计算
-- ✅ 创建 `LoadingStateMixin` 统一异步加载状态管理
-
-### 代码质量提升
-- ✅ 为所有公共API添加详细文档注释
-- ✅ 增强 `analysis_options.yaml`，启用更严格的lint规则
-- ✅ 改进异常类文档和示例
-- ✅ 为 `House` 模型添加便捷属性方法
-
-### 性能优化
-- ✅ `location_list` 搜索过滤添加缓存机制
-- ✅ 增加 const 构造函数使用
-
-详细优化内容请查看 [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
 
 ## 快速开始
 
-### Web/桌面浏览器真实验证
+以下 PowerShell 命令于 2026-10-20 实际执行。需 Node.js 24+、Flutter OH SDK；鸿蒙构建另需本机 DevEco SDK 和签名配置。包装器自动查找 Flutter OH，避免 PATH 选中错误 SDK。
 
-课程接口的登录验证码接口在测试环境会直接返回测试验证码，手机号只需符合手机号格式即可。启动 Web 调试代理后运行 Flutter Web：
+### 1. 本地服务
 
-```powershell
-dart run tool/web_api_proxy.dart
-flutter run -d web-server --web-port 8767 `
-  --dart-define=API_BASE_URL=http://127.0.0.1:3001/ `
-  --dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/ `
-  --dart-define=TENCENT_MAP_KEY=你的腾讯位置服务Key
-```
-
-`TENCENT_MAP_KEY` 不能省：位置页在发起请求前就要用它，缺失时页面会停在
-“正在获取当前位置”，并提示“未配置腾讯位置服务 Key”，一个 `/tencent-map/`
-请求都不会发出。本机调试通常改用下面「Web 连接课程接口」里的
-`--dart-define-from-file` 写法，把 Key 放在 Git 忽略的
-`tool/dart_defines.local.env` 里。
-
-浏览器验证建议按“登录 → 我的房屋 → 房屋列表/详情/编辑 → 添加房屋 → 位置/楼栋/房间/表单”的顺序执行。Web 环境会优先请求浏览器定位权限，权限不可用或超时会自动切换为腾讯 IP 定位。IP 定位结果可能落在境外；如果没有返回附近社区，这是定位数据没有匹配到社区，不代表楼栋、房间或表单路由异常。
-
-## API 环境切换
-
-默认请求课程接口：
-
-```text
-https://live-api.itheima.net/
-```
-
-可以使用 `API_BASE_URL` 编译参数切换接口，不需要修改源代码：
+在仓库根目录的终端执行（`npm start` 持续运行）：
 
 ```powershell
-flutter run --dart-define=API_BASE_URL=https://example.com/
+cd server
+npm ci
+npm run build
+npm start
 ```
 
-地址需要以 `/` 结尾。
+服务地址 `http://127.0.0.1:3000`，物业后台 `/admin/`，健康检查 `/health`。默认数据库为 `server/data/haven.sqlite`；本机 `.env` 可覆盖配置。代码拒绝非回环 HOST 和生产模式，不能直接当作生产部署方案。
 
-### Web 连接课程接口
+### 2. Web 调试与腾讯定位
 
-课程接口没有开放浏览器跨域访问，Flutter Web 直接请求时会被 CORS
-拦截。Web 调试需要先在一个终端启动项目自带的本机代理：
+按 `tool/dart_defines.example.env` 创建不提交的 `tool/dart_defines.local.env`，填写腾讯 **WebService API** 的 `TENCENT_MAP_KEY`。包装器在运行 / 构建时检查 Key 是否存在；不要把 Key 写进源码或 README。
+
+本机 SDK 路径如下，换机需替换为实际路径；在仓库根目录另开终端运行地图代理：
 
 ```powershell
-dart run tool/web_api_proxy.dart
+& 'C:\flutter_flutter_3.41.10_ohos\bin\dart.bat' run tool/web_api_proxy.dart 3001 --direct
 ```
 
-再在另一个终端启动 Flutter Web，并将接口地址切换到代理：
+`tool/dart_defines.web.local.env` 使用以下本机地址：
 
-```powershell
-flutter run -d chrome `
-  --dart-define-from-file=tool/dart_defines.web.local.env `
-  --dart-define-from-file=tool/dart_defines.local.env
+```dotenv
+API_BASE_URL=http://127.0.0.1:3000/
+TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
+AMAP_API_BASE_URL=http://127.0.0.1:3001/amap-map/
 ```
 
-使用内置浏览器或手动打开网址时，也可以启动 Web Server：
+另开终端运行，随后打开 `http://127.0.0.1:8080`：
 
 ```powershell
-flutter run -d web-server --web-port 56891 `
-  --dart-define-from-file=tool/dart_defines.web.local.env `
-  --dart-define-from-file=tool/dart_defines.local.env
+.\tool\flutter_ohos.ps1 run -d web-server --web-hostname=127.0.0.1 --web-port=8080 --dart-define-from-file=tool/dart_defines.web.local.env --dart-define-from-file=tool/dart_defines.local.env
 ```
 
-两个文件都要传。`dart_defines.web.local.env` 只放两个代理地址，
-`TENCENT_MAP_KEY` 在 `dart_defines.local.env` 里（该文件被 Git 忽略）。
-只传前者时应用能正常启动，但位置页会停在“正在获取当前位置”，并且不会发出
-任何 `/tencent-map/` 请求。
+地图代理只转发腾讯 / 高德路径。原生端不传地图代理地址，直接请求地图服务。`LOCATION_COORDINATE_SYSTEM=auto` 自动处理坐标；模拟器手动输入腾讯 / 高德拾取器的 GCJ-02 坐标时可设为 `gcj02`，避免重复转换。编译参数不是密钥保险箱；正式服务应另行设计服务端保管和转发。
 
-该代理仅监听 `127.0.0.1`，只接受来自 `localhost` 或 `127.0.0.1`
-网页的请求，并分别固定转发到课程接口和腾讯位置服务。它只用于本机开发，不应部署到线上。
-鸿蒙和其他原生平台仍可直接使用默认课程接口。
+### 3. 鸿蒙转发与构建
 
-## 本地 Mock 接口
-
-课程接口不可用时，可以先启动项目自带的 Mock 服务：
+设备内的 `127.0.0.1` 指设备自身，先连接并授权设备，再从仓库根目录执行：
 
 ```powershell
-dart run tool/mock_api_server.dart
-```
-
-Web 或 Windows 调试：
-
-```powershell
-flutter run --dart-define=API_BASE_URL=http://127.0.0.1:3000/
-```
-
-鸿蒙真机调试时，将 `127.0.0.1` 换成电脑的局域网 IPv4 地址，并允许
-Windows 防火墙访问 3000 端口：
-
-```powershell
-.\tool\flutter_ohos.ps1 run `
-  --dart-define=API_BASE_URL=http://192.168.1.100:3000/
-```
-
-Mock 服务提供以下接口：
-
-- `GET /announcement`
-- `GET /announcement/{id}`
-
-响应结构与课程接口一致，业务成功码为 `10000`。
-
-## 鸿蒙构建
-
-当前本机目标版本为 HarmonyOS 6.1.1 / API 24，最低兼容配置为
-HarmonyOS 5.0.0 / API 12。最低版本配置和编译通过不等于已完成 API 12
-设备运行验收；本次验证记录见 [API 24 验证与清理](docs/api24_validation_and_cleanup.md)。
-
-本机 `ohos/build-profile.json5` 带有 Git `skip-worktree` 标记，普通
-`git status` 不显示其本地版本字段变更。换机时需单独检查这两个版本字段，
-不要为了同步版本而提交本机签名材料。
-
-`ohos/build-profile.json5` 的 `app.products` 中，构建使用的 product 还需设置
-`buildOption.strictMode.useNormalizedOHMUrl: true`。这样 ArkTS 模块引用使用
-包名和版本，而不是 `.ohpm` 缓存目录标识，避免在命令行 x64 构建与 DevEco
-默认 arm64/x64 构建之间切换后，增量产物混用 Flutter 嵌入包路径，启动时报
-`ReferenceError: cannot find record ... @ohos/flutter_ohos/index`。
-首次启用后先执行一次 DevEco 的 Clean Project，再重新构建；无需删除
-`.pub-cache`、卸载 App 或重建模拟器。该配置也受上述 `skip-worktree` 影响，
-换机时需手动同步，不要连同本机签名信息一起提交。
-
-请通过包装脚本执行鸿蒙命令。脚本会自动查找本机的 Flutter OH SDK，
-并使用项目所在 D 盘的依赖缓存，避免 Hvigor 因跨盘插件路径构建失败：
-
-```powershell
-.\tool\flutter_ohos.ps1 doctor -v
-.\tool\flutter_ohos.ps1 pub get
-.\tool\flutter_ohos.ps1 analyze --no-pub
-.\tool\flutter_ohos.ps1 test --no-pub
-# 手机目标
-.\tool\flutter_ohos.ps1 build hap --debug --no-pub -t lib/main.dart --target-platform ohos-arm64
-# x86_64 模拟器目标
+.\tool\forward_local_backend.ps1
 .\tool\flutter_ohos.ps1 build hap --debug --no-pub -t lib/main.dart --target-platform ohos-x64
 ```
 
-静态分析也必须通过包装脚本执行。项目内的 `analysis_options.yaml` 已排除
-鸿蒙构建生成目录、依赖缓存及其 Junction，避免全项目分析递归扫描数万个
-非业务 Dart 文件而长时间无响应。
+转发脚本默认把设备 TCP 3000 转到电脑 TCP 3000；本轮实跑因无可用设备失败。x64 Debug HAP 构建通过，输出 `build/ohos/hap/entry-default-signed.hap`，用于 x64 模拟器，不可当作 ARM 真机包。
 
-自动查找失败或电脑安装了多个 Flutter OH SDK 时，可以设置环境变量，
-也可以为单次命令显式指定 SDK 根目录：
+本机 `ohos/build-profile.json5` 存在 `skip-worktree` 配置，签名与 SDK 配置需自行检查；`buildOption.strictMode.useNormalizedOHMUrl: true` 用于避免跨架构增量产物混用模块路径。不要提交本机签名材料。
 
-```powershell
-$env:FLUTTER_OHOS_HOME = 'C:\flutter_flutter_3.41.10_ohos'
-.\tool\flutter_ohos.ps1 doctor -v
+### 4. 三角色演示数据
 
-.\tool\flutter_ohos.ps1 `
-  -FlutterOhosSdk 'C:\flutter_flutter_3.41.10_ohos' `
-  build hap --debug
-```
-
-Debug HAP 输出位置：
-
-```text
-build\ohos\hap\entry-default-signed.hap
-```
-
-不同架构和测试入口共用此输出路径，后一轮构建会覆盖前一轮；需要同时保留时，
-每次构建完成后按架构和入口另存。分享测试入口验证结束后应重新安装正常入口包。
-
-## 腾讯位置服务
-
-“选择社区”页面使用 `geolocator` 获取 GPS 经纬度，再调用腾讯位置服务完成：
-
-1. 自动区分真机 GPS（WGS84）和虚拟机拾取坐标（GCJ-02），仅在需要时转换坐标。
-2. 逆地址解析，得到当前地址。
-3. 地点周边搜索，得到附近社区列表，并在 Debug 控制台打印接口原始返回值。
-
-腾讯控制台中需要创建用途为 **WebService API** 的 Key。调试时通过编译参数传入，
-不要把 Key 直接写进 Dart 源码：
-
-推荐只在本机配置一次：复制 `tool/dart_defines.example.env` 为
-`tool/dart_defines.local.env`，然后填写真实 Key。`local` 文件已被 Git 忽略，
-`tool/flutter_ohos.ps1` 启动时会自动加载：
-
-```dotenv
-TENCENT_MAP_KEY=你的腾讯位置服务Key
-LOCATION_COORDINATE_SYSTEM=auto
-```
-
-之后每次只需要运行：
+在根目录构建演示 Web，然后在 `server` 目录启动独立演示服务：
 
 ```powershell
-.\tool\flutter_ohos.ps1 run
+.\tool\build_workflow_web.ps1
+cd server
+npm run demo
 ```
 
-`flutter_ohos.ps1` 会在运行或打包前校验 `TENCENT_MAP_KEY` 是否有效；缺少
-Key 时会直接停止构建，因此不会再安装一个进入“选择社区”后才提示未配置的包。
-不要直接用 DevEco/Hvigor 的 HAP 构建按钮或裸 `flutter run`，它们不会自动读取
-`dart_defines.local.env`。
+该命令在 3010 端口持续运行，使用 `server/data/workflow-demo.sqlite`，不使用默认业务数据库。住户入口 `http://127.0.0.1:3010/workflow/`，师傅入口 `/workflow/#/worker`，物业入口 `/admin/`。三个角色使用独立浏览器配置，避免同源账号存储互相覆盖。
 
-正式发布时，将生产配置文件保存到 CI/CD 的 Secret 或发布机受保护路径，并通过同一
-入口显式指定它：
+虚构演示账号：住户 `19900000001`、物业 `19900000002`、师傅 `19900000003`。点击获取验证码后使用开发验证码登录。种子提供房屋和一条“等待安排”的报修；重复启动保留数据，不自动清空。演示不要求启用系统推送。
 
-```powershell
-.\tool\flutter_ohos.ps1 `
-  -DartDefinesFile 'C:\secure\haven-hub.release.env' `
-  build hap --release
-```
+## 测试
 
-生产配置文件与本地配置文件格式相同，且必须包含 `TENCENT_MAP_KEY`；不要提交到 Git。
+2026-10-20 在当前代码实际运行：
 
-也可以不创建本地配置文件，临时通过命令行覆盖：
+| 范围 | 命令（执行目录） | 结果 |
+| --- | --- | --- |
+| 服务端 | `npm test`（`server/`） | 253 tests，253 pass，0 fail，0 skipped |
+| Flutter | `.\tool\flutter_ohos.ps1 test --no-pub`（根目录） | 402 通过，0 失败，1 跳过 |
 
-```powershell
-.\tool\flutter_ohos.ps1 run `
-  --dart-define=TENCENT_MAP_KEY=你的腾讯位置服务Key
-```
+覆盖状态迁移、版本冲突、最后名额竞争、三层容量、身份隔离、草稿和页面交互。跳过的本地后端集成测试需要显式环境开关；本轮数字不包含设备或推送送达验收。
 
-当前调用的官方接口为：
+## 踩过的坑
 
-- `GET https://apis.map.qq.com/ws/coord/v1/translate`
-- `GET https://apis.map.qq.com/ws/geocoder/v1/`
-- `GET https://apis.map.qq.com/ws/place/v1/search`
-- `GET https://apis.map.qq.com/ws/location/v1/ip`
+- **刷新撞上换号**：旧请求可能使用新账号凭证；拆分会话身份和凭证版本并串行写入，最终停止旧请求重放（`e88ac5e`、`c8d4def`、`079ddd5`、`68de27e`）。
+- **相册一直等待**：相机失败后原生插件保留旧回调，下一次选择回到旧请求；清理 pending 状态并拒绝真正的并发调用（`2ca7cd5`）。
+- **草稿身份晚到**：页面先打开、用户资料后到，草稿绑定与读取时机不一致；按会话监听身份、按需取资料，区分读失败与空草稿（`a448149`、`094e581`）。
+- **鸿蒙网络图片缓存失败**：依赖的磁盘缓存路径没有可用 OHOS 实现；鸿蒙改用内存缓存，保留占位、错误图及其他平台行为（`6760e10`）。
 
-腾讯 WebService API 不允许浏览器直接跨域调用。Web 调试时需要同时启动上面的
-本机代理，并传入：
+## 验证现状与限制
 
-```powershell
---dart-define=TENCENT_MAP_API_BASE_URL=http://127.0.0.1:3001/tencent-map/
-```
+- 本轮通过：上述自动化测试、服务端编译、Web 构建、x64 Debug HAP 构建，以及临时数据库的三角色浏览器 / 接口联调。
+- 历史覆盖：鸿蒙 API 24 模拟器业务交互；本轮无可连接设备，没有重做该项。模拟器宿主崩溃根因未完全确认。
+- 未覆盖：物理真机验收、系统推送实际送达、生产部署。
+- 数据模型暂不支持专业技能匹配、跨小时长维修；容量接口没有 revision，同字段并发编辑会覆盖。
+- 普通改约由一次合法回应生效，没有“住户和师傅各确认一次”的机制；首次定时只允许住户回应。急单调度和物业顺延属于立即生效的运营调整。
+- 大页面文件、按 JSON slot 统计占用和无创建幂等键仍有维护与规模限制。
 
-原生和鸿蒙端不要设置该参数，会继续直连腾讯官方接口。
+## 开发历程
 
-移动端包内的编译参数仍可能被逆向获取。正式环境应由业务后端保存 Key，App 只调用
-自己的后端接口，由后端转发腾讯位置服务请求并限制调用频率。
+这些分支是沿同一条提交历史推进的阶段记录。`main` 汇集完整项目，其余分支保留作过程参考；旧分支名不代表当前最新功能。按提交内容核对如下：
 
-### 坐标拾取器与鸿蒙虚拟机
-
-腾讯地图坐标拾取器：[https://lbs.qq.com/getPoint/](https://lbs.qq.com/getPoint/)
-
-腾讯和高德坐标拾取器给出的坐标都是 GCJ-02。完整调试流程如下：
-
-1. 在腾讯坐标拾取器中搜索目标地址，复制坐标。页面通常显示为“经度,纬度”。
-2. 打开鸿蒙虚拟机的定位模拟面板，把纬度填入 `Latitude`，经度填入 `Longitude`，不要填反。
-3. 设置坐标后，回到 App 点击“重新定位”。
-4. 启动虚拟机调试时建议明确指定 `gcj02`，确保拾取器坐标不会被重复转换：
-
-```powershell
-.\tool\flutter_ohos.ps1 run `
-  --dart-define="TENCENT_MAP_KEY=你的腾讯位置服务Key" `
-  --dart-define="LOCATION_COORDINATE_SYSTEM=gcj02"
-```
-
-也可以写成一行：
-
-```powershell
-.\tool\flutter_ohos.ps1 run --dart-define="TENCENT_MAP_KEY=你的腾讯位置服务Key" --dart-define="LOCATION_COORDINATE_SYSTEM=gcj02"
-```
-
-`LOCATION_COORDINATE_SYSTEM` 支持以下值：
-
-- `auto`（默认）：虚拟定位按 GCJ-02 处理，真机 GPS 按 WGS84 处理。
-- `gcj02`：用于腾讯/高德坐标拾取器写入虚拟机的坐标，跳过坐标转换。
-- `wgs84`：用于真机原始 GPS，先转换为腾讯地图使用的 GCJ-02。
-
-如果虚拟机没有正确上报 `isMocked`，请使用上面的 `gcj02` 参数；真机调试通常不需要额外参数。
+- `main`：从 `14589a2` 工程初始化快进到完整业务及本文档。
+- `dev`（`4e3250d`）：基础页面、公告、登录、Token 刷新与账号状态。
+- `feature/tencent-location`（`e36992b`）：腾讯定位和社区 → 楼栋 → 房间 → 房屋表单。
+- `feature/house-management`（`8f34902`）：房屋详情 / 编辑 / 删除、类型和表单校验、核心测试。
+- `feature/complete-pending-functions`（`d07b8c5`）：报修、访客、鸿蒙分享以及请求和会话可靠性改进。
+- `feature/repair-list-improvements`：远端停在 `6994d79`（自建后端及权限流程）；本地阶段指针为 `6eda645`，继续包含确认 / 改约 / 售后及推送接入，本次未推此分支。
+- `feature/repair-refactor-slot-scheduling`：`01bd335` 拆分报修与时段规则、`998074e` 物业调度及容量网页、`bea02bb` 住户 / 师傅预约交互，再补充本 README。
