@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('haven-admin-token') || '';
 let tab = 'rooms', rows = [], workers = [], loading = false, epoch = 0, selectedId = '';
 let dataset = {rooms: [], repairs: [], workers: []};
+let unregisteredCount = 0;
 let queueRows = [], shiftDate = '', capacityDate = '', capacityData = null, weekdayData = {};
 let pushChanging = false, pushGeneration = 0, pushDisabling = null;
 const roomStatus = {1:'待审核',2:'已通过',3:'已打回'};
@@ -44,6 +45,7 @@ function logout() {
   $('stats').replaceChildren();
   message();
   rows=[]; workers=[];
+  unregisteredCount=0;
   dataset={rooms:[],repairs:[],workers:[]};
   queueRows=[]; capacityData=null; weekdayData={}; shiftDate=''; capacityDate='';
   $('notification-list').replaceChildren();
@@ -183,9 +185,10 @@ async function load(keep=false) {
       ? Promise.all([api('/management/repair-capacities'+(capacityDate?`?date=${encodeURIComponent(capacityDate)}`:'')),api('/management/repair-capacities/weekdays')])
       : tab==='shifts'?api('/management/repair-shift-suggestions'+(shiftDate?`?date=${encodeURIComponent(shiftDate)}`:''))
       : tab==='repairs'?api('/management/repair-queue'):Promise.resolve([]);
-    const results=await Promise.all([...['rooms','repairs','workers'].map(name=>api(`/management/${name}`)),extra]);
+    const results=await Promise.all([...['rooms','repairs','workers'].map(name=>api(`/management/${name}`)),extra,api('/management/workforce-summary')]);
     if(generation!==epoch) return;
     dataset={rooms:results[0],repairs:results[1],workers:results[2]};
+    unregisteredCount=results[4].unregisteredCount;
     if(tab==='capacities') [capacityData,weekdayData]=results[3];
     if(tab==='repairs') queueRows=results[3];
     rows=tab==='shifts'?results[3]:dataset[tab]||[]; workers=dataset.workers;
@@ -272,6 +275,54 @@ function workerForm() {
   });};
   return form;
 }
+
+const skillNames={plumbing:'水暖',electrical:'电气',doors:'门窗五金'};
+function workforceTime(item) {
+  return item.start&&item.end?`${item.start.slice(5,10)} ${item.start.slice(11,16)}–${item.end.slice(11,16)}`:'待定';
+}
+async function previewWorkforce(path,method,body) {
+  const generation=epoch;
+  const impact=await api(path,method,{...body,preview:true});
+  if(generation!==epoch)return false;
+  const list=items=>items.length?items.map(item=>`${item.repairItemName} · ${workforceTime(item)}`).join('\n'):'无';
+  const shortages=(impact.shortages||[]).map(item=>`${item.message}\n${list(item.orders)}`).join('\n\n')||'无';
+  return window.confirm(`会放回可接单列表：\n${list(impact.returned)}\n\n需要物业处理：\n${list(impact.property)}\n\n时段缺人提示：\n${shortages}\n\n确认保存？`);
+}
+function workerAvailabilityForm(record) {
+  const root=node('section',null,'schedule-section');
+  root.append(node('h3','技能与休假'),node('p','技能由师傅自行登记，物业未核实，不代表资质认证','muted'));
+  if(record.skillChange)root.append(node('p',`最近修改：${record.skillChange.actorName} · ${timeText(record.skillChange.changedAt)}`,'muted'));
+  for(const [id,name] of Object.entries(skillNames)) {
+    const registered=(record.skills||[]).includes(id),label=node('div',`${name}：${registered?'已登记':'未登记'}`);
+    if(registered){const revoke=node('button','撤销','quiet');revoke.onclick=()=>guarded(revoke,async()=>{
+      const path='/management/workers/'+encodeURIComponent(record.id)+'/skills';
+      const body={workforceRevision:record.revision,skills:record.skills.filter(skill=>skill!==id)};
+      if(!await previewWorkforce(path,'PUT',body))return;
+      await api(path,'PUT',body);await load();
+    });label.append(revoke);}root.append(label);
+  }
+  const date=labeledInput(root,'休假日期（北京时间）','date'),hour=node('select');
+  for(const [value,label] of [['','整天'],...[8,9,10,11,14,15,16,17,19,20,21].map(n=>[String(n).padStart(2,'0'),`${n}:00–${n+1}:00`])]) {
+    const option=node('option',label);option.value=value;hour.append(option);
+  }
+  const hourLabel=node('label','休假时段');hourLabel.append(hour);root.append(hourLabel);
+  const reason=labeledInput(root,'休假备注（仅物业可见）','text');reason.maxLength=1000;
+  const add=node('button','登记休假','primary');add.onclick=()=>guarded(add,async()=>{
+    if(!date.value)throw new Error('请选择休假日期');
+    const path='/management/workers/'+encodeURIComponent(record.id)+'/leave';
+    const body={revision:record.revision,date:date.value,hour:hour.value,reason:reason.value.trim()};
+    if(!await previewWorkforce(path,'POST',body))return;
+    await api(path,'POST',body);
+    await load();
+  });root.append(add);
+  for(const leave of record.leaves||[]) {
+    const row=node('div',null,'detail-guidance');row.append(node('span',`${leave.date} ${leave.hour?leave.hour+':00–'+(Number(leave.hour)+1)+':00':'整天'} ${leave.reason||''}`));
+    const remove=node('button','撤销休假','quiet');remove.onclick=()=>guarded(remove,async()=>{
+      await api('/management/workers/'+encodeURIComponent(record.id)+'/leave','DELETE',{revision:record.revision,date:leave.date,hour:leave.hour});await load();
+    });row.append(remove);root.append(row);
+  }
+  return root;
+}
 function renderQuickFilters() {
   document.querySelectorAll('#quick-filters button').forEach(button=>{
     button.setAttribute('aria-pressed',String(button.dataset.status===$('filter').value));
@@ -282,7 +333,24 @@ function render() {
   const root=$('content');
   const existingForm=root.querySelector('.worker-form');
   root.replaceChildren();
+  if(unregisteredCount>0&&(tab==='workers'||(tab==='repairs'&&$('filter').value===QUEUE))) {
+    root.append(node('p',`${unregisteredCount} 位师傅尚未登记技能`,'schedule-section'));
+  }
   if(tab==='workers') root.append(existingForm||workerForm());
+  if(isRepairTab()) {
+    for(const record of dataset.repairs) {
+      const shortage=record.poolShortage;
+      if(!shortage)continue;
+      const notice=node('section',null,'schedule-section pool-shortage');
+      notice.append(node('h3','可接单时段缺人'),node('p',shortage.message));
+      for(const order of shortage.orders) {
+        const open=node('button',`${order.repairItemName} · ${workforceTime(order)}`,'quiet');
+        open.onclick=()=>{setTab('repairs');rows=dataset.repairs;selectedId=order.id;renderQuickFilters();renderStats();render();};
+        notice.append(open);
+      }
+      root.append(notice);
+    }
+  }
   if(tab==='shifts') {
     const controls=node('div',null,'schedule-section');
     const date=node('input'); date.type='date'; date.value=shiftDate; date.setAttribute('aria-label','顺延建议日期');
@@ -341,7 +409,7 @@ function render() {
       copy.append(tags);
     }
     const meta=node('span',null,'request-meta');
-    if(isRepairTab()) meta.append(node('span',row.workerName||([0,4].includes(row.status)?'已取消':'待派单')));
+    if(isRepairTab()) meta.append(node('span',row.inRepairPool?`可接单 · ${row.eligibleWorkerCount} 位师傅可接`:row.workerName||([0,4].includes(row.status)?'已取消':'待派单')));
     else if(tab==='workers') meta.append(node('span','维修师傅'));
     else meta.append(node('span',roomStatus[row.status]||'待审核'));
     item.append(icon,copy,meta,node('span','›','row-chevron'));
@@ -365,7 +433,9 @@ function slotText(slot) {
   return typeof slot==='string'&&/^\d{4}-\d{2}-\d{2}#\d{2}$/.test(slot)?slot.replace('#',' ') + ':00':'';
 }
 function labeledInput(root,text,tag) {
-  const label=node('label',text),input=node(tag);label.append(input);root.append(label);return input;
+  const label=node('label',text),input=node(['text','date'].includes(tag)?'input':tag);
+  if(['text','date'].includes(tag))input.type=tag;
+  label.append(input);root.append(label);return input;
 }
 function slotPicker(record,shift=false) {
   const element=node('div',null,'slot-picker');
@@ -398,6 +468,7 @@ function slotPicker(record,shift=false) {
 }
 function dispatchPanel(record,mutate) {
   const section=node('section',null,'schedule-section');section.append(node('h3','急单调度'));
+  section.append(node('p','急单可超出公开预约容量，但仍须满足技能、休假和全部预约的人手约束。未派单预约也计入；休假冲突保留原预约，改时间须走确认流程。','detail-guidance'));
   const list=node('div'),fetchOptions=node('button','查询空闲师傅'),reason=labeledInput(section,'调度原因（选填）','textarea');reason.maxLength=1000;
   section.append(fetchOptions,list);const generation=epoch;
   fetchOptions.onclick=()=>guarded(fetchOptions,async()=>{
@@ -408,7 +479,8 @@ function dispatchPanel(record,mutate) {
       list.replaceChildren();
       for(const slot of data.slots) {
         const group=node('div',null,'dispatch-slot');group.append(node('strong',windowText(slot)+(slot.current?'（当前时段）':'')));
-        if(!slot.workers.length)group.append(node('p','暂无空闲师傅，可先手动顺延其他工单','muted'));
+        group.append(node('p',`公开容量 ${slot.publicCapacity} · 其他订单 ${slot.occupied}（未派师傅 ${slot.unassigned}） · 未休假师傅 ${slot.workerCount} · 可调度 ${slot.workers.length}`,'muted'));
+        if(!slot.dispatchable)group.append(node('p',slot.reason||'请刷新调度选项后重试','shift-reason'));
         else {
           const workers=labeledInput(group,'空闲师傅','select');
           const placeholder=node('option','请选择师傅');placeholder.value='';workers.append(placeholder);
@@ -523,9 +595,10 @@ function renderDetail(record) {
     if(record) {
       field(root,'师傅姓名',record.nickName);
       field(root,'联系电话',record.mobile);
+      root.append(workerAvailabilityForm(record));
     }
     const note=node('div',null,'detail-guidance');
-    note.append(node('strong',`${rows.length} 位维修师傅`),node('p','新增的师傅账号可以登录工作台接收派单。物业派单后，师傅点击“接单”就会进入处理中。'));
+    note.append(node('strong',`${rows.length} 位维修师傅`),node('p','新增和历史师傅都需要物业核实并登记技能，才能匹配派单。物业派单后，师傅点击“接单”进入处理中。'));
     root.append(note);
     return;
   }
@@ -638,6 +711,48 @@ function renderDetail(record) {
     };
     const require=(input,text)=>{ if(input.value.trim()) return true; actionError.textContent=text; input.focus(); return false; };
     const active=[1,5,2].includes(record.status);
+    const offer=record.rescheduleOffer&&!record.rescheduleOffer.resolvedAt?record.rescheduleOffer:null;
+    if(offer) root.append(node('p',`等待住户改选时间（截止 ${timeText(offer.deadline)}）`,'detail-guidance'));
+    if(!offer&&record.inRepairPool&&record.slot&&record.eligibleWorkerCount===0) {
+      const section=node('section',null,'schedule-section');
+      section.append(node('h3','可用的备选时间'));
+      if(!offer) section.append(node('p','住户未改时间，请电话联系'));
+      const list=node('div'),errorLine=node('p');errorLine.setAttribute('role','alert');
+      const notified=labeledInput(section,'已电话告知住户','input');notified.type='checkbox';
+      section.append(list,errorLine);root.append(section);
+      const generation=epoch;
+      let currentRevision=revision,request=0;
+      async function refreshOptions() {
+        const sequence=++request;
+        list.replaceChildren(node('p','正在查询备选时间…'));
+        try {
+          const data=await api(`${base}/unstaffed-options`);
+          if(generation!==epoch||!section.isConnected||sequence!==request)return;
+          currentRevision=data.revision;list.replaceChildren();
+          if(!data.slots.length)list.append(node('p','暂无可选时段，请协调人手后刷新'));
+          for(const slot of data.slots) {
+            const item=node('div');item.append(node('p',`${windowText(slot)} · ${slot.eligibleWorkerCount} 位师傅可接`));
+            const button=node('button','已电话告知住户，改到这个时间');item.append(button);list.append(item);
+            button.onclick=async()=>{
+              if(saving||loading)return;
+              if(!notified.checked){errorLine.textContent='请先勾选已电话告知住户';return;}
+              saving=true;errorLine.textContent='';
+              list.querySelectorAll('button').forEach(control=>control.disabled=true);
+              try {
+                await api(`${base}/unstaffed-reschedule`,'PUT',{revision:currentRevision,slot:slot.slot,notified:true});
+                if(generation!==epoch||!section.isConnected)return;
+                await load(true);if(generation===epoch)await loadNotifications();
+              } catch(error) {
+                if(generation!==epoch||!section.isConnected)return;
+                errorLine.textContent=error.message;
+                await refreshOptions();
+              } finally {saving=false;}
+            };
+          }
+        } catch(error) {if(generation===epoch&&section.isConnected)errorLine.textContent=error.message;}
+      }
+      void refreshOptions();
+    }
     if(active) {
       const section=node('section',null,'schedule-section'); section.append(node('h3','工单定级'));
       const priority=labeledInput(section,'等级','select');
@@ -673,17 +788,32 @@ function renderDetail(record) {
       }
       section.append(shift);root.append(section);
     }
-    if(record.priority!=='urgent'&&(record.status===1||record.status===5)) {
+    if(record.staffingIssue&&!offer) root.append(node('p','待协调：'+record.staffingIssue+(record.inRepairPool&&record.slot&&record.eligibleWorkerCount===0
+      ? '。原预约保留，可电话确认后选择备选时间。' : '。原预约保留，改时间请发起改约。'),'detail-guidance'));
+    if([1,2,5].includes(record.status)&&['1001','1003'].includes(record.repairItemId)) {
+      const section=node('section',null,'schedule-section'),select=node('select');section.append(node('h3','明确维修技能'));
+      for(const [id,name] of Object.entries(skillNames)){const option=node('option',name);option.value=id;select.append(option);}
+      if(record.requiredSkill)select.value=record.requiredSkill;
+      const label=node('label','需要的技能');label.append(select);section.append(label);
+      const reason=labeledInput(section,'分类依据','text');reason.maxLength=500;
+      const save=node('button','确认技能','primary');save.onclick=()=>{if(require(reason,'请填写分类依据'))mutate(save,`${base}/skill`,{revision,skill:select.value,reason:reason.value.trim()});};section.append(save);root.append(section);
+    }
+    if(record.priority!=='urgent'&&(record.status===1||record.status===5||(record.status===2&&record.staffingIssue))) {
       const label=node('label','指派维修人员'),select=node('select');
       const option=node('option','请选择维修人员'); option.value=''; select.append(option);
-      for(const worker of workers) {
-        const item=node('option',`${worker.nickName} · ${worker.mobile}`);
-        item.value=worker.id; select.append(item);
-      }
+      select.disabled=true;
       label.append(select); root.append(label);
       if(!workers.length) root.append(node('p','请先在“维修人员”中添加师傅。','detail-guidance'));
       const button=node('button',record.status===5||record.releasedAt?'重新派单':'确认派单','primary');
-      button.disabled=!workers.length;
+      button.disabled=true;
+      api(`${base}/assignment-options`).then(options=>{
+        if(!select.isConnected)return;
+        for(const worker of options){
+          const item=node('option',`${worker.nickName} · ${worker.mobile}${worker.reason?' · '+worker.reason:''}`);
+          item.value=worker.id;item.disabled=!worker.selectable;select.append(item);
+        }
+        select.disabled=false;button.disabled=!options.some(worker=>worker.selectable);
+      }).catch(error=>{if(select.isConnected)actionError.textContent=error.message||'师傅可用性查询失败，请刷新';});
       button.onclick=()=>{
         if(!select.value) {actionError.textContent='请选择维修人员';return;}
         mutate(button,`${base}/assign`,{revision,workerId:select.value});
