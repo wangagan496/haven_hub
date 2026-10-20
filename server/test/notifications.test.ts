@@ -276,7 +276,8 @@ for (const role of ['admin', 'resident', 'worker'] as const) {
       for (const [id, mobile, userRole] of [
         ['resident', '13800000001', 'resident'], ['other', '13800000002', 'resident'], ['worker', '13800000003', 'worker'],
       ]) store.run('INSERT INTO users(id,mobile,nickName,role) VALUES (?,?,?,?)', id!, mobile!, id!, userRole!);
-      const healthy = { status: 5, rounds: [{ number: 1 }], pendings: [] };
+      store.run("INSERT INTO worker_skills(workerId,skill) VALUES ('worker','plumbing')");
+      const healthy = { status: 5, repairItemId: '1004', rounds: [{ number: 1 }], pendings: [] };
       // 售后期已结束的工单会在各角色 view 的 closed 判断中读取 pendings。
       const corrupt = { status: 3, rounds: [{ number: 1, confirmedAt: '2000-01-01T00:00:00Z' }], pendings: [null] };
       const rows = [
@@ -399,7 +400,7 @@ test('FIX migration upgrades a version-two database that already has early push 
     old.close();
     const upgraded = new Store(path);
     try {
-      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 5);
+      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 7);
       assert.ok(upgraded.db.prepare('PRAGMA table_info(push_deliveries)').all().some(column => column.name === 'lease'));
     } finally { upgraded.close(); }
   } finally { rmSync(folder, { recursive: true, force: true }); }

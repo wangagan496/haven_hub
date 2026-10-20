@@ -37,7 +37,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     }
     async function create(stage: 1 | 5 | 2 | 6 | 3 = 2, hours = 24): Promise<Row> {
       const created = await call('resident', 'POST', '/repair', { houseId: house.record.id,
-        repairItemId: '1001', mobile: R, expectedTime: local(now + hours * H) });
+        repairItemId: '1004', mobile: R, expectedTime: local(now + hours * H) });
       assert(created.createdId);
       let row = await detail(created.createdId);
       if (stage === 1) return row;
@@ -504,8 +504,10 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
       assert.equal(row.agreedTime, round === 1 ? row.expectedTime : '');
       assert.equal(row.slot, round === 1 ? row.expectedSlot : '');
       assert.equal(row.round, round);
-      assert.equal(row.previousWorkers[0].reason, '临时有事');
-      assert((await f.call('admin', 'GET', '/management/repairs'))[0].todo.includes('师傅退出待重派'));
+      assert.equal(row.previousWorkers, undefined);
+      const management = (await f.call('admin', 'GET', '/management/repairs')).find((item: Row) => item.id === row.id);
+      assert.equal(management.previousWorkers[0].reason, '临时有事');
+      assert(management.todo.includes('师傅退出待重派'));
       const other = await f.login('13800138092');
       f.store.run("UPDATE users SET role = 'worker' WHERE mobile = ?", '13800138092');
       const otherId = f.store.one('SELECT id FROM users WHERE mobile = ?', '13800138092')!.id;

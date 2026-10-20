@@ -23,7 +23,7 @@ test('version one database migration preserves resident data and defaults role s
   original.store.db.exec('DROP TABLE repair_capacity_weekdays; ALTER TABLE users DROP COLUMN role; PRAGMA user_version = 1;');
   await original.close();
   const migrated = await fixture(t, path);
-  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 5);
+  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 7);
   assert.equal((await migrated.request('GET', '/userInfo', session.token)).data.role, 'resident');
   assert.equal((await migrated.request('GET', `/room/${house.record.id}`, session.token)).data.name, house.record.name);
   await migrated.close();
@@ -61,13 +61,14 @@ test('one repair flows through assignment, worker acceptance and completion with
   f.store.run("UPDATE users SET role = 'admin' WHERE mobile = ?", '13800138090');
   const createdWorkers = await f.request('POST','/management/workers',admin.token,{mobile:'13800138091',nickName:'张师傅'});
   assert.equal(createdWorkers.code,10000);
-  const workerId = createdWorkers.data[0].id;
+  const workerId = createdWorkers.data.find((worker: any) => worker.mobile === '13800138091').id;
   const worker = await f.login('13800138091');
+  assert.equal((await f.request('PUT','/worker/skills',worker.token,{workforceRevision:0,skills:['plumbing']})).code,10000);
   assert.equal((await f.request('GET','/userInfo',worker.token)).data.role,'worker');
   const other = await f.login('13800138092');
   f.store.run("UPDATE users SET role = 'worker' WHERE mobile = ?", '13800138092');
   const house = await f.room(resident.token);
-  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10',attachment:[house.body.idcardFrontUrl]});
+  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10',attachment:[house.body.idcardFrontUrl]});
   const id = created.data.rows[0].id;
   const assign = `/management/repairs/${id}/assign`;
   assert.equal((await f.request('PUT',assign,worker.token,{revision:1,workerId})).status,403);
@@ -109,7 +110,7 @@ test('repair photos enforce eight and ownership; public profile cannot escalate 
   const other = await f.login('13800138001');
   const house = await f.room(resident.token);
   const foreign = await f.upload(other.token);
-  const body = {houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10'};
+  const body = {houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10'};
   assert.equal((await f.request('POST','/repair',resident.token,{...body,attachment:Array(8).fill(house.body.idcardFrontUrl)})).code,10000);
   assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:Array(9).fill(house.body.idcardFrontUrl)})).code,10000);
   assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:[foreign]})).code,10000);
@@ -130,8 +131,10 @@ test('reassignment revokes previous worker access and old version acceptance', a
   const b=await f.request('POST','/management/workers',admin.token,{mobile:'13800138092',nickName:'李师傅'});
   const workerB=b.data.find((r:any)=>r.mobile==='13800138092').id;
   const tokenA=await f.login('13800138091');
+  const tokenB=await f.login('13800138092');
+  for(const session of [tokenA,tokenB]) assert.equal((await f.request('PUT','/worker/skills',session.token,{workforceRevision:0,skills:['plumbing']})).code,10000);
   const house=await f.room(resident.token);
-  const created=await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1001',mobile:'13800138000',slot:'2026-10-20#10'});
+  const created=await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10'});
   const id=created.data.rows[0].id;
   await f.request('PUT',`/management/repairs/${id}/assign`,admin.token,{revision:1,workerId:workerA});
   const reassigned=await f.request('PUT',`/management/repairs/${id}/assign`,admin.token,{revision:2,workerId:workerB});
@@ -143,6 +146,13 @@ async function fixture(t: TestContext, path = ':memory:', now: () => number = ()
   const config = { ...readConfig({}), databasePath: path };
   const logs: object[] = [];
   const { app, store } = createApp(config, { now, log: event => logs.push(event) });
+  // 此 API 契约套件包含同一时段 23 条分页数据；提供足够的真实可匹配人手。
+  // 专门的排单套件使用两个师傅，独立验证人手不足与并发。
+  for (let i = 0; i < 24; i++) {
+    const id = `pagination-worker-${i}`;
+    store.run("INSERT OR IGNORE INTO users(id,mobile,nickName,role) VALUES (?,?,?,'worker')", id, `199000001${String(i).padStart(2, '0')}`, `预备师傅${i}`);
+    store.run("INSERT OR IGNORE INTO worker_skills(workerId,skill) VALUES (?,'plumbing')", id);
+  }
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const address = server.address();
@@ -172,6 +182,10 @@ async function fixture(t: TestContext, path = ':memory:', now: () => number = ()
     assert.equal(code.data.development, true);
     const login = await request('POST', '/login', undefined, { mobile, code: code.data.code });
     assert.equal(login.code, 10000);
+    if (['13800138091','13800138092'].includes(mobile)) {
+      const id = String(store.one('SELECT id FROM users WHERE mobile=?', mobile)!.id);
+      store.run("INSERT OR IGNORE INTO worker_skills(workerId,skill) VALUES (?,'plumbing')", id);
+    }
     return login.data as { token: string; refreshToken: string };
   }
   async function upload(token: string) {
@@ -206,7 +220,7 @@ test('optional floors round trip through HTTP and invalid floors explain the err
   const id = created.data.rows[0].id;
   assert.equal((await f.request('GET', `/room/${id}`, session.token)).data.floor, '63');
   const repair = await f.request('POST', '/repair', session.token, {
-    houseId: id, repairItemId: '1001', mobile: '13800138000', slot: '2026-10-20#10',
+    houseId: id, repairItemId: '1004', mobile: '13800138000', slot: '2026-10-20#10',
   });
   assert.equal(repair.code, 10000);
   assert.equal(repair.data.rows[0].houseInfo, '学习小区 1栋 63层 101');
@@ -351,7 +365,7 @@ test('repair creation returns all rows beyond a page, cancellation updates statu
   const a = await f.login();
   const b = await f.login('13800138001');
   const { record: house } = await f.room(a.token);
-  const body = { houseId: house.id, repairItemId: '1001', mobile: '13800138000', slot: '2026-10-20#10', attachment: [] };
+  const body = { houseId: house.id, repairItemId: '1004', mobile: '13800138000', slot: '2026-10-20#10', attachment: [] };
   let response: any;
   for (let i = 0; i < 23; i++) {
     response = await f.request('POST', '/repair', a.token, { ...body, description: `记录${i}` });
@@ -391,7 +405,7 @@ test('visitor, profile, announcement and upload contracts are usable by the app'
   assert(profile.data.id);
   assert.equal((await f.request('GET', '/announcement')).data.length, 1);
   assert.equal((await f.request('GET', '/announcement/local-welcome')).code, 10000);
-  assert.equal((await f.request('GET', '/repairItem', a.token)).data.length, 3);
+  assert.equal((await f.request('GET', '/repairItem', a.token)).data.length, 4);
 });
 
 test('mutation rolls back if constructing the returned full list fails', async t => {

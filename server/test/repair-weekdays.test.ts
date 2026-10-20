@@ -134,7 +134,7 @@ test('weekdays migration: v4 to v5 preserves raw defaults, overrides, repair pay
     const availability = slotAvailability('2026-10-18', effective, rows, START);
     store.close();
     store = new Store(file);
-    assert.equal(store.one('PRAGMA user_version')?.user_version, 5);
+    assert.equal(store.one('PRAGMA user_version')?.user_version, 7);
     assert.deepEqual(snapshot(), before);
     assert.equal(store.one('SELECT COUNT(*) AS count FROM repair_capacity_weekdays')?.count, 0);
     const repository = new RepairRepository(store, () => START, () => {}, '');
@@ -143,7 +143,7 @@ test('weekdays migration: v4 to v5 preserves raw defaults, overrides, repair pay
     repository.saveWeekdayCapacities(7, { '10': 0 });
     store.close();
     store = new Store(file);
-    assert.equal(store.one('PRAGMA user_version')?.user_version, 5);
+    assert.equal(store.one('PRAGMA user_version')?.user_version, 7);
     assert.deepEqual(snapshot(), before);
     assert.equal(store.one("SELECT capacity FROM repair_capacity_weekdays WHERE weekday=7 AND hour='10'")?.capacity, 0);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }

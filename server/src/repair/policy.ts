@@ -27,6 +27,7 @@ export function compareQueue(a: RecordData, b: RecordData) {
 }
 export function shiftRejection(record: RecordData, now: number): string {
   if (!activeRepair(record)) return '当前阶段不能顺延';
+  if (record.staffingIssue && (parseSlot(record.slot)?.startsAt ?? Infinity) <= now) return '该时段已开始，请改派';
   if (!record.agreedTime || pendings(record).some(item => item.kind === 'reschedule' && item.firstSchedule && !item.resolvedAt)) {
     return '首次上门时间尚未确认，请等待住户回应或重新提议';
   }
@@ -119,7 +120,7 @@ export function settle(record: RecordData, now: number): boolean {
     changed = true;
   }
   const proposal = openPending(record, 'reschedule');
-  if (proposal?.firstSchedule && proposal.deadline && proposal.proposedSlot
+  if (!record.staffingIssue && proposal?.firstSchedule && proposal.deadline && proposal.proposedSlot
     && activeRepair(record)
     && now >= Date.parse(proposal.deadline)) {
     // 提议时已持有名额和师傅时段；到期只确认，不重新竞争名额。
@@ -139,6 +140,8 @@ export function todoTags(record: RecordData, now: number): string[] {
   if (urgentAwaitingDispatch(record)) tags.push('急单待调度');
   if (urgentAwaitingRating(record)) tags.push('紧急诉求待定级');
   if (activeRepair(record) && record.needsAdmin) tags.push('师傅请求物业协助');
+  if (activeRepair(record) && record.staffingIssue) tags.push('人手待协调');
+  if (activeRepair(record) && record.poolShortage) tags.push('可接单时段缺人');
   if (openPending(record, 'reschedule')?.firstSchedule) tags.push('等待确认时间');
   const time = (value: unknown) => Date.parse(String(value ?? ''));
   const agreed = time(record.agreedTime);

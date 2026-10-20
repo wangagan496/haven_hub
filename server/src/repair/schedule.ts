@@ -1,6 +1,6 @@
 import type { RecordData } from '../database.js';
 import { ApiError, requireValue } from '../errors.js';
-import { Status } from './model.js';
+import { Status, type RepairSkill } from './model.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -79,6 +79,11 @@ export function occupancy(records: readonly RecordData[], code: string, excludeI
 }
 export function workerConflict(records: readonly RecordData[], code: string, workerId: string, excludeId?: string) {
   return workerId !== '' && slotOrders(records, code, excludeId).some(record => record.workerId === workerId);
+}
+export type WorkerAvailability = { id: string; skills: readonly RepairSkill[]; skillsKnown: boolean; leaves: readonly { date: string; hour: string }[] };
+export function workerOnLeave(worker: WorkerAvailability, code: string) {
+  const [date, hour] = code.split('#');
+  return worker.leaves.some(leave => leave.date === date && (leave.hour === '' || leave.hour === hour));
 }
 export function requireFreeWorker(records: readonly RecordData[], code: string, workerId: string, excludeId?: string) {
   if (workerConflict(records, code, workerId, excludeId)) throw new ApiError(409, 40900, '该师傅此时段已有安排');

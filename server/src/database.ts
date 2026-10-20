@@ -16,7 +16,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-    if (![0, 1, 2, 3, 4, 5].includes(Number(version))) throw new Error('数据库版本不兼容');
+    if (![0, 1, 2, 3, 4, 5, 6, 7].includes(Number(version))) throw new Error('数据库版本不兼容');
     if (version === 0) this.transaction(() => {
       this.db.exec(`
         CREATE TABLE users (id TEXT PRIMARY KEY, mobile TEXT NOT NULL UNIQUE, nickName TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT '');
@@ -76,6 +76,26 @@ export class Store {
         weekday INTEGER NOT NULL CHECK(weekday BETWEEN 1 AND 7), hour TEXT NOT NULL,
         capacity INTEGER NOT NULL CHECK(capacity >= 0), PRIMARY KEY(weekday,hour));
         PRAGMA user_version = 5;`);
+    });
+    if (Number(version) < 6) this.transaction(() => {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS worker_skills (
+          workerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          skill TEXT NOT NULL CHECK(skill IN ('plumbing','electrical','doors')), PRIMARY KEY(workerId, skill));
+        CREATE TABLE IF NOT EXISTS worker_leaves (
+          workerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          date TEXT NOT NULL, hour TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(workerId, date, hour));
+        CREATE INDEX IF NOT EXISTS worker_leaves_slot ON worker_leaves(date, hour);`);
+      if (!this.db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'workforceRevision')) {
+        this.db.exec('ALTER TABLE users ADD COLUMN workforceRevision INTEGER NOT NULL DEFAULT 0');
+      }
+      this.db.exec('PRAGMA user_version = 6');
+    });
+    if (Number(version) < 7) this.transaction(() => {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS worker_skill_audit (
+        workerId TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        actorId TEXT NOT NULL, actorName TEXT NOT NULL, changedAt TEXT NOT NULL);
+        PRAGMA user_version = 7;`);
     });
   }
   private depth = 0;

@@ -80,7 +80,7 @@ export function propose(record: RecordData, input: { slot: string; reason: strin
   const at = iso(now);
   const { role } = input;
   const first = !record.slot && !record.agreedTime;
-  requireValue(record.status === Status.processing || (first && role === 'admin'
+  requireValue(record.status === Status.processing || ((first || record.workforceReturned) && role === 'admin'
     && (record.status === Status.pending || record.status === Status.assigned)), '当前阶段不能安排上门时间');
   requireValue(!first || role !== 'resident', '待安排工单请等待师傅或物业提出时间');
   requireValue(!openPending(record, 'reschedule'), '已有待回应的改约，请先处理');
@@ -211,10 +211,19 @@ export function objectRevoke(record: RecordData, input: { reason: string }, now:
 export function assign(record: RecordData, input: { workerId: string; worker: WorkerContact }, now: number): void {
   const at = iso(now);
   const { worker } = input;
-  requireValue(record.status === Status.pending || record.status === Status.assigned, '只能对未接单的报修派单');
+  requireValue(record.status === Status.pending || record.status === Status.assigned
+    || (record.status === Status.processing && Boolean(record.staffingIssue)), '只能对未接单或人手待协调的报修派单');
+  const previousWorkerId = String(record.workerId ?? '');
+  if (previousWorkerId && previousWorkerId !== input.workerId) {
+    record.previousWorkers = [...(Array.isArray(record.previousWorkers) ? record.previousWorkers : []),
+      { workerId: previousWorkerId, workerName: record.workerName, releasedAt: at, reason: '物业改派' }];
+    if (!openPending(record, 'reschedule')?.firstSchedule) voidReschedule(record, at, 'reassigned');
+  }
   Object.assign(record, { workflowVersion: 1, status: Status.assigned, workerId: input.workerId,
+    assignmentSource: 'admin', workforceReturned: false,
     workerName: String(worker.nickName), workerMobile: String(worker.mobile), assignedAt: at, releasedAt: '' });
   addEvent(record, { action: 'assigned', label: '物业派单', at, by: 'admin', detail: `指派给${worker.nickName}`,
+    ...(previousWorkerId && previousWorkerId !== input.workerId ? { previousWorkerId } : {}),
     round: currentRound(record).number });
 }
 
@@ -318,7 +327,8 @@ export function dispatch(record: RecordData, input: { workerId: string; worker: 
   voidReschedule(record, at, 'dispatched');
   setSlot(record, input.slot);
   Object.assign(record, { status: Status.processing, workerId: input.workerId, workerName: String(input.worker.nickName ?? ''),
-    workerMobile: String(input.worker.mobile ?? ''), assignedAt: at, acceptedAt: at, releasedAt: '' });
+    workerMobile: String(input.worker.mobile ?? ''), assignedAt: at, acceptedAt: at, releasedAt: '',
+    assignmentSource: 'admin', workforceReturned: false });
   Object.assign(currentRound(record), { workerId: record.workerId, workerName: record.workerName });
   addEvent(record, { action: 'urgent_dispatched', label: '物业调度急单，立即生效', at, by: 'admin',
     detail: `${reassigned ? `由 ${previousWorkerName || previousWorkerId} 改派给 ${record.workerName || input.workerId}` : record.workerName}；${input.slot}${input.reason ? `；${input.reason}` : ''}`,

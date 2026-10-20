@@ -8,6 +8,8 @@ import { RepairPath } from './paths.js';
 export function createRepairRouter(repairs: RepairService) {
   const router = Router();
   const ok = (data: unknown) => ({ code: 10000, message: '成功', data });
+  router.get(RepairPath.pool, (_req, res) => res.json(ok(repairs.repairPool(res.locals.userId))));
+  router.put(RepairPath.claim, (req, res) => res.json(ok(repairs.claim(res.locals.userId, req.params.id, req.body))));
   router.get(RepairPath.queue, (_req, res) => res.json(ok(repairs.queue(res.locals.userId))));
   router.put(RepairPath.priority, (req, res) => res.json(ok(repairs.grade(res.locals.userId, req.params.id, req.body))));
   router.get(RepairPath.shiftSuggestions, (req, res) => res.json(ok(repairs.shiftSuggestions(res.locals.userId, req.query))));
@@ -15,6 +17,10 @@ export function createRepairRouter(repairs: RepairService) {
   router.get(RepairPath.dispatchOptions, (req, res) => res.json(ok(repairs.dispatchOptions(res.locals.userId, req.params.id, req.query))));
   router.put(RepairPath.dispatch, (req, res) => res.json(ok(repairs.dispatch(res.locals.userId, req.params.id, req.body))));
   router.get(RepairPath.slots, (req, res) => res.json(ok(repairs.slots(res.locals.userId, req.query))));
+  router.get('/repair/:id/unstaffed-options', (req, res) => res.json(ok(repairs.unstaffedOptions(res.locals.userId, req.params.id, false, req.query))));
+  router.put('/repair/:id/unstaffed-choice', (req, res) => res.json(ok(repairs.unstaffedChoice(res.locals.userId, req.params.id, req.body))));
+  router.get('/management/repairs/:id/unstaffed-options', (req, res) => res.json(ok(repairs.unstaffedOptions(res.locals.userId, req.params.id, true))));
+  router.put('/management/repairs/:id/unstaffed-reschedule', (req, res) => res.json(ok(repairs.unstaffedReschedule(res.locals.userId, req.params.id, req.body))));
   router.get(RepairPath.capacities, (req, res) => res.json(ok(repairs.capacities(res.locals.userId, req.query))));
   router.put(RepairPath.capacities, (req, res) => res.json(ok(repairs.saveCapacities(res.locals.userId, req.body))));
   router.get(RepairPath.capacityWeekdays, (_req, res) => res.json(ok(repairs.weekdayCapacities(res.locals.userId))));
@@ -25,6 +31,8 @@ export function createRepairRouter(repairs: RepairService) {
   router.post(RepairPath.propose, (req, res) => res.json(ok(repairs.propose(res.locals.userId, 'admin', req.params.id, req.body))));
   router.get('/management/repairs', (_req, res) => res.json(ok(repairs.adminList())));
   router.put('/management/repairs/:id/assign', (req, res) => res.json(ok(repairs.assign(req.params.id, req.body))));
+  router.get('/management/repairs/:id/assignment-options', (req, res) => res.json(ok(repairs.assignmentOptions(res.locals.userId, req.params.id))));
+  router.put('/management/repairs/:id/skill', (req, res) => res.json(ok(repairs.classify(res.locals.userId, req.params.id, req.body))));
   router.put('/management/repairs/:id/aftersale', (req, res) => res.json(ok(repairs.reviewAftersale(req.params.id, req.body))));
   router.put('/management/repairs/:id/reschedule', (req, res) => res.json(ok(repairs.respond(res.locals.userId, 'admin', req.params.id, req.body))));
   router.post('/management/repairs/:id/notes', (req, res) => res.json(ok(repairs.note(req.params.id, req.body))));
@@ -42,7 +50,7 @@ export function createRepairRouter(repairs: RepairService) {
   router.post('/worker/repairs/:id/progress', (req, res) => res.json(ok(repairs.progress(res.locals.userId, req.params.id, req.body))));
   router.put('/worker/repairs/:id/revoke', (req, res) => res.json(ok(repairs.acknowledgeRevoke(res.locals.userId, req.params.id, req.body))));
   router.post('/worker/repairs/:id/objection', (req, res) => res.json(ok(repairs.objectRevoke(res.locals.userId, req.params.id, req.body))));
-  router.get('/repairItem', (_req, res) => res.json(ok(repairItems)));
+  router.get('/repairItem', (_req, res) => res.json(ok(repairItems.filter(item => item.id !== '1001'))));
   router.get('/repair', (req, res) => {
     const { current, pageSize } = z.object({ current: z.coerce.number().int().min(1).default(1),
       pageSize: z.coerce.number().int().min(1).max(200).default(20) }).parse(req.query);

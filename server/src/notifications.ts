@@ -129,7 +129,7 @@ export class Notifications {
   list(userId: string) {
     return this.store.db.prepare(`SELECT id,repairId,taskKey,role,title,body,active,createdAt,readAt FROM notifications
       WHERE userId = ? ORDER BY active DESC,
-      CASE WHEN active = 1 AND taskKey IN ('urgent_dispatch', 'urgent_request') THEN 0 ELSE 1 END, createdAt DESC LIMIT 100`).all(userId).map(note => ({
+      CASE WHEN active = 1 AND (taskKey IN ('urgent_dispatch', 'urgent_request') OR taskKey LIKE 'staffing:%') THEN 0 ELSE 1 END, createdAt DESC LIMIT 100`).all(userId).map(note => ({
       id: String(note.id), repairId: String(note.repairId), role: String(note.role), title: String(note.title),
       body: String(note.body), active: Number(note.active), createdAt: Number(note.createdAt), readAt: note.readAt,
       kind: notificationKind(String(note.taskKey)),

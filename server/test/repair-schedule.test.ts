@@ -430,10 +430,11 @@ test('schedule API: existing assignment from legacy data cannot be accepted over
   const row = await f.create();
   // 模拟迁移前已存在的重复派单；不能通过新派单接口制造这个状态。
   f.store.save('repairs', f.ids.resident, { ...f.stored(row), id: row.id, workerId: f.ids.worker, status: Status.assigned }, true);
-  const result = await f.raw('worker', 'PUT', `/worker/repairs/${row.id}/accept`, { revision: row.revision });
+  const fresh = await f.detail(row); // 人手冲突结算会更新 revision；先刷新，再检查业务冲突。
+  const result = await f.raw('worker', 'PUT', `/worker/repairs/${row.id}/accept`, { revision: fresh.revision });
   assert.equal(result.status, 409);
   assert.equal(result.message, '该师傅此时段已有安排');
-  assert.equal(f.stored(row).revision, row.revision);
+  assert.equal(f.stored(row).revision, fresh.revision);
 });
 
 test('schedule API: first slot checks and Store.save are rolled back if notification hook write fails', async t => {
@@ -672,7 +673,7 @@ test('schedule migration: v3 to v4 maps only exact legacy times, uses Store.save
     try { migrated = new Store(path); } finally { Store.prototype.save = originalSave; }
     try {
       assert.equal(saves, 3);
-      assert.equal(migrated.one('PRAGMA user_version')?.user_version, 5);
+      assert.equal(migrated.one('PRAGMA user_version')?.user_version, 7);
       assert.equal(migrated.get('repairs', 'r', 'exact')?.slot, SLOT);
       assert.equal(migrated.get('repairs', 'r', 'exact')?.revision, 9);
       for (const [id, expected] of [['partial', '2026-10-18T10:30:00+08:00'], ['date', '2026-10-18']]) {

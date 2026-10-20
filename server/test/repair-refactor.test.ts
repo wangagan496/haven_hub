@@ -19,17 +19,18 @@ function fixture(t: TestContext) {
   t.after(() => store.close());
   store.run('INSERT INTO users(id,mobile,nickName,role) VALUES (?,?,?,?)', owner, '13800138000', '住户', 'resident');
   store.run('INSERT INTO users(id,mobile,nickName,role) VALUES (?,?,?,?)', workerId, '13800138091', '师傅', 'worker');
+  store.run("INSERT INTO worker_skills(workerId,skill) VALUES (?,'plumbing')", workerId);
   store.save('rooms', owner, { id: houseId, point: '小区', building: '1栋', floor: 'B1', room: '101' });
   const repairs = new RepairService(store, () => now, '020-88888888', () => {}, baseUrl);
   const repository = new RepairRepository(store, () => now, () => {}, baseUrl);
   function seed(status: number = Status.pending) {
-    const record: RecordData = { id: 'repair-a', status, revision: 7, workerId, mobile: '13800138000',
+    const record: RecordData = { id: 'repair-a', repairItemId: '1004', status, revision: 7, workerId, mobile: '13800138000',
       workerMobile: '13800138091', agreedTime: iso(now + 3_600_000),
       rounds: [newRound(1, 'first', iso(now - 3_600_000))], pendings: [], timeline: [] };
     store.save('repairs', owner, record);
     return record;
   }
-  const input = { houseId, repairItemId: '1001', mobile: '13800138000', expectedTime: '2026-10-18T10:00:00+08:00' };
+  const input = { houseId, repairItemId: '1004', mobile: '13800138000', expectedTime: '2026-10-18T10:00:00+08:00' };
   return { store, repairs, repository, seed, input };
 }
 
@@ -74,6 +75,8 @@ test('refactor: action failure rolls back only its transaction, not the complete
 
 test('refactor: new creation and legacy CommunityService creation preserve their response contracts', t => {
   const f = fixture(t);
+  f.store.run("INSERT INTO users(id,mobile,nickName,role) VALUES ('second-worker','13800138092','第二师傅','worker')");
+  f.store.run("INSERT INTO worker_skills(workerId,skill) VALUES ('second-worker','plumbing')");
   const saved: string[] = [];
   f.store.onRepairSaved = (_owner, record) => saved.push(record.id);
   const created = f.repairs.createRepair(owner, f.input);

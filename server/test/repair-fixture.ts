@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
+import type { PushTransport } from '../src/push-transport.js';
 
 export const H = 3_600_000;
 export const START = Date.parse('2026-10-17T08:00:00+08:00');
@@ -11,10 +12,10 @@ export const NEXT = '2026-10-18#11';
 export type Row = Record<string, any>;
 export type Role = 'resident' | 'other' | 'worker' | 'worker2' | 'admin';
 
-export async function fixture(t: TestContext) {
+export async function fixture(t: TestContext, options: { pushTransport?: PushTransport; pushTimer?: boolean } = {}) {
   let now = START;
   const config = readConfig({ DATABASE_PATH: ':memory:' });
-  const { app, store, notifications } = createApp(config, { now: () => now, pushTimer: false, log: () => {} });
+  const { app, store, notifications } = createApp(config, { now: () => now, pushTimer: false, log: () => {}, ...options });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const address = server.address();
@@ -46,12 +47,15 @@ export async function fixture(t: TestContext) {
     tokens[role] = session.data.token;
     ids[role] = String(store.one('SELECT id FROM users WHERE mobile=?', mobile)!.id);
     if (role !== 'resident' && role !== 'other') store.run('UPDATE users SET role=? WHERE id=?', role === 'worker2' ? 'worker' : role, ids[role]);
+    if (role === 'worker' || role === 'worker2') {
+      for (const skill of ['plumbing', 'electrical', 'doors']) store.run('INSERT INTO worker_skills(workerId,skill) VALUES (?,?)', ids[role], skill);
+    }
   }
   // 此套件只验证预约时钟，保持已登录会话有效，鉴权本身由原测试覆盖。
   store.run('UPDATE sessions SET accessExpires=?', START + 90 * 24 * H);
   const houseId = randomUUID();
   store.save('rooms', ids.resident, { id: houseId, point: '测试小区', building: '1栋', room: '101' });
-  const body = { houseId, mobile: '13800138000', repairItemId: '1001' };
+  const body = { houseId, mobile: '13800138000', repairItemId: '1004' };
   async function create(slot = SLOT, extra: Row = {}) {
     const result = await call('resident', 'POST', '/repair', { ...body, slot, ...extra });
     return result.rows.find((row: Row) => row.id === result.createdId) as Row;
@@ -69,6 +73,6 @@ export async function fixture(t: TestContext) {
   const slots = (day = '2026-10-18', excludeId = '') => call('resident', 'GET', `/repair/slots?date=${day}${excludeId ? `&excludeId=${excludeId}` : ''}`);
   const stored = (row: Row) => store.get('repairs', ids.resident, row.id)! as Row & { id: string };
   const capacities = (capacity: number, hour = '10') => call('admin', 'PUT', '/management/repair-capacities', { capacities: { [hour]: capacity } });
-  return { raw, call, change, create, processing, detail, slots, stored, capacities, body, store, ids, config,
+  return { raw, call, change, create, processing, detail, slots, stored, capacities, body, store, ids, config, notifications,
     time: () => now, at: (time: number) => { now = time; } };
 }

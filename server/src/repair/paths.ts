@@ -1,5 +1,8 @@
 // 新增 HTTP 路径先在此定义；旧路由保持既有地址。
 export const RepairPath = {
+  pool: '/worker/repair-pool',
+  claim: '/worker/repairs/:id/claim',
+  skills: '/worker/skills',
   slots: '/repair/slots',
   capacities: '/management/repair-capacities',
   capacityWeekdays: '/management/repair-capacities/weekdays',

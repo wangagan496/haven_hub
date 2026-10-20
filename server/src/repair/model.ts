@@ -84,4 +84,16 @@ export function voidReschedule(record: RecordData, at: string, resolution: strin
 export const localTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?[+-]\d{2}:\d{2}$/;
 
 export type Role = Exclude<Actor, 'system'>;
-export const repairItems = [{ id: '1001', name: '水电维修' }, { id: '1002', name: '门窗维修' }, { id: '1003', name: '其他维修' }];
+export const repairItems = [
+  { id: '1001', name: '水电维修' }, { id: '1004', name: '水暖维修' }, { id: '1005', name: '电气维修' },
+  { id: '1002', name: '门窗五金' }, { id: '1003', name: '其他维修' },
+];
+export type RepairSkill = 'plumbing' | 'electrical' | 'doors';
+export const repairSkills: readonly { id: RepairSkill; name: string }[] = [
+  { id: 'plumbing', name: '水暖' }, { id: 'electrical', name: '电气' }, { id: 'doors', name: '门窗五金' },
+];
+/** 历史水电和其他维修必须由物业明确技能，不能当作任意师傅都能接。 */
+export function requiredSkill(record: RecordData): RepairSkill | '' {
+  if (repairSkills.some(skill => skill.id === record.requiredSkill)) return record.requiredSkill as RepairSkill;
+  return record.repairItemId === '1004' ? 'plumbing' : record.repairItemId === '1005' ? 'electrical' : record.repairItemId === '1002' ? 'doors' : '';
+}

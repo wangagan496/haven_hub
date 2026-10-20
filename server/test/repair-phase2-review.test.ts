@@ -220,7 +220,8 @@ test('phase2 review: redispatch appends to existing release history without repl
   let row = await grade(f, await f.processing());
   await f.change('worker', row, 'release', { reason: '原师傅退出' });
   row = await f.detail(row);
-  const history = structuredClone(row.previousWorkers);
+  assert.equal(row.previousWorkers, undefined);
+  const history = structuredClone(f.stored(row).previousWorkers);
   row = await f.change('admin', row, 'dispatch', { workerId: f.ids.worker2, slot: NEXT });
   assert.deepEqual(row.previousWorkers, history);
   row = await f.change('admin', row, 'dispatch', { workerId: f.ids.worker, slot: SLOT });

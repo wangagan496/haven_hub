@@ -18,6 +18,12 @@ for (const account of accounts) {
   if (!store.one('SELECT id FROM users WHERE mobile = ?', account.mobile)) {
     store.run('INSERT INTO users(id,mobile,nickName,role) VALUES (?,?,?,?)',randomUUID(),account.mobile,account.name,account.role);
   }
+  if(account.role==='worker') {
+    const worker=store.one("SELECT id FROM users WHERE mobile=? AND role='worker'",account.mobile);
+    if(worker && !store.one('SELECT 1 FROM worker_skills WHERE workerId=?',String(worker.id))) {
+      for(const skill of ['plumbing','electrical','doors']) store.run('INSERT INTO worker_skills(workerId,skill) VALUES (?,?)',String(worker.id),skill);
+    }
+  }
 }
 const resident = String(store.one('SELECT id FROM users WHERE mobile = ?',accounts[0].mobile)!.id);
 if (!store.list('rooms',resident).length) {
@@ -28,7 +34,7 @@ if (!store.list('rooms',resident).length) {
   const url=`${config.publicBaseUrl}/media/${id}`;
   const house=service.saveRoom(resident,{point:'演示小区',building:'1栋',room:'101',name:'测试住户',gender:1,mobile:accounts[0].mobile,idcardFrontUrl:url,idcardBackUrl:url}).rows[0]!;
   // 演示种子使用“等待安排”，避免写死日期过期或绕过时段规则。
-  service.createRepair(resident,{houseId:house.id,repairItemId:'1001',mobile:accounts[0].mobile,slot:'',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[url]});
+  service.createRepair(resident,{houseId:house.id,repairItemId:'1004',mobile:accounts[0].mobile,slot:'',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[url]});
 }
 const server=app.listen(config.port,config.host,()=>process.stdout.write('物业后台：http://127.0.0.1:3010/admin/\n维修工作台：http://127.0.0.1:3010/workflow/#/worker\n住户19900000001 / 物业19900000002 / 师傅19900000003，均使用开发验证码。\n'));
 server.on('error',error=>{process.stderr.write(`${error.message}\n`);store.close();process.exitCode=1;});

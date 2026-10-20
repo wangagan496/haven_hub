@@ -1,9 +1,11 @@
 import type { RecordData, Store } from '../database.js';
 import { ApiError } from '../errors.js';
 import { ownedUpload } from '../community/resources.js';
-import { ensureRounds } from './model.js';
-import { settle } from './policy.js';
-import { type Capacity, requireAvailable, requireFreeWorker } from './schedule.js';
+import { ensureRounds, requiredSkill } from './model.js';
+import { activeRepair, settle } from './policy.js';
+import { type Capacity, parseSlot, requireAvailable, requireFreeWorker, scheduleRules } from './schedule.js';
+import { holdingEligibility, inRepairPool, readWorkforce, StaffingContext, staffingRejection } from './workforce.js';
+import { closeOffer, settleOffer, unstaffedOptions } from './unstaffed.js';
 
 export const ANY_REVISION = -1;
 export type Loaded = { owner: string; record: RecordData };
@@ -30,22 +32,41 @@ export class RepairRepository {
     return { owner: String(row.userId), record };
   }
 
-  private persistSettlement(loaded: Loaded) {
-    if (!settle(loaded.record, this.now())) return;
+  private refreshStaffingIssue(record: RecordData, context?: StaffingContext): boolean {
+    const before = String(record.staffingIssue ?? '');
+    record.staffingIssue = this.staffingIssue(record, context);
+    if (before === record.staffingIssue) return false;
+    record.staffingIncident = Number(record.staffingIncident ?? 0) + 1;
+    return true;
+  }
+
+  private persistSettlement(loaded: Loaded, context?: StaffingContext) {
+    const previousSlot = String(loaded.record.slot ?? '');
+    const changedBefore = this.refreshStaffingIssue(loaded.record, context);
+    const settled = settle(loaded.record, this.now());
+    // 尚未保存的状态变化单独判断；保存成功才使请求快照失效。
+    const changedAfter = this.refreshStaffingIssue(loaded.record, settled && context
+      ? new StaffingContext(context.workers, [...(context.slots.get(String(loaded.record.slot ?? '')) ?? [])
+          .filter(row => row.id !== loaded.record.id), loaded.record]) : context);
+    const offerContext = context ?? this.staffingContext();
+    const offerChanged = settleOffer(loaded.record, this.now(), offerContext,
+      () => this.unstaffedOptions(loaded.record, offerContext));
+    if (!settled && !changedBefore && !changedAfter && !offerChanged) return;
     loaded.record.revision = Number(loaded.record.revision ?? 0) + 1;
-    this.store.save('repairs', loaded.owner, loaded.record, true);
+    this.store.savepoint(() => this.store.save('repairs', loaded.owner, loaded.record, true));
+    context?.saved(previousSlot, loaded.record);
   }
 
   /** 单条结算，自成一个事务。 */
-  settleOne(id: string) {
+  settleOne(id: string, context?: StaffingContext) {
     this.store.transaction(() => {
       const row = this.store.one('SELECT id FROM repairs WHERE id = ?', id);
-      if (row) this.persistSettlement(this.load(id));
+      if (row) this.persistSettlement(this.load(id), context);
     });
   }
 
   /** 逐条结算；坏记录在保存点内回滚并记日志，不阻断其他工单或推送队列。 */
-  settleAll(filter: { owner?: string; workerId?: string; slotDate?: string } = {}) {
+  settleAll(filter: { owner?: string; workerId?: string; slotDate?: string } = {}, context = this.staffingContext(), strict = false) {
     this.store.transaction(() => {
       const rows = filter.owner
         ? this.store.db.prepare('SELECT id, userId, payload FROM repairs WHERE userId = ?').all(filter.owner)
@@ -56,15 +77,31 @@ export class RepairRepository {
             : this.store.db.prepare('SELECT id, userId, payload FROM repairs').all();
       for (const row of rows) {
         try {
-          const processed = this.store.savepoint(() => {
-            const record = JSON.parse(String(row.payload)) as RecordData;
-            if (filter.workerId && record.workerId !== filter.workerId) return false;
-            ensureRounds(record);
-            this.persistSettlement({ owner: String(row.userId), record });
-            return true;
-          });
-          if (processed) this.badRecordLogs.delete(`repair_settlement_failed:${String(row.id)}`);
+          const record = JSON.parse(String(row.payload)) as RecordData;
+          if (filter.workerId && record.workerId !== filter.workerId) continue;
+          ensureRounds(record);
+          this.persistSettlement({ owner: String(row.userId), record }, context);
+          this.badRecordLogs.delete(`repair_settlement_failed:${String(row.id)}`);
         } catch (error) {
+          if (strict) throw error;
+          this.logBadRecordOnce('repair_settlement_failed', String(row.id), { type: error instanceof Error ? error.name : 'unknown' });
+        }
+      }
+      // 聚合提示独立于 staffingIssue；仅写最早提交单，不参与预约或接单判定。
+      const shortages = new Map(context.shortages().map(item => [item.orders[0]!.id, item]));
+      // 聚合提示跨住户共享；业务结算过滤不能留下其他住户名下的旧提示。
+      for (const row of [...context.slots.values()].flat()) {
+        try {
+          const loaded = this.load(String(row.id));
+          const next = shortages.get(loaded.record.id) ?? null;
+          if (JSON.stringify(loaded.record.poolShortage ?? null) === JSON.stringify(next)) continue;
+          loaded.record.poolShortage = next;
+          loaded.record.poolShortageIncident = Number(loaded.record.poolShortageIncident ?? 0) + 1;
+          // 提示不是工单业务变更，不使用户手上的 revision 过期。
+          this.store.savepoint(() => this.store.save('repairs', loaded.owner, loaded.record, true));
+          context.saved(String(loaded.record.slot ?? ''), loaded.record);
+        } catch (error) {
+          if (strict) throw error;
           this.logBadRecordOnce('repair_settlement_failed', String(row.id), { type: error instanceof Error ? error.name : 'unknown' });
         }
       }
@@ -74,22 +111,29 @@ export class RepairRepository {
 
   /**
    * 先独立提交到期结算，再授权、检查 revision、执行纯动作并保存。
-   * 权限失败保留 404/403；业务检查在动作内，因此已授权的旧 revision 总是返回 409。
+   * 权限失败保留 404/403；旧 revision 返回 409。独立 offer 的关闭原因可在 revision 前给出专用 409。
    */
   mutate(id: string, expected: number, authorize: (loaded: Loaded) => void,
-    action: (record: RecordData, now: number) => void, afterSave?: () => void): Loaded {
+    action: (record: RecordData, now: number) => void, afterSave?: () => void, beforeRevision?: (record: RecordData) => void): Loaded {
     this.settleOne(id);
     return this.store.transaction(() => {
       const loaded = this.load(id);
       authorize(loaded);
+      beforeRevision?.(loaded.record);
       const current = Number(loaded.record.revision ?? 0);
       if (expected !== ANY_REVISION && current !== expected) {
         throw new ApiError(409, 40900, '记录已更新，请刷新后再操作');
       }
+      const previousSlot = loaded.record.slot;
       action(loaded.record, this.now());
+      if (previousSlot !== loaded.record.slot) closeOffer(loaded.record, this.now(), 'stale');
+      this.refreshStaffingIssue(loaded.record);
       loaded.record.revision = current + 1;
       this.store.save('repairs', loaded.owner, loaded.record, true);
       afterSave?.();
+      if (!afterSave) this.settleAll();
+      // 聚合提示和关联单结算可能已更新当前单，返回保存后的状态。
+      loaded.record = this.load(id).record;
       return loaded;
     });
   }
@@ -118,6 +162,47 @@ export class RepairRepository {
     return this.store.db.prepare("SELECT id,nickName,mobile FROM users WHERE role='worker' ORDER BY nickName,id").all();
   }
 
+  poolLocation(record: RecordData) {
+    if (record.community !== undefined && record.building !== undefined) return record;
+    const row = this.store.one('SELECT rooms.payload FROM rooms JOIN repairs ON repairs.userId=rooms.userId WHERE repairs.id=? AND rooms.id=?', record.id, String(record.houseId ?? ''));
+    if (!row) return record;
+    const house = JSON.parse(String(row.payload)) as RecordData;
+    return { ...record, community: String(house.point ?? ''), building: String(house.building ?? '') };
+  }
+
+  workerAvailability() { return readWorkforce(this.store); }
+  settleWorkforceAfterClaim() { this.settleAll({}, this.staffingContext(), true); }
+
+  staffingContext() {
+    const records: RecordData[] = [];
+    for (const row of this.allRows()) {
+      try { const record = JSON.parse(String(row.payload)); if (record && typeof record === 'object' && !Array.isArray(record)) records.push(record); } catch { /* 逐条结算记录坏数据。 */ }
+    }
+    return new StaffingContext(this.workerAvailability(), records);
+  }
+
+  unstaffedOptions(record: RecordData, context = this.staffingContext()) {
+    return unstaffedOptions(record, this.now(), context, date => this.capacities(date).effective);
+  }
+
+  staffingIssue(record: RecordData, context?: StaffingContext) {
+    if (!activeRepair(record)) return '';
+    if (!record.workerId && !requiredSkill(record)) return '请物业明确所需技能';
+    const code = String(record.slot ?? '');
+    const ctx = context ?? new StaffingContext(this.workerAvailability(), code
+      ? [...this.scheduledRows(code).filter(row => row.id !== record.id), record] : [record]);
+    if (record.workerId) return code ? ctx.plan(code).issues.get(record.id) ?? ''
+      : holdingEligibility(ctx.workers.find(worker => worker.id === record.workerId), record);
+    if (!inRepairPool(record)) return '';
+    if (!ctx.eligible(record).length) return '暂无符合条件的师傅可接单，请物业协调人手缺口';
+    if (code && (parseSlot(code)?.startsAt ?? Infinity) - this.now() < scheduleRules.leadMs) return '距上门不足 2 小时尚未接单，请物业及时安排';
+    return '';
+  }
+
+  staffingReason(code: string, record: RecordData, context?: StaffingContext) {
+    return context ? context.reason(code, record) : staffingRejection(this.scheduledRows(code), code, this.workerAvailability(), record);
+  }
+
   create(userId: string, houseId: string, attachments: string[], build: (house: RecordData) => RecordData,
     readRows: () => RecordData[]) {
     this.settleAll();
@@ -132,10 +217,18 @@ export class RepairRepository {
   /** 调用方位于创建或 mutate 的 BEGIN IMMEDIATE 事务内，检查和占用不可分割。 */
   checkSlot(code: string, now: number, excludeId?: string, workerId = '') {
     requireAvailable(code, this.capacities(code.slice(0, 10)).effective, this.scheduledRows(code), now, excludeId, workerId);
+    if (excludeId) this.checkSkillAvailability(code, { ...this.load(excludeId).record, workerId }, excludeId);
   }
 
-  checkWorker(code: string, workerId: string, excludeId?: string) {
+  checkSkillAvailability(code: string, record: RecordData, excludeId?: string) {
+    const reason = this.staffingReason(code, { ...record, id: excludeId ?? record.id });
+    if (reason) throw new ApiError(409, 40900, reason);
+  }
+
+  checkWorker(code: string, workerId: string, excludeId?: string, record?: RecordData) {
     requireFreeWorker(this.scheduledRows(code), code, workerId, excludeId);
+    const candidate = record ?? (excludeId ? this.load(excludeId).record : undefined);
+    if (candidate) this.checkSkillAvailability(code, { ...candidate, workerId }, excludeId);
   }
 
   scheduledRows(code: string): RecordData[] {

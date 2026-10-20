@@ -18,6 +18,7 @@ import { ApiError, requireValue } from './errors.js';
 import { WorkflowService } from './workflow.js';
 import { RepairService } from './repair/service.js';
 import { createRepairRouter } from './repair/routes.js';
+import { RepairPath } from './repair/paths.js';
 import { Notifications } from './notifications.js';
 import { createPushTransport, type PushTransport } from './push-transport.js';
 
@@ -35,8 +36,8 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   const now = options.now ?? Date.now;
   const auth = new AuthService(store, now);
   const service = new CommunityService(store, config.publicBaseUrl, now);
-  const workflow = new WorkflowService(store, now);
   const repairs = new RepairService(store, now, config.propertyPhone, log, config.publicBaseUrl);
+  const workflow = new WorkflowService(store, now, () => repairs.settleWorkforceChange());
   const notifications = new Notifications(store, options.pushTransport ?? createPushTransport(config, store, { log }), now, log);
   // sync 自带保存点并吞掉异常：待办生成失败不会回滚或阻断工单保存。
   store.onRepairSaved = (owner, record) => { notifications.sync(owner, record); };
@@ -147,8 +148,14 @@ export function createApp(config: Config, options: { now?: () => number; log?: (
   app.get('/management/rooms', (_req, res) => res.json(ok(workflow.rooms())));
   app.put('/management/rooms/:id/review', (req, res) => res.json(ok(workflow.review(req.params.id, res.locals.userId, req.body))));
   app.get('/management/workers', (_req, res) => res.json(ok(workflow.workers())));
+  app.get('/management/workforce-summary', (_req, res) => res.json(ok(workflow.workforceSummary())));
   app.post('/management/workers', (req, res) => res.json(ok(workflow.saveWorker(req.body))));
+  app.post('/management/workers/:id/leave', (req, res) => res.json(ok(workflow.saveLeave(req.params.id, req.body))));
+  app.delete('/management/workers/:id/leave', (req, res) => res.json(ok(workflow.removeLeave(req.params.id, req.body))));
+  app.put('/management/workers/:id/skills', (req, res) => res.json(ok(workflow.saveSkills(req.params.id, req.body, res.locals.userId))));
   app.use('/worker', (_req, res, next) => { workflow.requireRole(res.locals.userId, 'worker'); next(); });
+  app.get(RepairPath.skills, (_req, res) => res.json(ok(workflow.workerSkills(res.locals.userId))));
+  app.put(RepairPath.skills, (req, res) => res.json(ok(workflow.saveSkills(res.locals.userId, req.body))));
   app.use(createRepairRouter(repairs));
   app.get('/room', (_req, res) => res.json(ok(service.list('rooms', res.locals.userId))));
   app.get('/room/:id', (req, res) => res.json(ok(service.detail('rooms', res.locals.userId, req.params.id))));
