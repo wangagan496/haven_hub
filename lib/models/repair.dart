@@ -69,6 +69,8 @@ class RepairRecord {
     this.workerMobile = '',
     this.propertyPhone = '',
     this.completionNote = '',
+    this.resultReady = false,
+    this.fees = const <RepairFee>[],
     this.round = 1,
     this.reworkUsed = false,
     this.confirmDeadline = '',
@@ -126,6 +128,8 @@ class RepairRecord {
         workerMobile: json['workerMobile']?.toString() ?? '',
         propertyPhone: json['propertyPhone']?.toString() ?? '',
         completionNote: json['completionNote']?.toString() ?? '',
+        resultReady: json['resultReady'] == true,
+        fees: _list(json['fees'], RepairFee.fromJson),
         round: int.tryParse('${json['round']}') ?? 1,
         reworkUsed: json['reworkUsed'] == true,
         confirmDeadline: json['confirmDeadline']?.toString() ?? '',
@@ -194,6 +198,8 @@ class RepairRecord {
   final String workerMobile;
   final String propertyPhone;
   final String completionNote;
+  final bool resultReady;
+  final List<RepairFee> fees;
   final int round;
   final bool reworkUsed;
   final String confirmDeadline;
@@ -228,11 +234,11 @@ class RepairRecord {
   /// 兼容旧调用：未接单前可直接撤销。
   bool get canCancel =>
       status == RepairStatus.pending || status == RepairStatus.assigned;
-  bool get canConfirm => status == RepairStatus.confirming;
-  bool get canReject => status == RepairStatus.confirming && !reworkUsed;
+  bool get canConfirm => status == RepairStatus.confirming || (status == RepairStatus.processing && resultReady && revokeRequest == null);
+  bool get canReject => status == RepairStatus.confirming;
   bool get inWarranty =>
       status == RepairStatus.completed && warrantyEnd.isNotEmpty && !closed;
-  bool get canApplyAftersale => inWarranty && !reworkUsed && aftersale == null;
+  bool get canApplyAftersale => inWarranty && aftersale == null;
   bool get canFeedback => !closed && feedback == null;
   bool get canReschedule =>
       status == RepairStatus.processing &&
@@ -279,6 +285,8 @@ class RepairRound {
     this.confirmedBy = '',
     this.rejectReason = '',
     this.verifiedNote = '',
+    this.problem = '',
+    this.cause = '',
   });
 
   factory RepairRound.fromJson(Map<String, dynamic> json) => RepairRound(
@@ -291,6 +299,8 @@ class RepairRound {
         confirmedBy: json['confirmedBy']?.toString() ?? '',
         rejectReason: json['rejectReason']?.toString() ?? '',
         verifiedNote: json['verifiedNote']?.toString() ?? '',
+        problem: json['problem']?.toString() ?? '',
+        cause: json['cause']?.toString() ?? '',
       );
 
   final int number;
@@ -303,6 +313,19 @@ class RepairRound {
   final String confirmedAt;
   final String confirmedBy;
   final String rejectReason;
+  final String verifiedNote;
+  final String problem;
+  final String cause;
+}
+
+class RepairFee {
+  const RepairFee({required this.number, required this.cost, this.verifiedNote = ''});
+  factory RepairFee.fromJson(Map<String, dynamic> json) => RepairFee(
+    number: int.tryParse('${json['number']}') ?? 1,
+    cost: num.tryParse('${json['cost']}') ?? 0,
+    verifiedNote: json['verifiedNote']?.toString() ?? '');
+  final int number;
+  final num cost;
   final String verifiedNote;
 }
 

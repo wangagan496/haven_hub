@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/repair.dart';
 import '../../api/worker.dart';
 import '../../models/repair.dart';
+import '../../platform/visitor_pass_share.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
@@ -90,6 +91,7 @@ class _WorkerPageState extends State<WorkerPage> {
     setState(() => _loggingOut = true);
     try {
       final removed = await _tokens.deleteToken();
+      unawaited(clearVisitorPassShareCache());
       if (!removed) {
         // 与 TabsPage 一致：磁盘清理失败也要立即作废内存会话，避免继续带旧凭证请求。
         _tokens.invalidateLocalSession();
@@ -334,6 +336,7 @@ class WorkerDetailPage extends StatefulWidget {
     required this.id,
     this.recordLoader = getWorkerRepairApi,
     this.processor = _defaultProcessor,
+    this.resultSaver = saveWorkerRepairResultApi,
     this.acceptor = _defaultAcceptor,
     this.actionLoader = runWorkerAction,
     this.slotsLoader = getRepairSlotsApi,
@@ -347,6 +350,9 @@ class WorkerDetailPage extends StatefulWidget {
   final Future<RepairRecord> Function(RepairRecord record,
       {required bool complete, String result}) processor;
   final WorkerActionLoader actionLoader;
+  final Future<RepairRecord> Function(RepairRecord record,
+      {required bool ready, required String result, required num cost,
+      String? problem, String? cause}) resultSaver;
   final Future<RepairRecord> Function(RepairRecord, {String? slot, String reason}) acceptor;
   final RepairSlotsLoader slotsLoader;
   final Future<void> Function()? onReassigned;
@@ -377,6 +383,9 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
   final _result = TextEditingController();
   final _resultFocus = FocusNode();
   final _cost = TextEditingController(text: '0');
+  final _problem = TextEditingController();
+  final _cause = TextEditingController(text: '待排查');
+  int? _editingRound;
   String? _resultError;
   String? _costError;
   bool _loading = false;
@@ -528,6 +537,8 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
     _result.dispose();
     _resultFocus.dispose();
     _cost.dispose();
+    _problem.dispose();
+    _cause.dispose();
     super.dispose();
   }
   @override
@@ -546,6 +557,14 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
       final record = await widget.recordLoader(widget.id);
       if (mounted && session == tokenManager.sessionId) {
         setState(() => _record = record);
+        if (_editingRound != record.round) {
+          _editingRound = record.round;
+          final current = record.rounds.isEmpty ? null : record.rounds.last;
+          _problem.text = current?.problem ?? record.description;
+          _cause.text = (current?.cause.isNotEmpty ?? false) ? current!.cause : '待排查';
+          _result.text = current?.note ?? '';
+          _cost.text = '${current?.cost ?? 0}';
+        }
         _rememberDisplayed(record, session);
       }
     } on Object catch (error) {
@@ -599,21 +618,26 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
     return (slot: time.slot, reason: reason);
   }
 
-  Future<void> _process() async {
+  Future<void> _process({bool saveOnly = false, bool ready = false}) async {
     final record = _record;
     if (_saving || _loading || _preparing || record == null) return;
     final bool complete = record.status == RepairStatus.processing;
+    final String result = record.round > 1 ? _cause.text.trim() : _result.text.trim();
     num cost = 0;
     ({String? slot, String reason})? visit;
     if (complete) {
-      if (_result.text.trim().isEmpty) {
+      if (record.round > 1 && (_problem.text.trim().isEmpty || _cause.text.trim().isEmpty)) {
+        await PromptAction.showWarning('请填写本次问题和排查原因，原因不明可填待排查');
+        return;
+      }
+      if ((!saveOnly || ready) && result.isEmpty) {
         setState(() => _resultError = '请填写处理结果后再完成维修');
         _resultFocus.requestFocus();
         await PromptAction.showWarning('请填写处理结果后再完成维修');
         return;
       }
       final num? parsed = num.tryParse(_cost.text.trim().isEmpty ? '0' : _cost.text.trim());
-      if (parsed == null || parsed < 0) {
+      if (parsed == null || !parsed.isFinite || parsed < 0) {
         setState(() => _costError = '请填写有效金额，无费用填 0');
         await PromptAction.showWarning('请填写有效金额，无费用填 0');
         return;
@@ -627,27 +651,35 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
     final session = tokenManager.sessionId;
     setState(() => _saving = true);
     try {
-      final RepairRecord updated = _usingDefaultProcessor
+      final RepairRecord updated = saveOnly
+          ? await widget.resultSaver(record, ready: ready, result: result, cost: cost,
+              problem: record.round > 1 ? _problem.text : null,
+              cause: record.round > 1 ? _cause.text : null)
+          : _usingDefaultProcessor
           ? complete ? await processWorkerRepairApi(record,
               complete: complete,
-              result: _result.text.trim(),
+              result: result,
               cost: cost,
+              saveOnly: saveOnly,
+              ready: ready,
+              problem: record.round > 1 ? _problem.text : null,
+              cause: record.round > 1 ? _cause.text : null,
               slot: visit?.slot,
               reason: visit?.reason ?? '')
             : await widget.acceptor(record, slot: visit?.slot, reason: visit?.reason ?? '')
           : await widget.processor(record,
-              complete: complete, result: _result.text.trim());
+              complete: complete, result: result);
       if (!mounted || session != tokenManager.sessionId) return;
       setState(() => _record = updated);
       _rememberDisplayed(updated, session);
-      await PromptAction.showSuccess(updated.status == RepairStatus.processing
+      await PromptAction.showSuccess(saveOnly ? (ready ? '结果已保存，业主可在报修详情直接确认修好' : '进度已保存') : updated.status == RepairStatus.processing
           ? '接单成功'
           : updated.status == RepairStatus.completed
               ? '维修已完成'
               : '已提交完工，等待住户确认');
       if (!mounted || session != tokenManager.sessionId) return;
       // 提交完工后返回工作台，列表按新状态刷新；接单后留在详情，便于约时间。
-      if (complete) Navigator.pop(context);
+      if (complete && !saveOnly) Navigator.pop(context);
     } on Object catch (error) {
       if (!mounted || session != tokenManager.sessionId) return;
       if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
@@ -725,7 +757,13 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
                               RepairPhotos(urls: record.attachment),
                             if (record.status == RepairStatus.processing &&
                                 record.revokeRequest == null) ...<Widget>[
-                              Padding(
+                              if (record.round > 1) ...<Widget>[
+                                TextField(controller: _problem, enabled: !_saving, maxLength: 1000,
+                                  decoration: const InputDecoration(labelText: '本次问题')),
+                                TextField(controller: _cause, enabled: !_saving, maxLength: 1000, maxLines: 3,
+                                  decoration: const InputDecoration(labelText: '重新排查原因（含上次未查出的原因）', helperText: '原因不明可填写待排查；查明后在此补充调整方案和处理结果', helperMaxLines: 3)),
+                              ],
+                              if (record.round == 1) Padding(
                                   padding: const EdgeInsets.only(top: 24),
                                   child: TextField(
                                       controller: _result,
@@ -744,6 +782,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
                                           alignLabelWithHint: true,
                                           border: const OutlineInputBorder(),
                                           errorText: _resultError))),
+                              const SizedBox(height: 16),
                               TextField(
                                   controller: _cost,
                                   enabled: !_saving,
@@ -759,6 +798,13 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
                                       helperText: '无费用填 0；物业会与住户核实',
                                       border: const OutlineInputBorder(),
                                       errorText: _costError)),
+                              OutlinedButton(
+                                onPressed: _saving || _loading ? null : () => _process(saveOnly: true),
+                                child: const Text('保存进度')),
+                              OutlinedButton(
+                                onPressed: _saving || _loading ? null : () => _process(saveOnly: true, ready: true),
+                                child: const Text('保存结果，供现场业主确认')),
+                              const Text('业主在现场：保存结果和费用后，业主在自己的报修详情点击确认修好。业主不在场：点击提交完工，等待验收。'),
                             ],
                             if (record.status == RepairStatus.assigned ||
                                 record.status == RepairStatus.processing)

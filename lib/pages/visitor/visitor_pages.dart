@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -13,7 +14,9 @@ import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/date_utils.dart';
 import '../../utils/toast.dart';
+import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
+import '../../utils/visitor_share_reminder.dart';
 import '../../widgets/async_state_view.dart';
 import '../../widgets/cached_image.dart';
 
@@ -158,8 +161,14 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
   int _visibilityRevision = 0;
   String _id = '';
   VisitorRecord? _record;
+  late final VisitorPassImageCache _imageCache =
+      identical(widget.imageLoader, loadVisitorPassImage) && identical(widget.sharer, shareVisitorPassImage)
+          ? visitorPassImageCache : VisitorPassImageCache();
   bool _loading = false;
   bool _sharing = false;
+  bool _sharePanelOpened = false;
+  VisitorShareReminder? _shareReminder;
+  final int _shareSession = tokenManager.sessionId;
   String? _error;
   @override
   void initState() {
@@ -170,17 +179,23 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_sharing && !_sharePanelOpened) _shareReminder?.interrupt();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) _visibilityRevision++;
+    if (state != AppLifecycleState.resumed) {
+      _visibilityRevision++;
+      if (_sharing && !_sharePanelOpened) _shareReminder?.interrupt();
+      return;
+    }
   }
 
   bool get _canPresentShare {
     final AppLifecycleState? state = WidgetsBinding.instance.lifecycleState;
     return mounted &&
+        tokenManager.sessionId == _shareSession &&
         (state == null || state == AppLifecycleState.resumed) &&
         (ModalRoute.of(context)?.isCurrent ?? false);
   }
@@ -188,6 +203,10 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (_sharing && !_sharePanelOpened && !(ModalRoute.of(context)?.isCurrent ?? false)) {
+      _visibilityRevision++;
+      _shareReminder?.interrupt();
+    }
     if (_id.isEmpty) {
       _id = ModalRoute.of(context)?.settings.arguments?.toString().trim() ?? '';
       if (_id.isEmpty) {
@@ -206,7 +225,12 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
     });
     try {
       final result = await widget.loader(_id);
-      if (mounted) setState(() => _record = result);
+      if (mounted) {
+        setState(() {
+          _record = result;
+          if (!result.canShare) _imageCache.clear();
+        });
+      }
     } on Object catch (error) {
       final msg = describeError(error, fallback: '获取访客详情失败，请重试');
       if (mounted) {
@@ -226,17 +250,37 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
       return;
     }
     setState(() => _sharing = true);
+    _sharePanelOpened = false;
+    final reminder = _shareReminder = VisitorShareReminder();
     final int visibilityRevision = _visibilityRevision;
     try {
-      final Uint8List bytes = await widget.imageLoader(record.url);
+      final current = record;
+      final cacheKey = jsonEncode([_shareSession, current.id, current.url, current.encryptedData]);
+      final Uint8List bytes = await _imageCache.load(
+        cacheKey, current.url,
+        loader: widget.imageLoader,
+        fileExists: identical(widget.sharer, shareVisitorPassImage)
+            ? hasCachedVisitorPassImage : (_) async => true);
       if (!mounted ||
           !_canPresentShare ||
           visibilityRevision != _visibilityRevision) {
+        reminder.interrupt();
+        return;
+      }
+      final verified = await widget.loader(_id);
+      if (!mounted || !_canPresentShare || visibilityRevision != _visibilityRevision) {
+        reminder.interrupt();
+        return;
+      }
+      setState(() => _record = verified);
+      if (!verified.canShare || verified.url != current.url || verified.encryptedData != current.encryptedData) {
+        _imageCache.clear();
+        await PromptAction.showWarning('通行码已更新或失效，请重新分享');
         return;
       }
       final RenderObject? render =
           _shareButtonKey.currentContext?.findRenderObject();
-      if (render is! RenderBox || !render.hasSize) return;
+      if (render is! RenderBox || !render.hasSize) { reminder.interrupt(); return; }
       final Offset position = render.localToGlobal(Offset.zero);
       final double ratio = MediaQuery.devicePixelRatioOf(context);
       final Rect anchor = Rect.fromLTWH(
@@ -244,12 +288,17 @@ class _VisitorDetailPageState extends State<VisitorDetailPage>
           position.dy * ratio,
           render.size.width * ratio,
           render.size.height * ratio);
-      await widget.sharer(bytes, anchor: anchor);
+      // From this point the native bridge owns the system panel. Losing focus is
+      // expected and must not be reported as an interrupted preparation.
+      _sharePanelOpened = true;
+      await widget.sharer(bytes, anchor: anchor, cacheKey: cacheKey);
       // A closed panel does not prove that the recipient received the image.
     } on Object catch (error) {
-      if (!_canPresentShare || visibilityRevision != _visibilityRevision) {
+      if (error is VisitorShareInterruptedException || (!_sharePanelOpened && (!_canPresentShare || visibilityRevision != _visibilityRevision))) {
+        reminder.interrupt();
         return;
       }
+      if (!_canPresentShare) return;
       await PromptAction.showError(
           describeError(error, fallback: '通行码分享失败，请重试'));
     } finally {

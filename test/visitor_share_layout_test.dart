@@ -71,7 +71,7 @@ void main() {
                 shareSupported: true,
                 previewBuilder: (_) => Image.memory(bytes),
                 imageLoader: (_) async => bytes,
-                sharer: (_, {Rect? anchor}) async {},
+                sharer: (_, {Rect? anchor, String cacheKey = ''}) async {},
               ),
             ),
           ),

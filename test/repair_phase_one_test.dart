@@ -121,8 +121,8 @@ void main() {
   }
 
   test('P1 second round and open pending predicates disable conflicting actions', () {
-    expect(_record(6, second: true).canReject, isFalse);
-    expect(_record(3, second: true).canApplyAftersale, isFalse);
+    expect(_record(6, second: true).canReject, isTrue);
+    expect(_record(3, second: true).canApplyAftersale, isTrue);
     expect(_record(3, second: true).canFeedback, isTrue);
     expect(_record(3, closed: true).canFeedback, isFalse);
     expect(_record(3, closed: true).canApplyAftersale, isFalse);
@@ -146,9 +146,9 @@ void main() {
     (5, false, false, <String>['取消报修']),
     (2, false, false, <String>['修改预约', '申请撤销']),
     (6, false, false, <String>['确认修好', '还没修好', '反馈问题']),
-    (6, true, false, <String>['确认修好', '反馈问题']),
+    (6, true, false, <String>['确认修好', '还没修好', '反馈问题']),
     (3, false, false, <String>['申请售后返修', '反馈问题']),
-    (3, true, false, <String>['反馈问题']),
+    (3, true, false, <String>['申请售后返修', '反馈问题']),
     (3, false, true, <String>[]),
     (0, false, true, <String>[]),
   ]) {

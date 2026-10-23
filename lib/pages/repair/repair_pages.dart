@@ -426,7 +426,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
     final String? reason = await askReason(context,
         title: '还没修好',
         label: '哪里还有问题',
-        message: '工单会直接交回原师傅返修。每张工单只有一次返修机会。',
+        message: '开启新一轮维修，由专业师傅重新排查原因并调整方案，再约定上门时间；需要时由物业协调人员。',
         confirmText: '交回返修');
     if (reason != null && mounted) {
       await _act(RejectAction(reason), '已交回师傅返修', '提交失败，请重试');
@@ -437,7 +437,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
     final String? reason = await askReason(context,
         title: '申请售后返修',
         label: '遇到了什么问题',
-        message: '申请提交后由物业审核，通过后交回原师傅返修。每张工单只有一次返修机会。',
+        message: '物业审核通过后开启新一轮维修，由专业师傅重新排查并调整方案。',
         confirmText: '提交申请');
     if (reason != null && mounted) {
       await _act(AftersaleAction(reason), '售后申请已提交，等待物业审核', '提交失败，请重试');
@@ -675,7 +675,7 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
     final RepairPending? reschedule = record.reschedule;
     if (record.canConfirm) {
       cards.add(_Notice(
-          '师傅已提交完工，请确认是否修好',
+          record.status == RepairStatus.processing ? '维修结果已保存，现场检查后可直接确认修好' : '师傅已提交完工，请确认是否修好',
           record.confirmDeadline.isEmpty
               ? ''
               : '${formatVisitTime(record.confirmDeadline)} 前未操作，将自动确认完成'));
@@ -712,19 +712,21 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
     }
     if (record.inWarranty) {
       cards.add(_Notice('售后期至 ${formatVisitTime(record.warrantyEnd)}',
-          record.reworkUsed ? '返修机会已使用，如有问题可反馈给物业' : '期间如有问题，可申请售后返修'));
+          '期间如有问题，可申请重新排查并返修'));
     }
     return cards;
   }
 
-  /// 每一轮的维修说明、费用与确认结果都保留，不覆盖上一轮。
+  /// 只展示本次维修内容；此前费用单独保留。
   List<Widget> _roundHistory(RepairRecord record) {
     final List<Widget> rows = <Widget>[];
     for (final RepairRound round in record.rounds) {
-      if (round.completedAt.isEmpty && round.rejectReason.isEmpty) continue;
+      if (round.number != record.round) continue;
       rows
         ..add(_Section('第 ${round.number} 轮维修'))
-        ..add(_Row('维修说明', round.note))
+        ..add(_Row('本次问题', round.problem.isEmpty ? record.description : round.problem))
+        ..add(_Row('排查原因', round.cause.isEmpty ? '待排查' : round.cause))
+        ..addAll(round.note.isNotEmpty && round.note != round.cause ? <Widget>[_Row('维修说明', round.note)] : <Widget>[])
         ..add(_Row('上报费用', round.cost == null ? '' : '${round.cost} 元'));
       if (round.verifiedNote.isNotEmpty) rows.add(_Row('物业核实', round.verifiedNote));
       if (round.rejectReason.isNotEmpty) rows.add(_Row('未修好原因', round.rejectReason));
@@ -732,6 +734,12 @@ class _RepairDetailPageState extends State<RepairDetailPage> with WidgetsBinding
         rows.add(_Row(
             round.confirmedBy == 'system' ? '自动确认' : '住户确认',
             formatVisitTime(round.confirmedAt)));
+      }
+    }
+    if (record.fees.isNotEmpty) {
+      rows.add(const _Section('费用记录'));
+      for (final fee in record.fees) {
+        rows.add(_Row('第 ${fee.number} 轮上报费用', '${fee.cost} 元${fee.verifiedNote.isEmpty ? '' : '；${fee.verifiedNote}'}'));
       }
     }
     return rows;

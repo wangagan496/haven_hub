@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart' as dio;
@@ -5,14 +6,74 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../utils/app_exception.dart';
+import '../utils/emitter.dart';
 import '../utils/request_dio.dart';
 
 const int maxVisitorPassBytes = 5 * 1024 * 1024;
 const MethodChannel _channel = MethodChannel('haven_hub/visitor_pass_share');
 
+class VisitorShareInterruptedException implements Exception {
+  const VisitorShareInterruptedException();
+}
+
+Future<bool> hasCachedVisitorPassImage(String cacheKey) async {
+  try {
+    return await _channel.invokeMethod<bool>('hasCachedImage', <String, Object>{'cacheKey': cacheKey}) ?? false;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException {
+    return false;
+  }
+}
+
 typedef VisitorPassImageLoader = Future<Uint8List> Function(String url);
 typedef VisitorPassSharer = Future<void> Function(Uint8List bytes,
-    {Rect? anchor});
+    {Rect? anchor, String cacheKey});
+
+/// One latest pass only. The native file must still exist before reuse.
+class VisitorPassImageCache {
+  String _key = '';
+  Uint8List? _bytes;
+  int _generation = 0;
+  void clear() { _generation++; _key = ''; _bytes = null; }
+  Future<Uint8List> load(String key, String url, {
+    required VisitorPassImageLoader loader,
+    required Future<bool> Function(String) fileExists,
+  }) async {
+    final bytes = _bytes;
+    final generation = _generation;
+    if (_key == key && bytes != null && await fileExists(key) && generation == _generation) return bytes;
+    if (generation != _generation) throw const VisitorShareInterruptedException();
+    clear();
+    final downloadGeneration = _generation;
+    final downloaded = await loader(url);
+    if (downloadGeneration != _generation) throw const VisitorShareInterruptedException();
+    validateVisitorPassImage(downloaded);
+    _key = key;
+    _bytes = downloaded;
+    return downloaded;
+  }
+}
+
+final VisitorPassImageCache visitorPassImageCache = _createSessionCache();
+
+VisitorPassImageCache _createSessionCache() {
+  final cache = VisitorPassImageCache();
+  // The cache and this subscription both live for the application's lifetime.
+  eventBus.on<LogoutEvent>().listen((_) => unawaited(clearVisitorPassShareCache()));
+  return cache;
+}
+
+Future<void> clearVisitorPassShareCache() async {
+  visitorPassImageCache.clear();
+  try {
+    await _channel.invokeMethod<void>('clearCache');
+  } on MissingPluginException {
+    // Platforms without the bridge have no native cache.
+  } on PlatformException {
+    // Cache cleanup must not prevent logout.
+  }
+}
 
 bool get supportsVisitorPassShare =>
     !kIsWeb && defaultTargetPlatform.name == 'ohos';
@@ -73,7 +134,7 @@ void validateVisitorPassImage(Uint8List bytes) {
 }
 
 /// Resolves when the system panel closes, not when a recipient receives it.
-Future<void> shareVisitorPassImage(Uint8List bytes, {Rect? anchor}) async {
+Future<void> shareVisitorPassImage(Uint8List bytes, {Rect? anchor, String cacheKey = ''}) async {
   validateVisitorPassImage(bytes);
   if (anchor != null && (!anchor.isFinite || anchor.isEmpty)) {
     throw const FormatException('分享按钮位置无效');
@@ -81,6 +142,7 @@ Future<void> shareVisitorPassImage(Uint8List bytes, {Rect? anchor}) async {
   try {
     await _channel.invokeMethod<void>('shareImage', <String, Object>{
       'bytes': bytes,
+      'cacheKey': cacheKey,
       if (anchor != null) ...<String, Object>{
         'anchorX': anchor.left,
         'anchorY': anchor.top,
@@ -91,9 +153,9 @@ Future<void> shareVisitorPassImage(Uint8List bytes, {Rect? anchor}) async {
   } on MissingPluginException {
     throw const BusinessException('当前设备不支持通行码分享');
   } on PlatformException catch (error) {
+    if (error.code == 'unavailable') throw const VisitorShareInterruptedException();
     final String message = switch (error.code) {
       'busy' => '分享面板已经打开，请先完成或关闭',
-      'unavailable' => '当前无法打开分享，请返回页面重试',
       'invalid_image' => '通行码图片无效，请重新加载',
       _ => '打开系统分享失败，请重试',
     };

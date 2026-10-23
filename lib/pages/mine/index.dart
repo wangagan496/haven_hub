@@ -6,6 +6,7 @@ import 'package:get/get.dart' hide FormData, MultipartFile;
 import '../../api/user.dart';
 import '../../controller/build_controller.dart';
 import '../../controller/user_info_controller.dart';
+import '../../platform/visitor_pass_share.dart';
 import '../../router/app_routes.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
@@ -309,6 +310,7 @@ class _MinePageState extends State<MinePage> {
     _resetSessionState();
     try {
       final bool deleted = await tokenManager.deleteToken();
+      unawaited(clearVisitorPassShareCache());
       if (!deleted) {
         throw const FormatException('登录状态清除失败');
       }
