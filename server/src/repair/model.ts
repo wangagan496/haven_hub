@@ -21,6 +21,10 @@ export type Round = {
   rejectedAt: string;
   rejectReason: string;
   verifiedNote: string;
+  problem?: string;
+  cause?: string;
+  /** 仅师傅明确选择可供现场确认时设置；保存进度会清空。 */
+  resultSavedAt?: string;
 };
 
 export type Pending = {
@@ -71,6 +75,24 @@ export function ensureRounds(record: RecordData): Round[] {
 }
 
 export function currentRound(record: RecordData): Round { return ensureRounds(record).at(-1)!; }
+
+/** Once written this counter is authoritative, independent of retained records. */
+export function repairRoundNumber(record: RecordData): number {
+  if (Number.isSafeInteger(record.roundCount) && Number(record.roundCount) >= 1) return Number(record.roundCount);
+  return Math.max(1, ...ensureRounds(record).map(item => item.number));
+}
+
+export type RepairFee = { number: number; cost: number; completedAt: string; verifiedNote: string };
+export function repairFees(record: RecordData): RepairFee[] {
+  const fees = Array.isArray(record.fees) ? (record.fees as RepairFee[]).map(fee => ({ ...fee })) : [];
+  // Compatibility for records created before the fee ledger existed.
+  for (const round of ensureRounds(record)) {
+    if (round.completedAt && typeof round.cost === 'number' && !fees.some(fee => fee.number === round.number)) {
+      fees.push({ number: round.number, cost: round.cost, completedAt: round.completedAt, verifiedNote: round.verifiedNote });
+    }
+  }
+  return fees;
+}
 export function addEvent(record: RecordData, event: Event) {
   record.timeline = [...events(record), event];
 }

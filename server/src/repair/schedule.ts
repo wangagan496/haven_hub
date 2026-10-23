@@ -29,13 +29,14 @@ export function availableDates(now: number) {
   return Array.from({ length: scheduleRules.days }, (_, i) => businessDate(start + i * DAY));
 }
 
-export function parseSlot(code: unknown) {
-  if (typeof code !== 'string' || !/^\d{4}-\d{2}-\d{2}#\d{2}$/.test(code)) return undefined;
-  const [date, hour] = code.split('#') as [string, string];
+/** 预约时段编号，例如 2026-10-21#10，表示当天 10 点的时段。 */
+export function parseSlot(timeSlot: unknown) {
+  if (typeof timeSlot !== 'string' || !/^\d{4}-\d{2}-\d{2}#\d{2}$/.test(timeSlot)) return undefined;
+  const [date, hour] = timeSlot.split('#') as [string, string];
   if (!validDate(date) || !scheduleRules.hours.includes(Number(hour))) return undefined;
   const start = `${date}T${hour}:00:00+08:00`;
   const startsAt = Date.parse(start);
-  return { code, date, hour, start, startsAt, end: `${date}T${String(Number(hour) + 1).padStart(2, '0')}:00:00+08:00`,
+  return { code: timeSlot, date, hour, start, startsAt, end: `${date}T${String(Number(hour) + 1).padStart(2, '0')}:00:00+08:00`,
     endsAt: startsAt + scheduleRules.durationMs,
     period: Number(hour) < 12 ? 'morning' : Number(hour) < 18 ? 'afternoon' : 'evening' };
 }
@@ -47,12 +48,12 @@ export function slotFromTime(value: unknown): string {
   const time = Date.parse(value);
   if (!Number.isFinite(time) || time % HOUR !== 0) return '';
   const local = new Date(time + OFFSET).toISOString();
-  const code = `${local.slice(0, 10)}#${local.slice(11, 13)}`;
-  return parseSlot(code) ? code : '';
+  const timeSlot = `${local.slice(0, 10)}#${local.slice(11, 13)}`;
+  return parseSlot(timeSlot) ? timeSlot : '';
 }
 
-export function bookingRejection(code: string, now: number): string {
-  const slot = parseSlot(code);
+export function bookingRejection(timeSlot: string, now: number): string {
+  const slot = parseSlot(timeSlot);
   if (!slot) return '请选择有效的上门时段';
   if (!availableDates(now).includes(slot.date)) return '只能预约含今天在内的 7 天';
   if (slot.startsAt - now < scheduleRules.leadMs) return '请至少提前 2 小时预约';
@@ -64,74 +65,115 @@ export function dispatchSlots(now: number, limit: number) {
   return availableDates(now).flatMap(date => scheduleRules.hours.map(hour => parseSlot(`${date}#${String(hour).padStart(2, '0')}`)!))
     .filter(slot => slot.endsAt > now).slice(0, limit);
 }
-export function requireDispatchSlot(code: string, now: number) {
-  const slot = parseSlot(code);
+export function requireDispatchSlot(timeSlot: string, now: number) {
+  const slot = parseSlot(timeSlot);
   requireValue(slot && availableDates(now).includes(slot.date) && slot.endsAt > now, '请选择当前尚未结束或未来 7 天内的时段');
 }
 
-/** 所有名额和师傅冲突检查共用这一个有效占用筛选函数。 */
-export function slotOrders(records: readonly RecordData[], code: string, excludeId?: string) {
-  return records.filter(record => record.id !== excludeId && record.slot === code
-    && Number(record.status) !== Status.cancelled && Number(record.status) !== 4);
+/** 筛出同一预约时段内未取消的工单；修改已有工单时，排除它自己。 */
+export function slotOrders(records: readonly RecordData[], timeSlot: string, excludedRepairId?: string) {
+  return records.filter(repair => {
+    // 不在这次检查的预约时段内，不参与比较。
+    if (repair.slot !== timeSlot) return false;
+
+    // 修改已有工单时，跳过它自己，避免自己与自己冲突。
+    if (repair.id === excludedRepairId) return false;
+
+    // 已取消的工单不占名额；4 是历史数据里的取消状态。
+    const isCancelled = Number(repair.status) === Status.cancelled || Number(repair.status) === 4;
+    if (isCancelled) return false;
+
+    return true;
+  });
 }
-export function occupancy(records: readonly RecordData[], code: string, excludeId?: string) {
-  return slotOrders(records, code, excludeId).length;
+export function occupancy(records: readonly RecordData[], timeSlot: string, excludedRepairId?: string) {
+  return slotOrders(records, timeSlot, excludedRepairId).length;
 }
-export function workerConflict(records: readonly RecordData[], code: string, workerId: string, excludeId?: string) {
-  return workerId !== '' && slotOrders(records, code, excludeId).some(record => record.workerId === workerId);
+/** 检查同一时段是否已有其他工单安排给这位师傅；true 表示时间冲突。 */
+export function workerConflict(records: readonly RecordData[], timeSlot: string, workerId: string, excludedRepairId?: string) {
+  // 还没有指定师傅，就没有具体的人可以检查。
+  if (workerId === '') return false;
+
+  // 先按时间找出工单，再逐张检查它们安排给了谁。
+  const otherRepairsInSlot = slotOrders(records, timeSlot, excludedRepairId);
+  for (const otherRepair of otherRepairsInSlot) {
+    if (otherRepair.workerId === workerId) {
+      return true; // 找到一张安排给这位师傅的其他工单，时间冲突。
+    }
+  }
+
+  return false; // 检查完仍没找到，没有其他工单占用他这个时段。
 }
 export type WorkerAvailability = { id: string; skills: readonly RepairSkill[]; skillsKnown: boolean; leaves: readonly { date: string; hour: string }[] };
-export function workerOnLeave(worker: WorkerAvailability, code: string) {
-  const [date, hour] = code.split('#');
-  return worker.leaves.some(leave => leave.date === date && (leave.hour === '' || leave.hour === hour));
+/** 检查预约时段是否落在师傅的请假记录内；true 表示那时请假。 */
+export function workerOnLeave(worker: WorkerAvailability, timeSlot: string) {
+  // 例如 2026-10-21#10，拆成预约日期 2026-10-21 和小时 10。
+  const [appointmentDate, appointmentHour] = timeSlot.split('#');
+
+  for (const leave of worker.leaves) {
+    // 其他日期的请假不影响这次预约，继续看下一条记录。
+    if (leave.date !== appointmentDate) continue;
+
+    // 请假记录没有指定小时，表示整天请假。
+    const isWholeDayLeave = leave.hour === '';
+    const isLeaveAtAppointmentHour = leave.hour === appointmentHour;
+    if (isWholeDayLeave || isLeaveAtAppointmentHour) {
+      return true;
+    }
+  }
+
+  return false; // 没有任何请假记录覆盖这个预约时段。
 }
-export function requireFreeWorker(records: readonly RecordData[], code: string, workerId: string, excludeId?: string) {
-  if (workerConflict(records, code, workerId, excludeId)) throw new ApiError(409, 40900, '该师傅此时段已有安排');
+export function requireFreeWorker(records: readonly RecordData[], timeSlot: string, workerId: string, excludedRepairId?: string) {
+  const hasAnotherRepairAtSameTime = workerConflict(records, timeSlot, workerId, excludedRepairId);
+  if (hasAnotherRepairAtSameTime) {
+    throw new ApiError(409, 40900, '该师傅此时段已有安排');
+  }
 }
 
-export function slotAvailability(date: string, capacities: Capacity, records: readonly RecordData[], now: number, excludeId?: string,
+export function slotAvailability(date: string, capacities: Capacity, records: readonly RecordData[], now: number, excludedRepairId?: string,
   context: { workerId?: string; firstSchedule?: boolean } = {}) {
   requireValue(validDate(date), '日期无效');
   return scheduleRules.hours.map(hour => {
-    const code = `${date}#${String(hour).padStart(2, '0')}`;
-    const slot = parseSlot(code)!;
+    const timeSlot = `${date}#${String(hour).padStart(2, '0')}`;
+    const slot = parseSlot(timeSlot)!;
     const capacity = capacities[slot.hour] ?? 0;
-    const used = occupancy(records, code, excludeId);
+    const used = occupancy(records, timeSlot, excludedRepairId);
     const remaining = Math.max(0, capacity - used);
-    let reason = bookingRejection(code, now) || (remaining === 0 ? '该时段已约满' : '');
-    if (!reason && context.workerId && workerConflict(records, code, context.workerId, excludeId)) reason = '该师傅此时段已有安排';
+    let reason = bookingRejection(timeSlot, now) || (remaining === 0 ? '该时段已约满' : '');
+    if (!reason && context.workerId && workerConflict(records, timeSlot, context.workerId, excludedRepairId)) reason = '该师傅此时段已有安排';
     if (!reason && context.firstSchedule) {
-      try { firstProposalDeadline(code, now); }
+      try { firstProposalDeadline(timeSlot, now); }
       catch (error) { if (!(error instanceof ApiError)) throw error; reason = error.message; }
     }
-    return { slot: code, date, start: slot.start, end: slot.end, period: slot.period, capacity, occupied: used,
+    return { slot: timeSlot, date, start: slot.start, end: slot.end, period: slot.period, capacity, occupied: used,
       remaining, selectable: reason === '', reason };
   });
 }
 
-export function requireAvailable(code: string, capacities: Capacity, records: readonly RecordData[], now: number,
-  excludeId?: string, workerId = '') {
-  const reason = bookingRejection(code, now);
+export function requireAvailable(timeSlot: string, capacities: Capacity, records: readonly RecordData[], now: number,
+  excludedRepairId?: string, workerId = '') {
+  const reason = bookingRejection(timeSlot, now);
   requireValue(!reason, reason);
-  const slot = parseSlot(code)!;
-  if (occupancy(records, code, excludeId) >= (capacities[slot.hour] ?? 0)) {
+  const slot = parseSlot(timeSlot)!;
+  if (occupancy(records, timeSlot, excludedRepairId) >= (capacities[slot.hour] ?? 0)) {
     throw new ApiError(409, 40900, '该时段已约满，请重新选择');
   }
-  requireFreeWorker(records, code, workerId, excludeId);
+  requireFreeWorker(records, timeSlot, workerId, excludedRepairId);
 }
 
-export function firstProposalDeadline(code: string, now: number) {
-  const slot = parseSlot(code);
+export function firstProposalDeadline(timeSlot: string, now: number) {
+  const slot = parseSlot(timeSlot);
   requireValue(slot, '请选择有效的上门时段');
   const deadline = Math.min(now + scheduleRules.responseMs, slot.startsAt - scheduleRules.leadMs);
   requireValue(deadline - now >= scheduleRules.minimumResponseMs, '确认时间不足 30 分钟，请选择更晚的时段');
   return new Date(deadline).toISOString();
 }
 
-export function setSlot(record: RecordData, code: string) {
-  const slot = parseSlot(code);
+export function setSlot(record: RecordData, timeSlot: string) {
+  const slot = parseSlot(timeSlot);
   requireValue(slot, '请选择有效的上门时段');
-  record.slot = code;
+  record.slot = timeSlot;
   record.agreedTime = slot.start;
   record.autoAccepted = false;
 }

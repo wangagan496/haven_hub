@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { RecordData } from '../src/database.js';
 import { ApiError } from '../src/errors.js';
-import { Status, currentRound, events, newRound, openPending, pendings, rounds } from '../src/repair/model.js';
+import { Status, currentRound, events, newRound, openPending, pendings, rounds, repairFees } from '../src/repair/model.js';
 import { closed, inWarranty, reworkUsed, rules, settle, todoTags, warrantyEnd } from '../src/repair/policy.js';
 import * as actions from '../src/repair/actions.js';
 import { RepairViews } from '../src/repair/views.js';
@@ -32,6 +32,68 @@ function businessFailure(operation: () => unknown, message: RegExp) {
     && error.code === 40001 && message.test(error.message));
 }
 
+for (const status of Object.values(Status)) {
+  test(`reassignment: pending revoke rejects assign without mutation in status ${status}`, () => {
+    const row = record();
+    actions.revoke(row, { revision: 7, pendingId: 'pending-revoke', reason: '已电话告知原师傅', notified: true }, now);
+    row.status = status;
+    const before = structuredClone(row);
+    businessFailure(() => actions.assign(row, { workerId: 'worker-b', worker: { nickName: '新师傅' } }, now),
+      /住户已申请撤销，请先处理撤销申请/);
+    assert.deepEqual(row, before);
+  });
+}
+
+test('optimization: rework without a qualified previous worker waits for coordination and retains fees', () => {
+  const row = record();
+  actions.complete(row, { workerId, result: '更换接头', cost: 25 }, now);
+  actions.reject(row, { reason: '仍渗水', worker: { qualified: false } }, now + H);
+  assert.equal(row.status, Status.pending);
+  assert.equal(row.workerId, '');
+  assert.equal(row.needsAdmin, true);
+  assert.equal(row.completedAt, '');
+  assert.equal(row.roundCount, 2);
+  assert.equal(currentRound(row).problem, '仍渗水');
+  assert.equal(currentRound(row).cause, '待排查');
+  assert.equal(repairFees(row)[0]?.cost, 25);
+  businessFailure(() => actions.confirm(row, {}, now + H), /保存/);
+});
+
+test('optimization: urgent reassignment requires the new worker to save their own result', () => {
+  const row = record();
+  row.priority = 'urgent';
+  actions.saveResult(row, { workerId, result: '检查完成', cost: 12, ready: true }, now);
+  actions.dispatch(row, { workerId: 'worker-b', worker: { nickName: '李师傅' }, slot: '2026-10-18#08', reason: '更换人员' }, now);
+  businessFailure(() => actions.confirm(row, {}, now), /保存/);
+  actions.saveResult(row, { workerId: 'worker-b', result: '重新维修完成', cost: 15, ready: true }, now);
+  actions.confirm(row, {}, now);
+  assert.equal(row.status, Status.completed);
+  assert.equal(repairFees(row)[0]?.cost, 15);
+});
+
+for (const action of ['assign', 'dispatch', 'release'] as const) {
+  test(`followup: ${action} clears unfinished worker content and preserves historical fees`, () => {
+    const row = record();
+    row.priority = 'urgent';
+    row.staffingIssue = '需改派';
+    row.fees = [{ number: 1, cost: 30, completedAt: iso(now - H), verifiedNote: '已核实' }];
+    currentRound(row).number = 2;
+    actions.saveResult(row, { workerId, ready: true, result: '前任结果', cost: 99, problem: '住户问题', cause: '前任判断' }, now);
+    const fees = structuredClone(row.fees);
+    if (action === 'assign') actions.assign(row, { workerId: 'worker-b', worker: { nickName: '新师傅' } }, now);
+    if (action === 'dispatch') actions.dispatch(row, { workerId: 'worker-b', worker: { nickName: '新师傅' }, slot: '2026-10-18#08', reason: '改派' }, now);
+    if (action === 'release') actions.release(row, { workerId, reason: '退出' }, now);
+    assert.equal(currentRound(row).note, '');
+    assert.equal(currentRound(row).cost, null);
+    assert.equal(currentRound(row).cause, '待排查');
+    assert.equal(currentRound(row).problem, '住户问题');
+    assert.equal(currentRound(row).resultSavedAt, '');
+    assert.equal(row.completionNote, '');
+    assert.deepEqual(row.fees, fees);
+    businessFailure(() => actions.confirm(row, {}, now), /保存/);
+  });
+}
+
 test('policy: automatic confirmation happens exactly at deadline and is idempotent', () => {
   const row = record(Status.confirming);
   const deadline = now + rules.autoConfirmMs;
@@ -51,7 +113,7 @@ test('policy: automatic confirmation happens exactly at deadline and is idempote
 for (const number of [1, 2]) {
   test(`policy: round ${number} warranty ends at its exact boundary`, () => {
     const row = completed(number);
-    const end = now + rules.warrantyMs[number - 1]!;
+    const end = now + rules.warrantyMs;
     assert.equal(warrantyEnd(row), iso(end));
     assert.equal(inWarranty(row, end - 1), true);
     assert.equal(closed(row, end - 1), false);
@@ -64,7 +126,7 @@ for (const number of [1, 2]) {
 test('policy: a timely pending aftersale keeps an expired repair open', () => {
   const row = completed();
   actions.applyAftersale(row, { reason: '再次漏水', pendingId: 'after-a' }, now + H);
-  const expired = now + rules.warrantyMs[0];
+  const expired = now + rules.warrantyMs;
   assert.equal(inWarranty(row, expired), false);
   assert.equal(closed(row, expired), false);
   assert.deepEqual(todoTags(row, expired), ['售后返修待审核']);
@@ -178,7 +240,7 @@ test('actions: completion closes proposals and resident confirmation starts the 
   actions.confirm(row, {}, now + H);
   assert.equal(currentRound(row).confirmedAt, iso(now + H));
   assert.equal(currentRound(row).confirmedBy, 'resident');
-  assert.equal(warrantyEnd(row), iso(now + H + rules.warrantyMs[0]));
+  assert.equal(warrantyEnd(row), iso(now + H + rules.warrantyMs));
 });
 
 test('actions: rejection starts one rework with original worker and supplied contact', () => {
@@ -193,15 +255,17 @@ test('actions: rejection starts one rework with original worker and supplied con
   assert.equal(row.workerMobile, '13800138092');
   assert(todoTags(row, now).includes('住户未修好'));
   actions.complete(row, { workerId, result: '再次更换', cost: 0 }, now);
-  const before = structuredClone(row);
-  businessFailure(() => actions.reject(row, { reason: '还未好' }, now), /返修过一次/);
-  assert.deepEqual(row, before);
+  actions.reject(row, { reason: '还未好' }, now);
+  assert.equal(currentRound(row).number, 3);
+  assert.equal(rounds(row).length, 1);
+  assert.equal(currentRound(row).problem, '还未好');
+  assert.equal(currentRound(row).cause, '待排查');
 });
 
 test('actions: pending aftersale may be approved after warranty expires', () => {
   const row = completed();
   actions.applyAftersale(row, { reason: '再次漏水', pendingId: 'after-a' }, now);
-  actions.reviewAftersale(row, { approve: true, reason: '核实通过' }, now + rules.warrantyMs[0]);
+  actions.reviewAftersale(row, { approve: true, reason: '核实通过' }, now + rules.warrantyMs);
   assert.equal(currentRound(row).number, 2);
   assert.equal(currentRound(row).reason, 'aftersale');
   assert.equal(row.status, Status.processing);
@@ -242,8 +306,8 @@ test('actions: verification targets the completed round and never overwrites rep
   actions.complete(row, { workerId, result: '更换水管', cost: 12.5 }, now);
   actions.reject(row, { reason: '仍漏水' }, now);
   actions.note(row, { content: '核实材料', target: 'verify', cost: 10 }, now);
-  assert.equal(rounds(row)[0]?.cost, 12.5);
-  assert.equal(rounds(row)[0]?.verifiedNote, '核实材料（核实费用 10 元）');
+  assert.equal(repairFees(row)[0]?.cost, 12.5);
+  assert.equal(repairFees(row)[0]?.verifiedNote, '核实材料（核实费用 10 元）');
   assert.equal(currentRound(row).verifiedNote, '');
   assert.equal(events(row).at(-1)?.round, 1);
   businessFailure(() => actions.note(row, { content: '不允许', target: 'verify', round: 2 }, now), /尚未提交完工/);
@@ -268,7 +332,7 @@ test('views: only non-admin closed views mask phones; worker history is omitted'
   let clock = now;
   const views = new RepairViews(() => clock, '020-88888888', () => {});
   assert.equal(views.view(row, 'resident').mobile, '13800138000');
-  clock += rules.warrantyMs[0];
+  clock += rules.warrantyMs;
   assert.equal(views.view(row, 'resident').mobile, '138****8000');
   assert.equal(views.view(row, 'worker').workerMobile, '138****8091');
   assert.equal(views.view(row, 'worker').previousWorkers, undefined);

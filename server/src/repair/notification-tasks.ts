@@ -65,6 +65,9 @@ export function repairNotificationTasks(record: RecordData, owner: string, admin
   if (record.status === Status.pending && !offer) admin('assignment', '有报修等待派单，请查看工单。');
   if (record.status === Status.assigned) add('accept:' + worker, worker, 'worker', '有新的报修派给你，请查看并接单。');
   if (record.status === Status.confirming) add('confirm:' + currentRound(record).number, owner, 'resident', '师傅已提交维修结果，请确认是否修好。');
+  if (record.status === Status.processing && currentRound(record).resultSavedAt && !pendings(record).some(item => item.kind === 'revoke' && !item.resolvedAt)) {
+    add('onsite-confirm:' + currentRound(record).number, owner, 'resident', '师傅已保存维修结果和费用，现场检查后可直接确认修好。');
+  }
   if (record.status === Status.processing && currentRound(record).number > 1 && !record.agreedTime) {
     add('rework:' + currentRound(record).number, worker, 'worker', '工单已进入返修，请联系住户重新约定上门时间。');
   }

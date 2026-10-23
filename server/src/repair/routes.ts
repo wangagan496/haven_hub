@@ -40,6 +40,7 @@ export function createRepairRouter(repairs: RepairService) {
   router.get('/worker/repairs/:id', (req, res) => res.json(ok(repairs.workerDetail(res.locals.userId, req.params.id))));
   router.put('/worker/repairs/:id/accept', (req, res) => res.json(ok(repairs.accept(res.locals.userId, req.params.id, req.body))));
   router.put('/worker/repairs/:id/complete', (req, res) => res.json(ok(repairs.complete(res.locals.userId, req.params.id, req.body))));
+  router.put('/worker/repairs/:id/result', (req, res) => res.json(ok(repairs.complete(res.locals.userId, req.params.id, req.body, true))));
   router.put('/worker/repairs/:id/release', (req, res) => {
     repairs.release(res.locals.userId, req.params.id, req.body);
     // 退出后原师傅已无权查看此工单，返回其最新工作台列表。

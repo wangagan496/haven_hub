@@ -1,5 +1,5 @@
 import type { RecordData } from '../database.js';
-import { Status, type Role, currentRound, ensureRounds, events, openPending } from './model.js';
+import { Status, type Role, currentRound, ensureRounds, events, openPending, repairRoundNumber, repairFees } from './model.js';
 import { activeRepair, closed, reworkUsed, todoTags, warrantyEnd } from './policy.js';
 import { parseSlot, scheduleDefaults } from './schedule.js';
 import { openOffer } from './unstaffed.js';
@@ -36,7 +36,9 @@ export class RepairViews {
     const defaults = scheduleDefaults(record);
     const slot = parseSlot(record.slot ?? defaults.slot);
     const result: RecordData = { ...defaults, ...record,
-      round: round.number,
+      round: repairRoundNumber(record),
+      fees: repairFees(record),
+      resultReady: Boolean(round.resultSavedAt && round.note && round.cost !== null),
       reworkUsed: reworkUsed(record),
       warrantyEnd: warrantyEnd(record),
       confirmDeadline: record.status === Status.confirming ? round.confirmDeadline : '',

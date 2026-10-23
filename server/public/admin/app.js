@@ -640,11 +640,13 @@ function renderDetail(record) {
       ['顺延次数',String(record.shiftCount||0)],
       ['待回应改约',reschedule?`${{resident:'住户',worker:'师傅',admin:'物业'}[reschedule.by]||'对方'}提议 ${slotText(reschedule.proposedSlot)||timeText(reschedule.proposedTime)}${reschedule.reason?`：${reschedule.reason}`:''}`:''],
       ['问题描述',record.description],['维修人员',record.workerName?`${record.workerName} · ${record.workerMobile||''}`:''],
-      ['维修轮次',`第 ${record.round||1} 轮${record.reworkUsed?'（返修机会已用）':''}`],
+      ['维修轮次',`第 ${record.round||1} 轮${record.reworkUsed?'（重新排查）':''}`],
       ['确认期限',timeText(record.confirmDeadline)],['售后期至',timeText(record.warrantyEnd)]
     ]) if(value) field(root,label,value);
-    for(const round of record.rounds||[]) if(round.completedAt) field(root,`第${round.number}轮`,
+    for(const round of record.rounds||[]) if(round.number === record.round) field(root,`第${round.number}轮`,
       `${round.note}；上报费用 ${round.cost??0} 元${round.verifiedNote?`；物业核实：${round.verifiedNote}`:''}${round.rejectReason?`；未修好：${round.rejectReason}`:''}`);
+    for(const round of record.rounds||[]) if(round.number === record.round) field(root,'本次排查',`问题：${round.problem||record.description||''}；原因：${round.cause||'待排查'}`);
+    for(const fee of record.fees||[]) field(root,`第${fee.number}轮费用`,`${fee.cost} 元；${fee.verifiedNote||'待核实'}`);
   }
   const photos=node('div',null,'photos');
   for(const url of tab==='rooms'?[record.idcardFrontUrl,record.idcardBackUrl]:(record.attachment||[])) {
@@ -798,13 +800,15 @@ function renderDetail(record) {
       const reason=labeledInput(section,'分类依据','text');reason.maxLength=500;
       const save=node('button','确认技能','primary');save.onclick=()=>{if(require(reason,'请填写分类依据'))mutate(save,`${base}/skill`,{revision,skill:select.value,reason:reason.value.trim()});};section.append(save);root.append(section);
     }
-    if(record.priority!=='urgent'&&(record.status===1||record.status===5||(record.status===2&&record.staffingIssue))) {
+    const revoke=open('revoke');
+    if(revoke) root.append(node('p','住户已申请撤销，请先处理撤销申请','detail-guidance'));
+    if(!revoke&&record.priority!=='urgent'&&[1,2,5].includes(record.status)) {
       const label=node('label','指派维修人员'),select=node('select');
       const option=node('option','请选择维修人员'); option.value=''; select.append(option);
       select.disabled=true;
       label.append(select); root.append(label);
       if(!workers.length) root.append(node('p','请先在“维修人员”中添加师傅。','detail-guidance'));
-      const button=node('button',record.status===5||record.releasedAt?'重新派单':'确认派单','primary');
+      const button=node('button',record.status===2||record.status===5||record.releasedAt?'重新派单':'确认派单','primary');
       button.disabled=true;
       api(`${base}/assignment-options`).then(options=>{
         if(!select.isConnected)return;
@@ -850,7 +854,7 @@ function renderDetail(record) {
     // 回复反馈、处理异议、核实内容与费用、一般跟进：只追加记录，不改变工单状态。
     const label=node('label','物业记录'),target=node('select');
     for(const [value,text,show] of [['feedback','回复问题反馈',Boolean(feedback)],['objection','处理撤销异议',Boolean(objection)],
-      ['verify','核实处理内容和费用',(record.rounds||[]).some(round=>round.completedAt)],['resolveNeedsAdmin','已处理协助请求',Boolean(record.needsAdmin)],['follow','跟进记录',true]]) {
+      ['verify','核实处理内容和费用',(record.fees||[]).length>0||(record.rounds||[]).some(round=>round.completedAt)],['resolveNeedsAdmin','已处理协助请求',Boolean(record.needsAdmin)],['follow','跟进记录',true]]) {
       if(!show) continue;
       const item=node('option',text); item.value=value; target.append(item);
     }

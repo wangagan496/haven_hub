@@ -188,19 +188,19 @@ export class RepairRepository {
   staffingIssue(record: RecordData, context?: StaffingContext) {
     if (!activeRepair(record)) return '';
     if (!record.workerId && !requiredSkill(record)) return '请物业明确所需技能';
-    const code = String(record.slot ?? '');
-    const ctx = context ?? new StaffingContext(this.workerAvailability(), code
-      ? [...this.scheduledRows(code).filter(row => row.id !== record.id), record] : [record]);
-    if (record.workerId) return code ? ctx.plan(code).issues.get(record.id) ?? ''
+    const timeSlot = String(record.slot ?? '');
+    const ctx = context ?? new StaffingContext(this.workerAvailability(), timeSlot
+      ? [...this.scheduledRows(timeSlot).filter(row => row.id !== record.id), record] : [record]);
+    if (record.workerId) return timeSlot ? ctx.plan(timeSlot).issues.get(record.id) ?? ''
       : holdingEligibility(ctx.workers.find(worker => worker.id === record.workerId), record);
     if (!inRepairPool(record)) return '';
     if (!ctx.eligible(record).length) return '暂无符合条件的师傅可接单，请物业协调人手缺口';
-    if (code && (parseSlot(code)?.startsAt ?? Infinity) - this.now() < scheduleRules.leadMs) return '距上门不足 2 小时尚未接单，请物业及时安排';
+    if (timeSlot && (parseSlot(timeSlot)?.startsAt ?? Infinity) - this.now() < scheduleRules.leadMs) return '距上门不足 2 小时尚未接单，请物业及时安排';
     return '';
   }
 
-  staffingReason(code: string, record: RecordData, context?: StaffingContext) {
-    return context ? context.reason(code, record) : staffingRejection(this.scheduledRows(code), code, this.workerAvailability(), record);
+  staffingReason(timeSlot: string, record: RecordData, context?: StaffingContext) {
+    return context ? context.reason(timeSlot, record) : staffingRejection(this.scheduledRows(timeSlot), timeSlot, this.workerAvailability(), record);
   }
 
   create(userId: string, houseId: string, attachments: string[], build: (house: RecordData) => RecordData,
@@ -215,25 +215,25 @@ export class RepairRepository {
   }
 
   /** 调用方位于创建或 mutate 的 BEGIN IMMEDIATE 事务内，检查和占用不可分割。 */
-  checkSlot(code: string, now: number, excludeId?: string, workerId = '') {
-    requireAvailable(code, this.capacities(code.slice(0, 10)).effective, this.scheduledRows(code), now, excludeId, workerId);
-    if (excludeId) this.checkSkillAvailability(code, { ...this.load(excludeId).record, workerId }, excludeId);
+  checkSlot(timeSlot: string, now: number, excludedRepairId?: string, workerId = '') {
+    requireAvailable(timeSlot, this.capacities(timeSlot.slice(0, 10)).effective, this.scheduledRows(timeSlot), now, excludedRepairId, workerId);
+    if (excludedRepairId) this.checkSkillAvailability(timeSlot, { ...this.load(excludedRepairId).record, workerId }, excludedRepairId);
   }
 
-  checkSkillAvailability(code: string, record: RecordData, excludeId?: string) {
-    const reason = this.staffingReason(code, { ...record, id: excludeId ?? record.id });
+  checkSkillAvailability(timeSlot: string, record: RecordData, excludedRepairId?: string) {
+    const reason = this.staffingReason(timeSlot, { ...record, id: excludedRepairId ?? record.id });
     if (reason) throw new ApiError(409, 40900, reason);
   }
 
-  checkWorker(code: string, workerId: string, excludeId?: string, record?: RecordData) {
-    requireFreeWorker(this.scheduledRows(code), code, workerId, excludeId);
-    const candidate = record ?? (excludeId ? this.load(excludeId).record : undefined);
-    if (candidate) this.checkSkillAvailability(code, { ...candidate, workerId }, excludeId);
+  checkWorker(timeSlot: string, workerId: string, excludedRepairId?: string, record?: RecordData) {
+    requireFreeWorker(this.scheduledRows(timeSlot), timeSlot, workerId, excludedRepairId);
+    const candidate = record ?? (excludedRepairId ? this.load(excludedRepairId).record : undefined);
+    if (candidate) this.checkSkillAvailability(timeSlot, { ...candidate, workerId }, excludedRepairId);
   }
 
-  scheduledRows(code: string): RecordData[] {
+  scheduledRows(timeSlot: string): RecordData[] {
     // 这里只按索引取候选；有效占用和取消状态的定义只在 schedule.slotOrders 中。
-    const rows = this.store.db.prepare("SELECT payload FROM repairs WHERE json_valid(payload) AND json_extract(payload,'$.slot') = ?").all(code);
+    const rows = this.store.db.prepare("SELECT payload FROM repairs WHERE json_valid(payload) AND json_extract(payload,'$.slot') = ?").all(timeSlot);
     return rows.map(row => JSON.parse(String(row.payload)) as RecordData);
   }
 

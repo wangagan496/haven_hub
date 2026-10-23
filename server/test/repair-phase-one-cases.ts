@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ApiFixtureFactory } from './api.test.js';
+import { repairNotificationTasks } from '../src/repair/notification-tasks.js';
 
 // Reuses the existing HTTP fixture; every case owns an isolated in-memory DB.
 const H = 3_600_000;
@@ -78,6 +79,86 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     return { ...f, tokens, raw, call, change, detail, create, at, stored, seed, denied, workerId, now: () => now };
   }
 
+  test('followup: never registered worker retains rework and can complete round two', async t => {
+    const f = await setup(t);
+    let row = await f.create(2);
+    f.store.run('DELETE FROM worker_skills WHERE workerId=?', f.workerId);
+    f.store.run('DELETE FROM worker_skill_audit WHERE workerId=?', f.workerId);
+    assert.equal(f.store.one('SELECT workerId FROM worker_skill_audit WHERE workerId=?', f.workerId), undefined);
+    row = await f.change('worker', row, 'complete', { result: '首轮处理', cost: 10 });
+    row = await f.change('resident', row, 'reject', { reason: '仍漏水' });
+    assert.equal(row.status, 2);
+    assert.equal(row.workerId, f.workerId);
+    assert.equal(row.needsAdmin, false);
+    row = await f.change('worker', row, 'complete', { result: '重新处理', cost: 20 });
+    assert.equal(row.status, 6);
+    assert.equal(row.round, 2);
+  });
+
+  for (const invalidWorker of ['cleared', 'mismatched', 'missing']) {
+    test(`followup: ${invalidWorker} worker returns rejected repair to property`, async t => {
+      const f = await setup(t);
+      let row = await f.create(6);
+      f.store.run('DELETE FROM worker_skills WHERE workerId=?', f.workerId);
+      if (invalidWorker === 'missing') f.store.run("UPDATE users SET role='resident' WHERE id=?", f.workerId);
+      else {
+        f.store.run('INSERT OR REPLACE INTO worker_skill_audit(workerId,actorId,actorName,changedAt) VALUES (?,?,?,?)', f.workerId, f.workerId, '师傅', iso(f.now()));
+        if (invalidWorker === 'mismatched') f.store.run('INSERT INTO worker_skills(workerId,skill) VALUES (?,?)', f.workerId, 'doors');
+      }
+      row = await f.change('resident', row, 'reject', { reason: '仍漏水' });
+      assert.equal(row.status, 1);
+      assert.equal(row.workerId, '');
+      assert.equal(row.needsAdmin, true);
+    });
+  }
+
+  test('followup: progress and ready saves retain audit details and gate onsite confirmation', async t => {
+    const f = await setup(t);
+    let row = await f.create(2);
+    await f.denied('worker', row, 'result', { result: '未传 ready', cost: 1 });
+    await f.denied('worker', row, 'result', { ready: 'true', result: '错误类型', cost: 1 });
+    row = await f.change('worker', row, 'result', { ready: false, result: '', cause: '待排查', cost: 1 });
+    assert.equal(row.resultReady, false);
+    await f.denied('resident', row, 'confirm');
+    const onsite = () => repairNotificationTasks(f.stored(row.id) as { id: string }, 'owner', []).filter(task => task.key.startsWith('onsite-confirm:'));
+    assert.equal(onsite().length, 0);
+    row = await f.change('worker', row, 'result', { ready: true, result: '换水管并复测', cost: 19 });
+    assert.equal(row.resultReady, true);
+    assert.equal(onsite().length, 1);
+    const saved = row.timeline.filter((e: Row) => ['result_progress', 'result_ready'].includes(e.action));
+    assert.deepEqual(saved.map((e: Row) => [e.action, e.round, e.detail]), [
+      ['result_progress', 1, '；上报费用 1 元'], ['result_ready', 1, '换水管并复测；上报费用 19 元']]);
+    row = await f.change('worker', row, 'result', { ready: false, result: '还需观察', cost: 21 });
+    assert.equal(row.resultReady, false);
+    assert.equal(onsite().length, 0);
+    await f.denied('resident', row, 'confirm');
+    row = await f.change('worker', row, 'result', { ready: true, result: '复测结束', cost: 23 });
+    row = await f.change('resident', row, 'confirm');
+    assert.equal(row.status, 3);
+    assert.equal(row.timeline.at(-1).detail, '复测结束；上报费用 23 元');
+  });
+
+  for (const confirmation of ['system', 'resident']) {
+    test(`followup: rounds two and three receive 720 hours after ${confirmation} confirmation`, async t => {
+      const f = await setup(t);
+      let row = await f.create(6);
+      row = await f.change('resident', row, 'reject', { reason: '返修' });
+      for (const number of [2, 3]) {
+        row = await f.change('worker', row, 'complete', { result: `第${number}轮处理`, cost: number });
+        const confirmedAt = confirmation === 'system' ? Date.parse(row.confirmDeadline) : f.now();
+        if (confirmation === 'system') { await f.at(confirmedAt + 1); row = await f.detail(row.id); }
+        else row = await f.change('resident', row, 'confirm');
+        assert.equal(row.round, number);
+        assert.equal(row.rounds[0].confirmedAt, iso(confirmedAt));
+        assert.equal(row.warrantyEnd, iso(confirmedAt + 720 * H));
+        if (number === 2) {
+          row = await f.change('resident', row, 'aftersale', { reason: '再次返修' }, 'POST');
+          row = await f.change('admin', row, 'aftersale', { approve: true });
+        }
+      }
+    });
+  }
+
   for (const explicitTime of [false, true]) {
     test(`FIX-A valid expected time explicit=${explicitTime} needs no reason or proposal`, async t => {
       const f = await setup(t);
@@ -124,6 +205,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     f.store.run("UPDATE users SET role = 'worker' WHERE mobile = ?", '13800138001');
     const workerRequests: Array<[string, string, Row]> = [
       ['PUT', 'accept', {}], ['PUT', 'complete', { result: '已修好' }],
+      ['PUT', 'result', { ready: true, result: '已修好', cost: 10 }],
       ['PUT', 'release', { reason: '退出' }], ['POST', 'progress', { content: '进展' }],
       ['PUT', 'revoke', {}], ['POST', 'objection', { reason: '异议' }],
       ['POST', 'reschedule', { time: future, reason: '改约', notified: true }],
@@ -230,7 +312,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     });
   }
 
-  test('P1-03/10 two rounds preserve histories; no third round; verification does not overwrite cost', async t => {
+  test('optimization: rework replaces content, preserves fees and permits a third round', async t => {
     const f = await setup(t);
     let row = await f.create(6);
     const first = structuredClone(row.rounds[0]);
@@ -240,36 +322,34 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     assert.equal(row.agreedTime, '');
     assert.equal(row.round, 2);
     assert.equal(row.reworkUsed, true);
-    assert.equal(row.rounds[0].note, first.note);
-    assert.equal(row.rounds[0].cost, first.cost);
-    assert.equal(row.rounds[0].rejectReason, '仍然漏水');
+    assert.equal(row.rounds.length, 1);
+    assert.equal(row.rounds[0].note, '');
+    assert.equal(row.fees[0].cost, first.cost);
+    assert.equal(row.rounds[0].problem, '仍然漏水');
     assert.equal(row.rounds[0].confirmDeadline, '');
     await f.denied('admin', row, 'notes', { target: 'verify', content: '尚未完工', round: 2 }, 'POST');
     row = await f.change('admin', row, 'notes', { target: 'verify', content: '首轮已核实', cost: 10, round: 1 }, 'POST');
-    assert.equal(row.rounds[0].cost, 12.5);
-    assert.match(row.rounds[0].verifiedNote, /首轮已核实.*10/);
+    assert.equal(row.fees[0].cost, 12.5);
+    assert.match(row.fees[0].verifiedNote, /首轮已核实.*10/);
     row = await f.change('worker', row, 'complete', { result: '第二轮更换阀门', cost: 20 });
-    await f.denied('resident', row, 'reject', { reason: '申请第三轮' });
     row = await f.change('resident', row, 'confirm');
-    assert.equal(row.warrantyEnd, iso(f.now() + 480 * H));
-    assert.equal(row.rounds[1].confirmedBy, 'resident');
-    assert.equal(row.rounds[1].note, '第二轮更换阀门');
-    assert.equal(row.rounds[1].cost, 20);
-    assert.equal(row.rounds[0].note, first.note);
-    await f.denied('resident', row, 'aftersale', { reason: '第三轮' }, 'POST');
-    // Defensive legacy/corrupt pending: prove review's round limit, not just no-pending guard.
-    const injected = f.stored(row.id);
-    injected.pendings.push({ id: 'legacy-pending', kind: 'aftersale', by: 'resident', at: iso(f.now()), reason: '旧申请' });
-    f.seed(injected);
-    await f.denied('admin', row, 'aftersale', { approve: true });
+    assert.equal(row.warrantyEnd, iso(f.now() + 720 * H));
+    assert.equal(row.rounds[0].confirmedBy, 'resident');
+    assert.equal(row.rounds[0].note, '第二轮更换阀门');
+    assert.equal(row.rounds[0].cost, 20);
+    assert.equal(row.fees[0].cost, first.cost);
+    row = await f.change('resident', row, 'aftersale', { reason: '第三轮' }, 'POST');
+    row = await f.change('admin', row, 'aftersale', { approve: true });
+    assert.equal(row.round, 3);
+    assert.equal(row.rounds[0].cause, '待排查');
     row = await f.change('resident', row, 'feedback', { content: '请物业跟进' }, 'POST');
-    assert.equal(row.status, 3);
-    assert.equal(row.rounds.length, 2);
+    assert.equal(row.status, 2);
+    assert.equal(row.rounds.length, 1);
     await f.denied('resident', row, 'feedback', { content: '重复反馈' }, 'POST');
     assert((await f.call('admin', 'GET', '/management/repairs'))[0].todo.includes('问题反馈待回复'));
     row = await f.change('admin', row, 'notes', { target: 'feedback', content: '已联系双方' }, 'POST');
     assert(!row.todo.includes('问题反馈待回复'));
-    assert.equal(row.status, 3);
+    assert.equal(row.status, 2);
   });
 
   test('P1-04 aftersale only after completion; duplicate/reject rules and review after expiry', async t => {
@@ -296,7 +376,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     assert.equal(row.agreedTime, '');
   });
 
-  test('P1-03/09/10 approved aftersale retains first confirmation and second auto confirmation uses 480h', async t => {
+  test('P1-03/09/10 approved aftersale retains first fee and second auto confirmation uses 720h', async t => {
     const f = await setup(t);
     let row = await f.create(3);
     const first = structuredClone(row.rounds[0]);
@@ -309,16 +389,49 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     const deadline = Date.parse(row.confirmDeadline);
     await f.at(deadline + 1);
     row = await f.detail(row.id);
-    assert.deepEqual(row.rounds[0], first);
-    assert.equal(row.rounds[1].note, '第二次维修');
-    assert.equal(row.rounds[1].cost, 25);
-    assert.equal(row.rounds[1].confirmedBy, 'system');
-    assert.equal(row.rounds[1].confirmedAt, iso(deadline));
-    assert.equal(row.warrantyEnd, iso(deadline + 480 * H));
+    assert.equal(row.fees[0].cost, first.cost);
+    assert.equal(row.rounds[0].note, '第二次维修');
+    assert.equal(row.rounds[0].cost, 25);
+    assert.equal(row.rounds[0].confirmedBy, 'system');
+    assert.equal(row.rounds[0].confirmedAt, iso(deadline));
+    assert.equal(row.warrantyEnd, iso(deadline + 720 * H));
     row = await f.change('admin', row, 'notes', { target: 'verify', content: '第二轮已核实', cost: 20 }, 'POST');
-    assert.equal(row.rounds[1].cost, 25);
-    assert.match(row.rounds[1].verifiedNote, /第二轮已核实.*20/);
-    assert.deepEqual(row.rounds[0], first);
+    assert.equal(row.rounds[0].cost, 25);
+    assert.match(row.rounds[0].verifiedNote, /第二轮已核实.*20/);
+    assert.equal(row.fees[0].cost, first.cost);
+  });
+
+  test('optimization: owner confirms saved onsite result; stale edits and duplicate starts cannot change rounds', async t => {
+    const f = await setup(t);
+    let row = await f.create(2);
+    await f.denied('resident', row, 'confirm');
+    const stale = row;
+    row = await f.change('worker', row, 'result', { ready: true, result: '换水管后已测试', cost: 19 });
+    assert.equal(row.status, 2);
+    assert.equal(row.resultReady, true);
+    await f.denied('resident', stale, 'confirm', {}, 'PUT', 409);
+    await f.denied('worker', row, 'result', { ready: true, result: '', cost: 19 });
+    row = await f.change('resident', row, 'confirm');
+    assert.equal(row.status, 3);
+    assert.equal(row.rounds[0].confirmedBy, 'resident');
+    assert.equal(row.fees[0].cost, 19);
+    row = await f.change('resident', row, 'aftersale', { reason: '复发' }, 'POST');
+    const start = row;
+    row = await f.change('admin', row, 'aftersale', { approve: true });
+    await f.denied('admin', start, 'aftersale', { approve: true }, 'PUT', 409);
+    assert.equal((await f.detail(row.id)).round, 2);
+    row = await f.change('worker', row, 'result', { ready: true, result: '重新检查接头，计划换密封圈', problem: '接头渗漏', cause: '待排查', cost: 0 });
+    row = await f.change('worker', row, 'result', { ready: true, result: '换密封圈并复测', problem: '接头渗漏', cause: '密封圈老化，上次未拆开检查', cost: 8 });
+    assert.equal(row.round, 2);
+    assert.equal(row.fees[0].cost, 19);
+    row = await f.change('worker', row, 'complete', { result: '换密封圈并复测', cost: 8 });
+    assert.equal(row.status, 6);
+    const rejection = row;
+    row = await f.change('resident', row, 'reject', { reason: '仍漏水' });
+    await f.denied('resident', rejection, 'reject', { reason: '重复点击' }, 'PUT', 409);
+    assert.equal(row.round, 3);
+    assert.equal(row.rounds.length, 1);
+    assert.deepEqual(row.fees.map((fee: Row) => fee.cost), [19, 8]);
   });
 
   test('P1-08 assigned worker can release before acceptance without creating another round', async t => {
@@ -344,7 +457,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
       }
       row = await f.change('resident', row, 'confirm');
       const end = Date.parse(row.warrantyEnd);
-      assert.equal(end - f.now(), (round === 1 ? 720 : 480) * H);
+      assert.equal(end - f.now(), 720 * H);
       for (const delta of [-1, 0]) {
         await f.at(end + delta);
         const resident = await f.detail(row.id);

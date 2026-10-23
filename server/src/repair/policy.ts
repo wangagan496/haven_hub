@@ -1,5 +1,5 @@
 import type { RecordData } from '../database.js';
-import { Status, type Actor, type Pending, addEvent, currentRound, ensureRounds, openPending, pendings, voidReschedule } from './model.js';
+import { Status, type Actor, type Pending, addEvent, currentRound, ensureRounds, openPending, pendings, voidReschedule, repairRoundNumber } from './model.js';
 import { clearFutureSlot, parseSlot, setSlot } from './schedule.js';
 import { requireValue } from '../errors.js';
 
@@ -52,10 +52,9 @@ const hour = 3_600_000;
 // 期限一律按服务端时钟的连续小时计算；集中在此，便于调整和测试注入时钟。
 export const rules = {
   autoConfirmMs: 72 * hour,
-  warrantyMs: [720 * hour, 480 * hour] as const,
+  warrantyMs: 720 * hour,
   revokeAutoMs: 2 * hour,
   objectionMs: 72 * hour,
-  maxRounds: 2,
   unassignedAlertMs: 24 * hour,
   unacceptedAlertMs: 48 * hour,
   rescheduleAlertMs: 24 * hour,
@@ -64,16 +63,15 @@ export const rules = {
   periods: { morning: [9, 12], noon: [14, 17], evening: [18, 21] } as const,
 };
 
-export function reworkUsed(record: RecordData) { return ensureRounds(record).length >= rules.maxRounds; }
+export function reworkUsed(record: RecordData) { return repairRoundNumber(record) > 1; }
 
-// 售后期从最终确认完成起算：第一轮 720 小时，第二轮 480 小时。
+// 每一轮售后期均从最终确认完成起算 720 小时，返修次数不设上限。
 export function warrantyEnd(record: RecordData): string {
   if (record.status !== Status.completed) return '';
   const round = currentRound(record);
   const confirmed = Date.parse(round.confirmedAt);
   if (!Number.isFinite(confirmed)) return '';
-  const length = rules.warrantyMs[Math.min(round.number, rules.maxRounds) - 1] ?? rules.warrantyMs[1];
-  return new Date(confirmed + length).toISOString();
+  return new Date(confirmed + rules.warrantyMs).toISOString();
 }
 
 export function inWarranty(record: RecordData, now: number) {

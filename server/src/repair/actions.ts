@@ -1,10 +1,10 @@
 import type { RecordData } from '../database.js';
 import { requireValue } from '../errors.js';
-import { Status, type Actor, type Pending, type Role, addEvent, currentRound, ensureRounds, newRound, openPending, pendings, voidReschedule } from './model.js';
-import { activeRepair, applyRevoke, closed, inWarranty, reworkUsed, rules, shiftRejection, requireUrgentDispatch } from './policy.js';
+import { Status, type Actor, type Pending, type Role, addEvent, currentRound, ensureRounds, newRound, openPending, pendings, voidReschedule, repairRoundNumber, repairFees } from './model.js';
+import { activeRepair, applyRevoke, closed, inWarranty, rules, shiftRejection, requireUrgentDispatch } from './policy.js';
 import { clearFutureSlot, firstProposalDeadline, parseSlot, requireDispatchSlot, setSlot } from './schedule.js';
 
-export type WorkerContact = { nickName?: unknown; mobile?: unknown };
+export type WorkerContact = { nickName?: unknown; mobile?: unknown; qualified?: boolean };
 const iso = (now: number) => new Date(now).toISOString();
 const roleLabel: Record<Actor, string> = { resident: '住户', worker: '师傅', admin: '物业', system: '系统' };
 
@@ -16,27 +16,35 @@ function addPending(record: RecordData, id: string, kind: Pending['kind'], by: A
 
 export function confirm(record: RecordData, input: Record<string, never>, now: number): void {
   const at = iso(now);
-  requireValue(record.status === Status.confirming, '当前不是待确认状态');
+  requireValue(record.status === Status.confirming || (record.status === Status.processing && currentRound(record).resultSavedAt && currentRound(record).note), '请等待师傅保存维修结果和费用后再确认');
+  requireValue(!openPending(record, 'revoke'), '请先处理撤销申请');
   const round = currentRound(record);
+  if (record.status === Status.processing) {
+    round.completedAt = at;
+    record.completedAt = at;
+    voidReschedule(record, at, 'completed');
+    clearFutureSlot(record, now);
+    record.needsAdmin = false;
+    record.fees = repairFees(record);
+  }
   Object.assign(round, { confirmedAt: at, confirmedBy: 'resident' });
   record.status = Status.completed;
-  addEvent(record, { action: 'confirmed', label: '住户确认修好', at, by: 'resident', round: round.number });
+  addEvent(record, { action: 'confirmed', label: '住户确认修好', at, by: 'resident', round: round.number,
+    detail: `${round.note}；上报费用 ${round.cost} 元` });
 }
 
 export function reject(record: RecordData, input: { reason: string; worker?: WorkerContact }, now: number): void {
   const at = iso(now);
   requireValue(record.status === Status.confirming, '当前不是待确认状态');
-  requireValue(!reworkUsed(record), '已返修过一次，请通过“反馈问题”联系物业');
   const round = currentRound(record);
   Object.assign(round, { rejectedAt: at, rejectReason: input.reason, confirmDeadline: '' });
   addEvent(record, { action: 'rejected', label: '住户反馈未修好', at, by: 'resident', detail: input.reason, round: round.number });
-  startRework(record, at, 'rejected', input.worker);
+  startRework(record, at, 'rejected', input.worker, input.reason);
 }
 
 export function applyAftersale(record: RecordData, input: { reason: string; pendingId: string }, now: number): void {
   const at = iso(now);
   requireValue(record.status === Status.completed, '只有已完成的工单可以申请售后');
-  requireValue(!reworkUsed(record), '已返修过一次，请通过“反馈问题”联系物业');
   requireValue(inWarranty(record, now), '已超过售后期');
   requireValue(!openPending(record, 'aftersale'), '已有待审核的售后申请');
   addPending(record, input.pendingId, 'aftersale', 'resident', at, input.reason);
@@ -144,11 +152,42 @@ export function accept(record: RecordData, input: { workerId: string; slot?: str
   if (input.slot && !record.slot) propose(record, { slot: input.slot, role: 'worker', reason: input.reason, pendingId: input.pendingId }, now);
 }
 
-export function complete(record: RecordData, input: { workerId: string; result: string; cost: number }, now: number): void {
+type ResultInput = { workerId: string; result: string; cost: number; problem?: string; cause?: string };
+
+function writeResult(record: RecordData, input: ResultInput, now: number, ready: boolean): void {
+  requireValue(record.status === Status.processing, '仅能保存已接单的工单');
+  requireValue(!openPending(record, 'revoke'), '住户已申请撤销，请先处理撤销申请');
+  if (ready) requireValue(input.result.trim(), '请填写维修结果');
+  requireValue(Number.isFinite(input.cost) && input.cost >= 0, '请填写有效费用');
+  const round = currentRound(record);
+  Object.assign(round, { note: input.result, cost: input.cost, resultSavedAt: ready ? iso(now) : '',
+    problem: input.problem?.trim() || round.problem || String(record.description || '本次报修问题'),
+    cause: input.cause?.trim() || round.cause || '待排查', workerId: input.workerId, workerName: String(record.workerName ?? '') });
+  record.completionNote = input.result;
+}
+
+export function saveResult(record: RecordData, input: ResultInput & { ready: boolean }, now: number): void {
+  writeResult(record, input, now, input.ready);
+  addEvent(record, { action: input.ready ? 'result_ready' : 'result_progress',
+    label: input.ready ? '师傅保存维修结果，可供现场确认' : '师傅保存维修进度',
+    at: iso(now), by: 'worker', round: currentRound(record).number,
+    detail: `${input.result}；上报费用 ${input.cost} 元` });
+}
+
+function clearWorkerResult(record: RecordData): void {
+  const round = currentRound(record);
+  if (round.completedAt) return;
+  const defaults = newRound(round.number, round.reason, round.startedAt);
+  Object.assign(round, { note: defaults.note, cost: defaults.cost, cause: '待排查', resultSavedAt: '' });
+  record.completionNote = '';
+}
+
+export function complete(record: RecordData, input: { workerId: string; result: string; cost: number; problem?: string; cause?: string }, now: number): void {
   const at = iso(now);
   const { workerId } = input;
   requireValue(record.status === Status.processing, '仅能完成已接单的工单');
   requireValue(!openPending(record, 'revoke'), '住户已申请撤销，请先处理撤销申请');
+  writeResult(record, input, now, true);
   const round = currentRound(record);
   const deadline = iso(now + rules.autoConfirmMs);
   Object.assign(round, { note: input.result, cost: input.cost, completedAt: at, confirmDeadline: deadline,
@@ -159,6 +198,7 @@ export function complete(record: RecordData, input: { workerId: string; result: 
   record.completedAt = at;
   record.completionNote = input.result;
   record.needsAdmin = false;
+  record.fees = repairFees(record);
   addEvent(record, { action: 'complete', label: '师傅提交完工，待住户确认', at, by: 'worker', round: round.number,
     detail: `${input.result}；上报费用 ${input.cost} 元` });
 }
@@ -185,6 +225,7 @@ export function release(record: RecordData, input: { workerId: string; reason: s
   if (revokePending) Object.assign(revokePending, { resolvedAt: at, resolvedBy: 'system', resolution: 'released' });
   const round = currentRound(record);
   addEvent(record, { action: 'released', label: '师傅退出，物业正在重新安排', at, by: 'worker', detail: input.reason, round: round.number });
+  clearWorkerResult(record);
   Object.assign(round, { workerId: '', workerName: '' });
   // 名额属于工单，退出只解除师傅占用，时段及上门时间保留给重新派单。
   Object.assign(record, { status: Status.pending, workerId: '', workerName: '', workerMobile: '',
@@ -209,19 +250,22 @@ export function objectRevoke(record: RecordData, input: { reason: string }, now:
 }
 
 export function assign(record: RecordData, input: { workerId: string; worker: WorkerContact }, now: number): void {
+  requireValue(!openPending(record, 'revoke'), '住户已申请撤销，请先处理撤销申请');
   const at = iso(now);
   const { worker } = input;
-  requireValue(record.status === Status.pending || record.status === Status.assigned
-    || (record.status === Status.processing && Boolean(record.staffingIssue)), '只能对未接单或人手待协调的报修派单');
   const previousWorkerId = String(record.workerId ?? '');
+  requireValue(record.status === Status.pending || record.status === Status.assigned
+    || (record.status === Status.processing && (Boolean(record.staffingIssue) || previousWorkerId !== input.workerId)),
+  '只能对未接单工单派单，或为处理中工单更换师傅');
   if (previousWorkerId && previousWorkerId !== input.workerId) {
+    clearWorkerResult(record);
     record.previousWorkers = [...(Array.isArray(record.previousWorkers) ? record.previousWorkers : []),
       { workerId: previousWorkerId, workerName: record.workerName, releasedAt: at, reason: '物业改派' }];
     if (!openPending(record, 'reschedule')?.firstSchedule) voidReschedule(record, at, 'reassigned');
   }
   Object.assign(record, { workflowVersion: 1, status: Status.assigned, workerId: input.workerId,
     assignmentSource: 'admin', workforceReturned: false,
-    workerName: String(worker.nickName), workerMobile: String(worker.mobile), assignedAt: at, releasedAt: '' });
+    workerName: String(worker.nickName), workerMobile: String(worker.mobile), assignedAt: at, acceptedAt: '', releasedAt: '' });
   addEvent(record, { action: 'assigned', label: '物业派单', at, by: 'admin', detail: `指派给${worker.nickName}`,
     ...(previousWorkerId && previousWorkerId !== input.workerId ? { previousWorkerId } : {}),
     round: currentRound(record).number });
@@ -230,7 +274,6 @@ export function assign(record: RecordData, input: { workerId: string; worker: Wo
 export function reviewAftersale(record: RecordData, input: { approve: boolean; reason: string; worker?: WorkerContact }, now: number): void {
   const at = iso(now);
   requireValue(openPending(record, 'aftersale'), '没有待审核的售后申请');
-  requireValue(!input.approve || !reworkUsed(record), '已返修过一次，不能再开启返修');
   const open = openPending(record, 'aftersale')!;
   Object.assign(open, { resolvedAt: at, resolvedBy: 'admin', resolution: input.approve ? 'approved' : 'rejected', reply: input.reason });
   if (!input.approve) {
@@ -239,14 +282,14 @@ export function reviewAftersale(record: RecordData, input: { approve: boolean; r
   }
   addEvent(record, { action: 'aftersale_approved', label: '物业通过售后申请，交回原师傅返修', at, by: 'admin',
     detail: [open.reason, input.reason].filter(Boolean).join('；') });
-  startRework(record, at, 'aftersale', input.worker);
+  startRework(record, at, 'aftersale', input.worker, open.reason);
 }
 
 export function note(record: RecordData, input: { content: string; target: 'feedback' | 'objection' | 'verify' | 'follow'; cost?: number; round?: number; resolveNeedsAdmin?: boolean }, now: number): void {
   const at = iso(now);
   // 核实针对已提交完工的一轮：默认最近一轮已完工的，也可指定轮次；不会写到尚未完工的返修轮上。
   const verifiedRound = (record: RecordData) => {
-    const done = ensureRounds(record).filter(item => item.completedAt);
+    const done = repairFees(record);
     return input.round === undefined ? done.at(-1) : done.find(item => item.number === input.round);
   };
   if (input.target === 'feedback') requireValue(openPending(record, 'feedback'), '没有待回复的问题反馈');
@@ -265,23 +308,34 @@ export function note(record: RecordData, input: { content: string; target: 'feed
   // 核实结果单独记录，不覆盖师傅上报的费用；上报、核实、报销是不同概念。
   const target = input.target === 'verify' ? verifiedRound(record)! : undefined;
   if (target) target.verifiedNote = input.cost === undefined ? input.content : `${input.content}（核实费用 ${input.cost} 元）`;
+  if (target) {
+    record.fees = repairFees(record).map(fee => fee.number === target.number ? target : fee);
+    const round = ensureRounds(record).find(item => item.number === target.number);
+    if (round) round.verifiedNote = target.verifiedNote;
+  }
   const labels = { feedback: '物业回复问题反馈', objection: '物业处理撤销异议', verify: '物业核实处理内容和费用', follow: '物业跟进' };
   addEvent(record, { action: `admin_${input.target}`, label: input.resolveNeedsAdmin ? '物业已处理师傅协助请求' : target ? `${labels.verify}（第${target.number}轮）` : labels[input.target],
     at, by: 'admin', detail: input.content, ...(target ? { round: target.number } : {}) });
 }
 
-function startRework(record: RecordData, at: string, why: 'rejected' | 'aftersale', worker?: WorkerContact) {
+function startRework(record: RecordData, at: string, why: 'rejected' | 'aftersale', worker?: WorkerContact, problem = '') {
   const all = ensureRounds(record);
-  requireValue(all.length < rules.maxRounds, '已返修过一次，不能再开启返修');
   const previous = all.at(-1)!;
-  const round = newRound(all.length + 1, why, at);
-  Object.assign(round, { workerId: previous.workerId, workerName: previous.workerName });
-  record.rounds = [...all, round];
+  const number = repairRoundNumber(record) + 1;
+  record.fees = repairFees(record);
+  const round = newRound(number, why, at);
+  Object.assign(round, { workerId: previous.workerId, workerName: previous.workerName, problem, cause: '待排查' });
+  record.roundCount = number;
+  record.rounds = [round];
   voidReschedule(record, at, 'rework');
-  Object.assign(record, { status: previous.workerId ? Status.processing : Status.pending, slot: '', agreedTime: '', autoAccepted: false, needsAdmin: false, completionNote: '',
+  Object.assign(record, { status: previous.workerId ? Status.processing : Status.pending, slot: '', agreedTime: '', autoAccepted: false, needsAdmin: false, completionNote: '', completedAt: '',
     workerId: previous.workerId, workerName: previous.workerName || String(worker?.nickName ?? ''),
     workerMobile: String(worker?.mobile ?? record.workerMobile ?? '') });
-  addEvent(record, { action: 'rework_started', label: '第二轮维修开始，请重新约定上门时间', at, by: 'system', round: round.number });
+  if (worker?.qualified === false) {
+    Object.assign(round, { workerId: '', workerName: '' });
+    Object.assign(record, { status: Status.pending, workerId: '', workerName: '', workerMobile: '', needsAdmin: true });
+  }
+  addEvent(record, { action: 'rework_started', label: `第${number}轮维修开始，请重新排查原因、调整方案并约定上门时间`, at, by: 'system', round: number });
 }
 
 /** 改约同意时名额被抢占：保存提议作废状态，由服务层在事务提交后返回 409。 */
@@ -321,6 +375,7 @@ export function dispatch(record: RecordData, input: { workerId: string; worker: 
   const firstSchedule = !record.slot && !record.agreedTime;
   const reassigned = previousWorkerId !== '' && previousWorkerId !== input.workerId;
   if (reassigned) {
+    clearWorkerResult(record);
     record.previousWorkers = [...(Array.isArray(record.previousWorkers) ? record.previousWorkers : []),
       { workerId: previousWorkerId, workerName: previousWorkerName, releasedAt: at, reason: '物业急单改派' }];
   }

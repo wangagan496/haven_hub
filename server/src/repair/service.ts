@@ -4,7 +4,7 @@ import type { RecordData, Store } from '../database.js';
 import { mobileSchema } from '../auth.js';
 import { ApiError, requireValue } from '../errors.js';
 import { date, houseInfo } from '../community/resources.js';
-import { Status, type Role, addEvent, currentRound, localTimePattern, newRound, repairItems } from './model.js';
+import { Status, type Role, addEvent, currentRound, localTimePattern, newRound, openPending, repairItems } from './model.js';
 import { eligibility, holdingEligibility, inRepairPool, staffingPlan } from './workforce.js';
 import * as actions from './actions.js';
 import { ANY_REVISION, RepairRepository, type Loaded } from './repository.js';
@@ -274,7 +274,7 @@ export class RepairService {
       return { ...input, appointment, expectedTime: slot ? parseSlot(slot)!.start : '', agreedTime: slot ? parseSlot(slot)!.start : '',
         slot, expectedSlot: slot, priority: '', autoAccepted: false, shiftCount: 0, needsAdmin: false,
         id, status: 1, workflowVersion: 1, revision: 1, createdAt,
-        rounds: [newRound(1, 'first', createdAt)], pendings: [],
+        roundCount: 1, rounds: [newRound(1, 'first', createdAt)], fees: [], pendings: [],
         timeline: [{ action: 'submitted', label: '住户申请', at: createdAt, by: 'resident',
           detail: slot ? `期望上门时段 ${slot}` : input.asap ? '紧急诉求：尽快上门' : '提交后等待安排' }],
         houseInfo: houseInfo(house), community: String(house.point ?? ''), building: String(house.building ?? ''),
@@ -299,7 +299,12 @@ export class RepairService {
   reject(userId: string, id: string, raw: unknown) {
     const input = z.object({ revision, reason }).strict().parse(raw);
     return this.respondView(this.repository.mutate(id, input.revision, ({ owner }) => this.requireOwner(owner, userId),
-      (record, now) => actions.reject(record, { ...input, worker: this.repository.user(currentRound(record).workerId) }, now)), 'resident');
+      (record, now) => actions.reject(record, { ...input, worker: this.reworkWorker(record) }, now)), 'resident');
+  }
+
+  private reworkWorker(record: RecordData) {
+    const id = currentRound(record).workerId;
+    return { ...this.repository.user(id), qualified: !holdingEligibility(this.repository.workerAvailability().find(worker => worker.id === id), { ...record, workerId: id }) };
   }
 
   applyAftersale(userId: string, id: string, raw: unknown) {
@@ -403,11 +408,19 @@ export class RepairService {
       }), 'worker');
   }
 
-  complete(workerId: string, id: string, raw: unknown) {
-    const input = z.object({ revision, result: z.string().trim().max(1000).default(''), cost: cost.default(0) }).strict().parse(raw);
-    requireValue(input.result.length > 0, '请填写处理结果后再完成维修');
+  complete(workerId: string, id: string, raw: unknown, saveOnly = false) {
+    const input = z.object({ revision, result: z.string().trim().max(1000).default(''), cost: cost.default(0),
+      ready: saveOnly ? z.boolean() : z.never().optional(),
+      problem: z.string().trim().min(1).max(1000).optional(), cause: z.string().trim().min(1).max(1000).optional() }).strict().parse(raw);
+    if (!saveOnly || input.ready) requireValue(input.result.length > 0, '请填写处理结果后再完成维修');
     return this.respondView(this.repository.mutate(id, input.revision, ({ record }) => this.requireWorker(record, workerId),
-      (record, now) => actions.complete(record, { ...input, workerId }, now)), 'worker');
+      (record, now) => {
+        if (Number(record.roundCount ?? currentRound(record).number) > 1) {
+          requireValue(!holdingEligibility(this.repository.workerAvailability().find(worker => worker.id === workerId), { ...record, workerId }), '请由具备对应技能的师傅重新排查，需要时联系物业协调');
+        }
+        if (saveOnly) actions.saveResult(record, { ...input, workerId, ready: input.ready! }, now);
+        else actions.complete(record, { ...input, workerId }, now);
+      }), 'worker');
   }
 
   progress(workerId: string, id: string, raw: unknown) {
@@ -467,7 +480,9 @@ export class RepairService {
     const people = staffing.workers;
     return this.repository.workers().map(worker => {
       const candidate = { ...record, workerId: String(worker.id) };
-      const reason = record.slot ? this.repository.staffingReason(String(record.slot), candidate, staffing)
+      const reason = openPending(record, 'revoke') ? '住户已申请撤销，请先处理撤销申请'
+        : record.status === Status.processing && worker.id === record.workerId ? '当前维修人员，请选择其他师傅'
+        : record.slot ? this.repository.staffingReason(String(record.slot), candidate, staffing)
         : eligibility(people.find(item => item.id === worker.id), candidate);
       return { ...worker, selectable: !reason, reason };
     });
@@ -477,7 +492,7 @@ export class RepairService {
     const input = z.object({ revision, approve: z.boolean(), reason: optionalNote }).strict().parse(raw);
     requireValue(input.approve || input.reason.length > 0, '拒绝售后申请必须填写原因');
     return this.respondView(this.repository.mutate(id, input.revision, () => {},
-      (record, now) => actions.reviewAftersale(record, { ...input, worker: this.repository.user(currentRound(record).workerId) }, now)), 'admin');
+      (record, now) => actions.reviewAftersale(record, { ...input, worker: this.reworkWorker(record) }, now)), 'admin');
   }
 
   note(id: string, raw: unknown) {
