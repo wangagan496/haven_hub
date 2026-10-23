@@ -57,7 +57,7 @@ extension ErrorTypeChecker on Object {
   /// 这种错误可以重试
   bool get isRetryable {
     final error = this;
-    if (error is! NetworkException) return false;
+    if (error is! NetworkException || error.retryHandled) return false;
     return error.isTimeout ||
         const <int>{502, 503, 504}.contains(error.statusCode);
   }
@@ -95,6 +95,7 @@ Future<T> retryAsync<T>({
       if (sessionChanged()) throw const SessionChangedException();
       return await action();
     } on Object catch (error) {
+      if (session.sessionId == sessionId && error is NetworkException && error.retryHandled) rethrow;
       if (sessionChanged()) throw const SessionChangedException();
       if (error.shouldFailFast ||
           i == strategy.maxAttempts - 1 ||

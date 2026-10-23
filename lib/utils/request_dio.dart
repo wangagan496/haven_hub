@@ -1,12 +1,18 @@
+import 'dart:async';
 import 'package:dio/dio.dart' as dio;
 
 import '../constant/index.dart';
 import 'app_exception.dart';
 import 'emitter.dart';
 import 'logger.dart';
+import 'network_failure_stub.dart' if (dart.library.io) 'network_failure_io.dart';
 import 'token_manager.dart';
 
 typedef RefreshDioFactory = dio.Dio Function();
+
+class _ReadCredentialsRefreshed extends SessionChangedException {
+  const _ReadCredentialsRefreshed();
+}
 
 class RequestDio {
   /// 键名命中即整体脱敏的固定列表（比较前会去掉 `-`、`_` 并转小写）。
@@ -112,7 +118,7 @@ class RequestDio {
 
             if (sessionChanged()) {
               stoppedError = const SessionChangedException();
-            } else if (error.response?.statusCode == 401) {
+            } else if (error.response?.statusCode == 401 && error.requestOptions.extra['authRecoveryUsed'] != true && ! (error.requestOptions.cancelToken?.isCancelled ?? false)) {
               final String refreshToken = _tokens.getRefreshToken();
               final bool refreshSuccess = refreshToken.isNotEmpty &&
                   await _tryRefreshToken(
@@ -121,8 +127,7 @@ class RequestDio {
                     sessionVersion: requestSessionVersion,
                   );
               if (sessionChanged()) {
-                // 刷新成功只更新凭证，不重放任何旧 GET/POST/PUT/DELETE。
-                // 换账号时同样停止，且绝不清理新账号的登录态。
+                // Reads may recover once in get(); writes still stop here.
                 stoppedError = const SessionChangedException();
               } else if (!refreshSuccess) {
                 await _clearSessionAndNotify();
@@ -130,6 +135,12 @@ class RequestDio {
             }
           }
 
+          if (stoppedError is SessionChangedException && error.response?.statusCode == 401 &&
+              error.requestOptions.extra['sessionId'] == _tokens.sessionId &&
+              _tokens.refreshSessionVersion == _tokens.sessionVersion &&
+              _tokens.getToken().isNotEmpty) {
+            stoppedError = const _ReadCredentialsRefreshed();
+          }
           final NetworkException appError = stoppedError ?? _mapDioError(error);
           handler.reject(
             dio.DioException(
@@ -508,7 +519,7 @@ class RequestDio {
       case dio.DioExceptionType.transformTimeout:
         return const NetworkException('响应数据解析超时，请稍后重试', isTimeout: true);
       case dio.DioExceptionType.connectionError:
-        return const NetworkException('网络连接失败，请检查网络设置');
+        return NetworkException('网络连接失败，请检查网络设置', isTemporary: isTemporarySocketFailure(error.error));
       case dio.DioExceptionType.badCertificate:
         return const NetworkException('SSL 证书验证失败，连接不安全');
       case dio.DioExceptionType.cancel:
@@ -553,15 +564,43 @@ class RequestDio {
     Map<String, dynamic>? params,
     dio.Options? options,
     dio.CancelToken? cancelToken,
-  }) {
-    return _handleResponse(
-      _dio.get<dynamic>(
-        url,
-        queryParameters: params,
-        options: options,
-        cancelToken: cancelToken,
-      ),
-    );
+  }) async {
+    // Only audited read routes. GET /code sends an SMS and is deliberately absent.
+    final path = Uri.tryParse(url)?.path.replaceFirst(RegExp(r'^/'), '') ?? '';
+    final safe = options?.extra?['safeRead'] != false &&
+        RegExp(r'^(announcement(?:/[^/]+)?|userInfo|room(?:/[^/]+)?|repair(?:/.*)?|repairItem|visitor(?:/[^/]+)?|worker/(?:repairs(?:/[^/]+)?|repair-pool|skills)|notifications(?:/config)?)$').hasMatch(path);
+    final sessionId = _tokens.sessionId;
+    var authRecoveryUsed = false;
+    for (var attempt = 0; ; attempt++) {
+      if (_tokens.sessionId != sessionId) throw const SessionChangedException();
+      if (cancelToken?.isCancelled ?? false) throw const NetworkException('请求已取消', retryHandled: true);
+      final version = _tokens.sessionVersion;
+      try {
+        return await _handleResponse(_dio.get<dynamic>(url, queryParameters: params,
+          options: (options ?? dio.Options()).copyWith(extra: <String, dynamic>{
+            ...?options?.extra, 'authRecoveryUsed': authRecoveryUsed,
+          }), cancelToken: cancelToken));
+      } on NetworkException catch (error) {
+        if (_tokens.sessionId != sessionId) throw const SessionChangedException();
+        if (cancelToken?.isCancelled ?? false) throw const NetworkException('请求已取消', retryHandled: true);
+        final refreshed = _tokens.sessionVersion > version &&
+            _tokens.refreshSessionVersion == _tokens.sessionVersion && _tokens.getToken().isNotEmpty;
+        if (safe && attempt < 2 && !authRecoveryUsed && refreshed && error is _ReadCredentialsRefreshed) {
+          authRecoveryUsed = true;
+          continue;
+        }
+        final transient = error.isTimeout || error.isTemporary || const <int>{502, 503, 504}.contains(error.statusCode);
+        if (!safe || attempt >= 2 || !transient) {
+          if (!safe || error is SessionChangedException) rethrow;
+          throw NetworkException(error.message, statusCode: error.statusCode,
+              isTimeout: error.isTimeout, retryHandled: true);
+        }
+        // Two extra attempts total, shared with auth recovery: 500ms then 1000ms.
+        final delay = Future<void>.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+        if (cancelToken == null) { await delay; }
+        else { await Future.any<dynamic>(<Future<dynamic>>[delay, cancelToken.whenCancel]); }
+      }
+    }
   }
 
   /// 请求第三方公开接口，不注入登录 Token，也不按本项目业务 code 解析。

@@ -9,7 +9,10 @@
 /// ```
 class NetworkException implements Exception {
   const NetworkException(this.message,
-      {this.statusCode, this.isTimeout = false});
+      {this.statusCode, this.isTimeout = false, this.retryHandled = false, this.isTemporary = false});
+  final bool isTemporary;
+  /// The shared request layer has already spent the operation's retry budget.
+  final bool retryHandled;
 
   /// 用户友好的错误描述。
   final String message;

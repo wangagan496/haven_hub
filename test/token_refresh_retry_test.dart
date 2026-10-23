@@ -105,7 +105,7 @@ void main() {
     tokens = TokenManager(storage: storage);
   });
 
-  test('refresh keeps login but stops the old request until manual retry',
+  test('refresh keeps login and automatically restores the safe read once',
       () async {
     final _RecordingAdapter business =
         _RecordingAdapter(<ResponseBody Function()>[
@@ -133,20 +133,11 @@ void main() {
       tokens: tokens,
     );
 
-    await expectLater(
-      client.get('userInfo'),
-      throwsA(isA<NetworkException>().having(
-        (error) => error.message,
-        'message',
-        isNot(contains('登录已过期')),
-      )),
-    );
-    expect(business.paths.length, 1, reason: '刷新后旧请求不自动重放');
+    expect(await client.get('userInfo'), <String, dynamic>{'ok': true});
+    expect(business.paths.length, 2, reason: '安全读取恢复一次');
     expect(business.authorizationHeaders.first, 'Bearer old-token');
     expect(tokens.getToken(), 'new-token');
     expect(tokens.getRefreshToken(), 'new-refresh');
-    final dynamic data = await client.get('userInfo');
-    expect(data, <String, dynamic>{'ok': true});
     expect(business.authorizationHeaders.last, 'Bearer new-token');
     expect(refresh.paths, hasLength(1));
 
@@ -182,7 +173,7 @@ void main() {
     dio.close();
   });
 
-  test('a request whose token was already replaced stops without refreshing',
+  test('a request whose token was already refreshed recovers without another refresh',
       () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -215,8 +206,8 @@ void main() {
       tokens: tokens,
     );
 
-    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
-    expect(business.paths, hasLength(1));
+    expect(await client.get('userInfo'), <String, dynamic>{'ok': true});
+    expect(business.paths, hasLength(2));
     expect(business.authorizationHeaders.first, 'Bearer old-token');
     // 凭证已经是新的了，不该再刷一次。
     expect(refresh.paths, isEmpty);
@@ -226,7 +217,7 @@ void main() {
   });
 
   // 同一会话更新一次或多次凭证，都应停止旧请求。
-  test('stops when concurrent refreshes advanced the version more than once',
+  test('same account can recover with the latest concurrently refreshed token',
       () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -263,8 +254,8 @@ void main() {
       tokens: tokens,
     );
 
-    await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
-    expect(business.paths, hasLength(1));
+    expect(await client.get('userInfo'), <String, dynamic>{'ok': true});
+    expect(business.paths, hasLength(2));
     expect(business.authorizationHeaders.first, 'Bearer old-token');
     // 凭证已经是最新的了，不该再刷一次。
     expect(refresh.paths, isEmpty);
@@ -443,7 +434,7 @@ void main() {
     });
   }
 
-  test('concurrent 401 responses share one refresh and neither is replayed',
+  test('concurrent 401 shares one refresh, only GET recovers and a second 401 stops',
       () async {
     final Completer<void> refreshing = Completer<void>();
     final Completer<void> releaseRefresh = Completer<void>();
@@ -481,7 +472,7 @@ void main() {
     await refreshing.future;
     releaseRefresh.complete();
     await Future.wait(<Future<void>>[first, second]);
-    expect(business.methods, <String>['GET', 'POST']);
+    expect(business.methods, <String>['GET', 'POST', 'GET']);
     expect(refresh.paths, hasLength(1));
     expect(tokens.getToken(), 'new-token');
   });

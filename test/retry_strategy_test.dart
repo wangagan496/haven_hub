@@ -15,7 +15,7 @@ void main() {
     DioExceptionType.receiveTimeout,
     DioExceptionType.transformTimeout,
   ]) {
-    test('$type survives request mapping and retries successfully', () async {
+    test('$type recovers in the request layer without another page retry', () async {
       int calls = 0;
       final Dio client = Dio();
       addTearDown(() => client.close(force: true));
@@ -42,10 +42,7 @@ void main() {
       );
       expect(result, 'recovered');
       expect(calls, 2);
-      expect(
-          retryErrors.single,
-          isA<NetworkException>()
-              .having((error) => error.isTimeout, 'timeout', true));
+      expect(retryErrors, isEmpty);
     });
   }
 
