@@ -29,13 +29,30 @@
 **验收标准**：能用一句话描述项目是什么
 
 **任务 1.2：运行项目**（30 分钟）
-```bash
-# 1. 启动 Web 代理
-dart run tool/web_api_proxy.dart
 
-# 2. 在另一个终端启动 Flutter Web
-flutter run -d chrome \
-  --dart-define-from-file=tool/dart_defines.web.local.env \
+下面均使用 PowerShell；每个新终端从项目根目录 `D:\haven_hub` 开始。先按 README“Web 调试”配置两个被 Git 忽略的 env 文件及地图 Key。
+
+```powershell
+# 1. 启动本地业务服务（端口 3000；首次运行先安装依赖并编译）
+Set-Location D:\haven_hub\server
+npm ci
+npm run build
+npm start
+```
+
+```powershell
+# 2. 另一个终端启动地图代理（端口 3001，只转发地图）
+Set-Location D:\haven_hub
+# 本机 Flutter OH SDK 路径；更换电脑后调整
+& 'C:\flutter_flutter_3.41.10_ohos\bin\dart.bat' run tool/web_api_proxy.dart 3001 --direct
+```
+
+```powershell
+# 3. 再开一个终端启动 Flutter Web
+#    dart_defines.web.local.env 中 API_BASE_URL 应为 http://127.0.0.1:3000/
+Set-Location D:\haven_hub
+.\tool\flutter_ohos.ps1 run -d chrome --web-port=8080 `
+  --dart-define-from-file=tool/dart_defines.web.local.env `
   --dart-define-from-file=tool/dart_defines.local.env
 ```
 
@@ -119,7 +136,8 @@ flutter run -d chrome \
 **验收标准**：能画出 401 处理流程图
 
 ```
-请求 → 401 → 检查条件 → 刷新 → 重放/登出
+请求 → 401 → 检查会话归属 → 刷新 → 同会话白名单 GET 恢复一次；写操作不重放
+刷新失败 → 仅清理仍属于原会话的凭证
 ```
 
 #### 下午（2 小时）：背诵技术难点
@@ -377,7 +395,7 @@ testWidgets('提交反馈成功后返回列表页', (tester) async {
 精读 [utils/request_dio.dart](../lib/utils/request_dio.dart)，理解：
 - 请求拦截器：Token 注入
 - 响应拦截器：数据解析
-- 错误拦截器：Token 刷新 + 重放
+- 错误拦截器：Token 刷新；同会话安全读取恢复一次，写操作不重放
 - 日志拦截器：脱敏处理
 
 **练习**：实现一个自定义拦截器
@@ -385,7 +403,8 @@ testWidgets('提交反馈成功后返回列表页', (tester) async {
 class RetryInterceptor extends Interceptor {
   @override
   void onError(DioException error, ErrorInterceptorHandler handler) {
-    // 网络错误自动重试 3 次
+    // 练习边界：仅安全读取在请求层内处理超时、502/503/504，最多追加两次。
+    // 写操作不重放，不能在页面层叠加重试。
   }
 }
 ```
@@ -519,7 +538,7 @@ dynamic redact(dynamic value, {int depth = 0}) {
 1. **Token 管理**
    - sessionId：区分账号
    - sessionVersion：区分凭证代次
-   - 重放条件：三个同时满足
+   - 恢复条件：同会话白名单 GET，刷新后最多恢复一次；写操作不重放
 
 ### 不理解的地方
 - 为什么要推进 sessionVersion？
