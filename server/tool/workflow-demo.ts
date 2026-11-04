@@ -33,8 +33,11 @@ if (!store.list('rooms',resident).length) {
   store.run('INSERT INTO uploads VALUES (?,?,?,?)',id,resident,'image/png',image);
   const url=`${config.publicBaseUrl}/media/${id}`;
   const house=service.saveRoom(resident,{point:'演示小区',building:'1栋',room:'101',name:'测试住户',gender:1,mobile:accounts[0].mobile,idcardFrontUrl:url,idcardBackUrl:url}).rows[0]!;
+  const repairImageId=randomBytes(32).toString('hex');
+  store.run('INSERT INTO uploads(id,userId,mime,bytes) VALUES (?,?,?,?)',repairImageId,resident,'image/png',image);
+  const repairImageUrl=`${config.publicBaseUrl}/media/${repairImageId}`;
   // 演示种子使用“等待安排”，避免写死日期过期或绕过时段规则。
-  service.createRepair(resident,{houseId:house.id,repairItemId:'1004',mobile:accounts[0].mobile,slot:'',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[url]});
+  service.createRepair(resident,{houseId:house.id,repairItemId:'1004',mobile:accounts[0].mobile,slot:'',description:'厨房水管接口漏水，请检查。此记录仅用于流程演示。',attachment:[repairImageUrl]});
 }
 const server=app.listen(config.port,config.host,()=>process.stdout.write('物业后台：http://127.0.0.1:3010/admin/\n维修工作台：http://127.0.0.1:3010/workflow/#/worker\n住户19900000001 / 物业19900000002 / 师傅19900000003，均使用开发验证码。\n'));
 server.on('error',error=>{process.stderr.write(`${error.message}\n`);store.close();process.exitCode=1;});

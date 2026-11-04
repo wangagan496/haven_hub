@@ -136,12 +136,12 @@ test('schedule API: capacity defaults, date override, warning and reset without 
   const changed = await f.capacities(501);
   assert(changed.defaultTotal > 500);
   assert(changed.warnings.some((row: Row) => row.hour === '10' && row.message.includes('维修人员总数')));
-  const override = await f.call('admin', 'PUT', '/management/repair-capacities/2026-10-18', { capacities: { '10': 0 } });
+  const override = await f.configureCapacities('/management/repair-capacities/2026-10-18', { '10': 0 });
   assert.equal(override.effective['10'], 0);
   assert.equal(override.defaults['10'], 501);
   assert.equal((await f.slots()).slots.find((row: Row) => row.slot === SLOT).selectable, false);
   assert.equal((await f.slots('2026-10-19')).slots.find((row: Row) => row.slot.endsWith('#10')).capacity, 501);
-  const reset = await f.call('admin', 'DELETE', '/management/repair-capacities/2026-10-18');
+  const reset = await f.configureCapacities('/management/repair-capacities/2026-10-18');
   assert.deepEqual(reset.overrides, {});
   assert.equal(reset.effective['10'], 501);
   for (const role of ['resident', 'worker'] as const) {
@@ -150,7 +150,7 @@ test('schedule API: capacity defaults, date override, warning and reset without 
     assert.equal((await f.raw(role, 'DELETE', '/management/repair-capacities/2026-10-18')).status, 403);
   }
   for (const capacities of [{ '12': 1 }, { '10': -1 }, { '10': 1.5 }, {}]) {
-    assert.notEqual((await f.raw('admin', 'PUT', '/management/repair-capacities', { capacities })).code, 10000);
+    assert.equal((await f.raw('admin', 'PUT', '/management/repair-capacities', { capacities, revision: reset.revision })).code, 40000);
   }
 });
 
@@ -673,7 +673,7 @@ test('schedule migration: v3 to v4 maps only exact legacy times, uses Store.save
     try { migrated = new Store(path); } finally { Store.prototype.save = originalSave; }
     try {
       assert.equal(saves, 3);
-      assert.equal(migrated.one('PRAGMA user_version')?.user_version, 7);
+      assert.equal(migrated.one('PRAGMA user_version')?.user_version, 13);
       assert.equal(migrated.get('repairs', 'r', 'exact')?.slot, SLOT);
       assert.equal(migrated.get('repairs', 'r', 'exact')?.revision, 9);
       for (const [id, expected] of [['partial', '2026-10-18T10:30:00+08:00'], ['date', '2026-10-18']]) {

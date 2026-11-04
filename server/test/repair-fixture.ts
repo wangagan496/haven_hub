@@ -72,7 +72,13 @@ export async function fixture(t: TestContext, options: { pushTransport?: PushTra
   const detail = (row: Row) => call('resident', 'GET', `/repair/${row.id}`);
   const slots = (day = '2026-10-18', excludeId = '') => call('resident', 'GET', `/repair/slots?date=${day}${excludeId ? `&excludeId=${excludeId}` : ''}`);
   const stored = (row: Row) => store.get('repairs', ids.resident, row.id)! as Row & { id: string };
-  const capacities = (capacity: number, hour = '10') => call('admin', 'PUT', '/management/repair-capacities', { capacities: { [hour]: capacity } });
-  return { raw, call, change, create, processing, detail, slots, stored, capacities, body, store, ids, config, notifications,
+  // Explicitly read a snapshot for ordinary fixture setup; raw/call never fill in missing revisions.
+  async function configureCapacities(target: string, capacities?: Record<string, number>) {
+    const snapshot = await call('admin', 'GET', '/management/repair-capacities');
+    return call('admin', capacities ? 'PUT' : 'DELETE', target,
+      { revision: snapshot.revision, ...(capacities ? { capacities } : {}) });
+  }
+  const capacities = (capacity: number, hour = '10') => configureCapacities('/management/repair-capacities', { [hour]: capacity });
+  return { raw, call, change, create, processing, detail, slots, stored, capacities, configureCapacities, body, store, ids, config, notifications, base, tokens,
     time: () => now, at: (time: number) => { now = time; } };
 }

@@ -9,8 +9,10 @@ if (existsSync('.env')) process.loadEnvFile('.env');
 const [mobileInput, role] = process.argv.slice(2);
 const mobile = mobileSchema.parse(mobileInput);
 if (role !== 'admin' && role !== 'worker') throw new Error('用法：npm run role -- 手机号 admin或worker');
-const store = new Store(readConfig().databasePath);
+const config = readConfig();
+const store = new Store(config.databasePath);
 try {
+  store.bindEnvironment(config.environment === 'production' ? 'production' : 'non-production');
   store.transaction(() => {
     const existing = store.one('SELECT id FROM users WHERE mobile = ?', mobile);
     if (existing) {
@@ -18,5 +20,5 @@ try {
       store.run('DELETE FROM sessions WHERE userId = ?', String(existing.id));
     } else store.run('INSERT INTO users(id,mobile,nickName,role) VALUES (?,?,?,?)', randomUUID(), mobile, role === 'admin' ? '物业管理员' : '维修师傅', role);
   });
-  process.stdout.write(`已配置${role === 'admin' ? '物业' : '维修'}账号，请使用开发验证码重新登录。\n`);
+  process.stdout.write(`已配置${role === 'admin' ? '物业' : '维修'}账号，请使用${config.authMode === 'development' ? '开发' : '短信'}验证码重新登录。\n`);
 } finally { store.close(); }

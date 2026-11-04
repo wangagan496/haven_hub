@@ -101,10 +101,11 @@ test('refactor: creation/list failure rolls back both repair and transactional s
   assert.equal(f.store.one('SELECT COUNT(*) AS count FROM push_settings')?.count, 0);
 });
 
-test('refactor: legacy revoke accepts no revision and returns masked complete list', t => {
+test('refactor: direct revoke requires revision and returns masked complete list', t => {
   const f = fixture(t);
   const row = f.seed();
-  const result = f.repairs.legacyRevoke(owner, row.id, {});
+  assert.throws(() => f.repairs.legacyRevoke(owner, row.id, {}), { status: 409, code: 40900 });
+  const result = f.repairs.legacyRevoke(owner, row.id, { revision: row.revision });
   assert.deepEqual(Object.keys(result).sort(), ['complete', 'rows', 'total']);
   assert.equal(result.complete, true);
   assert.equal(result.total, 1);
@@ -117,7 +118,7 @@ test('refactor: legacy revoke list failure rolls back the requested cancellation
   const f = fixture(t);
   const row = f.seed();
   f.repairs.residentList = () => { throw Error('injected list failure'); };
-  assert.throws(() => f.repairs.legacyRevoke(owner, row.id, {}), /injected list failure/);
+  assert.throws(() => f.repairs.legacyRevoke(owner, row.id, { revision: row.revision }), /injected list failure/);
   assert.equal(f.store.get('repairs', owner, row.id)?.status, Status.pending);
   assert.equal(f.store.get('repairs', owner, row.id)?.revision, 7);
 });

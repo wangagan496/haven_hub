@@ -7,7 +7,9 @@ import { notificationKind } from '../src/repair/notification-tasks.js';
 type F = Awaited<ReturnType<typeof fixture>>;
 async function skills(f: F, who: 'worker' | 'worker2', values: string[], preview = false) {
   const profile = await f.call(who, 'GET', '/worker/skills');
-  return f.call(who, 'PUT', '/worker/skills', { workforceRevision: profile.workforceRevision, skills: values, preview });
+  const body = { workforceRevision: profile.workforceRevision, skills: values };
+  const impact = await f.call(who, 'PUT', '/worker/skills', { ...body, preview: true });
+  return preview ? impact : f.call(who, 'PUT', '/worker/skills', { ...body, previewToken: impact.previewToken });
 }
 async function leave(f: F, who: 'worker' | 'worker2', hour = '10', preview = false) {
   const profile = await f.call(who, 'GET', '/worker/skills');

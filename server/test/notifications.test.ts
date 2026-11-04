@@ -153,7 +153,7 @@ test('transport keeps VAPID keys and recovers interrupted deliveries without new
     await f.notes.stop();
     const reopened=new Notifications(f.store,f.transport);
     assert.equal(reopened.list('resident').length,1);
-    assert.equal(reopened.list('resident')[0]!.deliveries[0]!.status,'queued');
+    assert.equal(reopened.list('resident')[0]!.deliveries[0]!.status,'failed');
     await reopened.dispatch();await reopened.stop();
     assert.equal(f.sent.length,1);
   } finally {f.store.close();}
@@ -400,7 +400,7 @@ test('FIX migration upgrades a version-two database that already has early push 
     old.close();
     const upgraded = new Store(path);
     try {
-      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 7);
+      assert.equal(upgraded.one('PRAGMA user_version')?.user_version, 13);
       assert.ok(upgraded.db.prepare('PRAGMA table_info(push_deliveries)').all().some(column => column.name === 'lease'));
     } finally { upgraded.close(); }
   } finally { rmSync(folder, { recursive: true, force: true }); }

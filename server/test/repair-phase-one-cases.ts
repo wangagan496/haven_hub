@@ -545,7 +545,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
     assert.equal(persisted.slot, row.slot);
   });
 
-  test('P1-07 direct revoke states 1/5 and legacy empty-body complete list', async t => {
+  test('P1-07 direct revoke states 1/5 and versioned cancellation complete list', async t => {
     const f = await setup(t);
     for (const stage of [1, 5] as const) {
       const row = await f.create(stage);
@@ -554,7 +554,7 @@ export function registerPhaseOneTests(fixture: ApiFixtureFactory) {
       assert.equal(revoked.closed, true);
     }
     const legacy = await f.create(5);
-    const result = await f.call('resident', 'PUT', `/cancel/repair/${legacy.id}`);
+    const result = await f.call('resident', 'PUT', `/cancel/repair/${legacy.id}`, { revision: legacy.revision });
     assert.equal(result.complete, true);
     assert.equal(result.total, 3);
     assert.equal(result.rows.length, 3);

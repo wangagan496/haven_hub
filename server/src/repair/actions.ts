@@ -1,7 +1,7 @@
 import type { RecordData } from '../database.js';
 import { requireValue } from '../errors.js';
 import { Status, type Actor, type Pending, type Role, addEvent, currentRound, ensureRounds, newRound, openPending, pendings, voidReschedule, repairRoundNumber, repairFees } from './model.js';
-import { activeRepair, applyRevoke, closed, inWarranty, rules, shiftRejection, requireUrgentDispatch } from './policy.js';
+import { activeRepair, applyRevoke, closed, confirmationAvailability, inWarranty, rules, shiftRejection, requireUrgentDispatch } from './policy.js';
 import { clearFutureSlot, firstProposalDeadline, parseSlot, requireDispatchSlot, setSlot } from './schedule.js';
 
 export type WorkerContact = { nickName?: unknown; mobile?: unknown; qualified?: boolean };
@@ -16,8 +16,9 @@ function addPending(record: RecordData, id: string, kind: Pending['kind'], by: A
 
 export function confirm(record: RecordData, input: Record<string, never>, now: number): void {
   const at = iso(now);
-  requireValue(record.status === Status.confirming || (record.status === Status.processing && currentRound(record).resultSavedAt && currentRound(record).note), '请等待师傅保存维修结果和费用后再确认');
-  requireValue(!openPending(record, 'revoke'), '请先处理撤销申请');
+  const availability = confirmationAvailability(record, 'resident');
+  requireValue(availability.enabled, availability.reasonCode === 'revoke_pending'
+    ? '请先处理撤销申请' : '请等待师傅保存维修结果和费用后再确认');
   const round = currentRound(record);
   if (record.status === Status.processing) {
     round.completedAt = at;

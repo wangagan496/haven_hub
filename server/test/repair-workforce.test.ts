@@ -45,7 +45,9 @@ async function profile(f: Awaited<ReturnType<typeof fixture>>, role: 'worker' | 
 }
 async function skills(f: Awaited<ReturnType<typeof fixture>>, role: 'worker' | 'worker2', values: string[]) {
   const row = await profile(f, role);
-  await f.call(role, 'PUT', '/worker/skills', { workforceRevision: row.revision, skills: values });
+  const body = { workforceRevision: row.revision, skills: values };
+  const impact = await f.call(role, 'PUT', '/worker/skills', { ...body, preview: true });
+  await f.call(role, 'PUT', '/worker/skills', { ...body, previewToken: impact.previewToken });
 }
 async function leave(f: Awaited<ReturnType<typeof fixture>>, role: 'worker' | 'worker2', hour = '10') {
   const row = await profile(f, role);
@@ -334,7 +336,7 @@ test('workforce: v5 migration preserves orders, leaves old skills unknown and re
     const payload=store.one("SELECT payload FROM repairs WHERE id='legacy'")!.payload;
     store.db.exec('DROP TABLE worker_skills; DROP TABLE worker_leaves; ALTER TABLE users DROP COLUMN workforceRevision; PRAGMA user_version=5');
     store.close(); store=undefined; store=new Store(path);
-    assert.equal(store.one('PRAGMA user_version')!.user_version,7);
+    assert.equal(store.one('PRAGMA user_version')!.user_version,13);
     assert.equal(store.one('SELECT COUNT(*) AS n FROM worker_skills')!.n,0);
     assert.equal(store.one("SELECT workforceRevision FROM users WHERE id='w'")!.workforceRevision,0);
     assert.equal(store.one("SELECT payload FROM repairs WHERE id='legacy'")!.payload,payload);

@@ -1,4 +1,5 @@
 'use strict';
+const clientHeaders = { 'X-Client-Version': window.HAVEN_ADMIN_CLIENT_VERSION, 'X-Client-Platform': 'admin-web' };
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('haven-admin-token') || '';
 let tab = 'rooms', rows = [], workers = [], loading = false, epoch = 0, selectedId = '';
@@ -6,6 +7,13 @@ let dataset = {rooms: [], repairs: [], workers: []};
 let unregisteredCount = 0;
 let queueRows = [], shiftDate = '', capacityDate = '', capacityData = null, weekdayData = {};
 let pushChanging = false, pushGeneration = 0, pushDisabling = null;
+let photoGeneration = 0;
+const privatePhotoUrls = new Set();
+function clearPrivatePhotos() {
+  photoGeneration++;
+  for (const url of privatePhotoUrls) URL.revokeObjectURL(url);
+  privatePhotoUrls.clear();
+}
 const roomStatus = {1:'待审核',2:'已通过',3:'已打回'};
 const repairStatus = {0:'已取消',1:'待派单',2:'处理中',3:'已完成',4:'已取消',5:'待接单',6:'待住户确认'};
 // 各列表保持服务端顺序；待安排队列单独来自 repair-queue。
@@ -27,7 +35,19 @@ function node(tag, text, className) {
   return element;
 }
 function message(text='') { $('message').textContent=text; }
+function showError(error, target=$('message')) {
+  target.replaceChildren(node('span', error.message || '操作失败，请重试'));
+  if (!/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(error.requestId || '')) return;
+  const copy=node('button','复制排查编号','quiet');
+  copy.type='button';
+  copy.onclick=async()=>{
+    try { await navigator.clipboard.writeText(error.requestId); copy.textContent='排查编号已复制'; }
+    catch { copy.textContent='复制失败，请记录编号'; }
+  };
+  target.append(node('span',` 排查编号：${error.requestId} `),copy);
+}
 function logout() {
+  clearPrivatePhotos();
   void disablePush().catch(() => {});
   epoch++;
   loading=false;
@@ -54,7 +74,7 @@ async function api(path, method='GET', body) {
   const requestToken=token;
   const response=await fetch(path,{
     method,
-    headers:{...(requestToken?{Authorization:`Bearer ${requestToken}`}:{}),...(body?{'Content-Type':'application/json'}:{})},
+    headers:{...clientHeaders,...(requestToken?{Authorization:`Bearer ${requestToken}`}:{}),...(body?{'Content-Type':'application/json'}:{})},
     ...(body?{body:JSON.stringify(body)}:{})
   });
   const data=await response.json();
@@ -63,7 +83,8 @@ async function api(path, method='GET', body) {
     throw Error('登录已过期，请重新登录');
   }
   if(!response.ok||data.code!==10000) {
-    const error=Error(data.message||'操作失败，请重试'); error.status=response.status; throw error;
+    const error=Error(data.message||'操作失败，请重试'); error.status=response.status; error.code=data.code; error.data=data.data;
+    error.requestId=response.headers.get('x-request-id'); throw error;
   }
   return data.data;
 }
@@ -74,7 +95,7 @@ async function guarded(button, action) {
   button.setAttribute('aria-busy','true');
   message();
   try { await action(); }
-  catch(error) { if(generation===epoch || !token) message(error.message); }
+  catch(error) { if(generation===epoch || !token) showError(error); }
   finally { button.disabled=false; button.removeAttribute('aria-busy'); }
 }
 $('send-code').onclick=()=>guarded($('send-code'),async()=>{
@@ -110,12 +131,12 @@ async function enter() {
   setTab('rooms');
   await load();
   try { await loadNotifications(); }
-  catch (error) { if (generation === epoch) message(error.message); }
+  catch (error) { if (generation === epoch) showError(error); }
   void enablePush(true).catch(() => {});
   const notificationId = new URL(location.href).searchParams.get('notification');
   if (notificationId && /^[a-f0-9-]{36}$/.test(notificationId)) {
     try { await openNotification(notificationId); }
-    catch (error) { if (generation === epoch) message(error.message); }
+    catch (error) { if (generation === epoch) showError(error); }
   }
 }
 $('logout').onclick=logout;
@@ -132,6 +153,7 @@ function skeleton() {
   $('content').setAttribute('aria-busy','true');
 }
 function setTab(value) {
+  clearPrivatePhotos();
   tab=value;
   selectedId='';
   document.querySelectorAll('[data-tab]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.tab===tab)));
@@ -182,14 +204,14 @@ async function load(keep=false) {
   if(!keep) { skeleton(); renderDetail(null); }
   try {
     const extra=tab==='capacities'
-      ? Promise.all([api('/management/repair-capacities'+(capacityDate?`?date=${encodeURIComponent(capacityDate)}`:'')),api('/management/repair-capacities/weekdays')])
+      ? api('/management/repair-capacities'+(capacityDate?`?date=${encodeURIComponent(capacityDate)}`:''))
       : tab==='shifts'?api('/management/repair-shift-suggestions'+(shiftDate?`?date=${encodeURIComponent(shiftDate)}`:''))
       : tab==='repairs'?api('/management/repair-queue'):Promise.resolve([]);
     const results=await Promise.all([...['rooms','repairs','workers'].map(name=>api(`/management/${name}`)),extra,api('/management/workforce-summary')]);
     if(generation!==epoch) return;
     dataset={rooms:results[0],repairs:results[1],workers:results[2]};
     unregisteredCount=results[4].unregisteredCount;
-    if(tab==='capacities') [capacityData,weekdayData]=results[3];
+    if(tab==='capacities') {capacityData=results[3];weekdayData=capacityData.templates;}
     if(tab==='repairs') queueRows=results[3];
     rows=tab==='shifts'?results[3]:dataset[tab]||[]; workers=dataset.workers;
     if(!rows.some(row=>row.id===selectedId)) selectedId=rows[0]?.id||'';
@@ -205,7 +227,7 @@ async function load(keep=false) {
     }
   } catch(error) {
     if(generation!==epoch) return;
-    message(error.message);
+    showError(error);
     $('stats').replaceChildren();
     $('content').replaceChildren(emptyState('暂时无法加载','请点击“刷新数据”重试。'));
     $('result-count').textContent='加载失败';
@@ -280,13 +302,17 @@ const skillNames={plumbing:'水暖',electrical:'电气',doors:'门窗五金'};
 function workforceTime(item) {
   return item.start&&item.end?`${item.start.slice(5,10)} ${item.start.slice(11,16)}–${item.end.slice(11,16)}`:'待定';
 }
-async function previewWorkforce(path,method,body) {
+async function previewWorkforce(path,method,body,latest) {
   const generation=epoch;
-  const impact=await api(path,method,{...body,preview:true});
+  const impact=latest||await api(path,method,{...body,preview:true});
   if(generation!==epoch)return false;
   const list=items=>items.length?items.map(item=>`${item.repairItemName} · ${workforceTime(item)}`).join('\n'):'无';
   const shortages=(impact.shortages||[]).map(item=>`${item.message}\n${list(item.orders)}`).join('\n\n')||'无';
-  return window.confirm(`会放回可接单列表：\n${list(impact.returned)}\n\n需要物业处理：\n${list(impact.property)}\n\n时段缺人提示：\n${shortages}\n\n确认保存？`);
+  const states={0:'已取消',1:'待派单',2:'处理中',3:'已完成',5:'待接单',6:'待住户确认'};
+  const changes=(impact.changed||[]).map(item=>`${item.repairItemName} · ${workforceTime(item)} · ${states[item.status]||'状态未知'}${item.assignmentChanged?' · 接单人员已变化':''}`).join('\n');
+  const confirmed=window.confirm(`${latest?`尚未保存，工单影响已更新，请重新确认。\n${changes}\n\n`:''}会放回可接单列表：\n${list(impact.returned)}\n\n需要物业处理：\n${list(impact.property)}\n\n时段缺人提示：\n${shortages}\n\n确认保存？`);
+  if(confirmed&&impact.previewToken)body.previewToken=impact.previewToken;
+  return confirmed&&generation===epoch;
 }
 function workerAvailabilityForm(record) {
   const root=node('section',null,'schedule-section');
@@ -297,8 +323,13 @@ function workerAvailabilityForm(record) {
     if(registered){const revoke=node('button','撤销','quiet');revoke.onclick=()=>guarded(revoke,async()=>{
       const path='/management/workers/'+encodeURIComponent(record.id)+'/skills';
       const body={workforceRevision:record.revision,skills:record.skills.filter(skill=>skill!==id)};
-      if(!await previewWorkforce(path,'PUT',body))return;
-      await api(path,'PUT',body);await load();
+      const generation=epoch;
+      let latest;
+      while(generation===epoch) {
+        if(!await previewWorkforce(path,'PUT',body,latest))return;
+        try { await api(path,'PUT',body); if(generation===epoch)await load(); return; }
+        catch(error) { if(error.code!==40901||!error.data)throw error; latest=error.data; }
+      }
     });label.append(revoke);}root.append(label);
   }
   const date=labeledInput(root,'休假日期（北京时间）','date'),hour=node('select');
@@ -466,7 +497,7 @@ function slotPicker(record,shift=false) {
   retry.onclick=()=>guarded(retry,query);date.onchange=()=>guarded(retry,query);
   return {element,value:()=>slots.disabled?'':slots.value};
 }
-function dispatchPanel(record,mutate) {
+function dispatchPanel(record,submitAdminAction) {
   const section=node('section',null,'schedule-section');section.append(node('h3','急单调度'));
   section.append(node('p','急单可超出公开预约容量，但仍须满足技能、休假和全部预约的人手约束。未派单预约也计入；休假冲突保留原预约，改时间须走确认流程。','detail-guidance'));
   const list=node('div'),fetchOptions=node('button','查询空闲师傅'),reason=labeledInput(section,'调度原因（选填）','textarea');reason.maxLength=1000;
@@ -486,7 +517,7 @@ function dispatchPanel(record,mutate) {
           const placeholder=node('option','请选择师傅');placeholder.value='';workers.append(placeholder);
           for(const worker of slot.workers) {const option=node('option',`${worker.nickName} · ${worker.mobile}`);option.value=worker.id;workers.append(option);}
           const send=node('button',record.workerId?'改派/重新调度':'确认急单调度','primary');
-          send.onclick=()=>{if(!workers.value){message('请选择空闲师傅');return;}mutate(send,`/management/repairs/${record.id}/dispatch`,{revision:record.revision,slot:slot.slot,workerId:workers.value,reason:reason.value.trim()});};
+          send.onclick=()=>{if(!workers.value){message('请选择空闲师傅');return;}submitAdminAction(send,`/management/repairs/${record.id}/dispatch`,{revision:record.revision,slot:slot.slot,workerId:workers.value,reason:reason.value.trim()});};
           group.append(send);
         }
         list.append(group);
@@ -498,18 +529,30 @@ function dispatchPanel(record,mutate) {
 function renderCapacities() {
   const root=$('content');root.replaceChildren();$('result-count').textContent='';
   if(!capacityData)return;
-  const generation=epoch,values=capacityData;let saving=false;
+  const generation=epoch,values=capacityData;let saving=false,conflicted=false;
   const hours=Object.keys(values.defaults).sort();
   const feedback=node('p');feedback.setAttribute('role','alert');
   root.append(node('p','优先级：本日覆盖 > 星期模板 > 默认。0 表示该时段不再接受普通预约。参考 500：参考值，不是上限。','detail-guidance'),feedback);
   async function save(button,path,body,method='PUT') {
-    if(saving||loading||button.disabled)return;saving=true;
+    if(saving||loading||conflicted||button.disabled||generation!==epoch||tab!=='capacities'||capacityData!==values||!root.contains(button))return;
+    if(!/^[a-f0-9]{64}$/.test(values.revision||'')){feedback.textContent='容量版本不可用，请刷新页面后重试';return;}
+    saving=true;
     const controls=[...root.querySelectorAll('button,input,select')].map(control=>[control,control.disabled]);
     await guarded(button,async()=>{
       controls.forEach(([control])=>control.disabled=true);
-      try {await api(path,method,body);if(generation===epoch)await load(true);}
-      finally {controls.forEach(([control,disabled])=>control.disabled=disabled);}
-    });saving=false;
+      try {
+        await api(path,method,{...body,revision:values.revision});
+        if(generation===epoch&&tab==='capacities'&&capacityData===values)await load(true);
+      } catch(error) {
+        if(generation!==epoch||tab!=='capacities'||capacityData!==values)return;
+        if(error.status!==409)throw error;
+        conflicted=true;
+        showError(error,feedback);
+        feedback.append(node('span',' 本次修改未保存，输入已保留；重新加载后请核对最新值并重新填写。'));
+        const reload=node('button','重新加载容量');
+        reload.onclick=()=>guarded(reload,()=>load(true));feedback.append(reload);
+      } finally {controls.forEach(([control,disabled])=>control.disabled=disabled||(conflicted&&control.tagName==='BUTTON'));}
+    });saving=false;if(conflicted)button.disabled=true;
   }
   function read(inputs) {
     const capacities={};
@@ -554,8 +597,8 @@ function renderCapacities() {
       label.append(box,node('small',`${origin} · 生效 ${values.effective[hour]}`));grid.append(label);
     }
     const put=node('button','保存单日覆盖','primary'),clear=node('button','删除单日覆盖，恢复模板/默认');
-    put.onclick=()=>{const body=read(inputs);if(body)save(put,`/management/repair-capacities/${capacityDate}`,body);};
-    clear.onclick=()=>save(clear,`/management/repair-capacities/${capacityDate}`,undefined,'DELETE');day.append(grid,put,clear);
+    put.onclick=()=>{const body=read(inputs);if(body)save(put,`/management/repair-capacities/${values.date}`,body);};
+    clear.onclick=()=>save(clear,`/management/repair-capacities/${values.date}`,undefined,'DELETE');day.append(grid,put,clear);
   }
   day.append(node('p',`默认合计 ${values.defaultTotal} · ${capacityDate?'当日':'默认'}生效合计 ${values.effectiveTotal} · 维修人员 ${values.workerCount} 人`,'detail-guidance'));
   for(const warning of values.warnings)day.append(node('p',warning.message,'muted'));root.append(day);
@@ -574,9 +617,24 @@ function repairProgress(record) {
 function photo(url) {
   try {
     const parsed=new URL(url);
-    if(!['http:','https:'].includes(parsed.protocol)) return null;
-    const link=node('a'); link.href=parsed.href; link.target='_blank'; link.rel='noopener noreferrer';
-    const img=node('img'); img.src=parsed.href; img.alt='报修或房屋资料照片，点击查看原图'; link.append(img);
+    if(parsed.origin!==location.origin || parsed.username || parsed.password || parsed.search || parsed.hash || !/^\/media\/[a-f\d]{64}$/.test(parsed.pathname)) return null;
+    const link=node('a'); link.target='_blank'; link.rel='noopener noreferrer';
+    const img=node('img'); img.alt='照片加载中'; link.append(img);
+    const generation=photoGeneration, requestToken=token;
+    void (async()=>{
+      try {
+        const response=await fetch(parsed.href,{headers:{...clientHeaders,Authorization:`Bearer ${requestToken}`},cache:'no-store',redirect:'error'});
+        if(!response.ok) throw Error('图片不存在或无权访问');
+        const blob=await response.blob();
+        if(!['image/png','image/jpeg','image/webp'].includes(blob.type) || blob.size>20*1024*1024) throw Error('图片格式或大小无效');
+        if(generation!==photoGeneration || requestToken!==token) return;
+        const objectUrl=URL.createObjectURL(blob);
+        privatePhotoUrls.add(objectUrl);
+        link.href=objectUrl; img.src=objectUrl; img.alt='报修或房屋资料照片，点击查看原图';
+      } catch {
+        if(generation===photoGeneration && requestToken===token) img.alt='图片不存在或无权访问';
+      }
+    })();
     return link;
   } catch { return null; }
 }
@@ -586,6 +644,7 @@ function field(root,label,value) {
   root.append(row);
 }
 function renderDetail(record) {
+  clearPrivatePhotos();
   const root=$('detail-panel');
   root.replaceChildren();
   if(tab==='workers') {
@@ -595,7 +654,35 @@ function renderDetail(record) {
     if(record) {
       field(root,'师傅姓名',record.nickName);
       field(root,'联系电话',record.mobile);
-      root.append(workerAvailabilityForm(record));
+      field(root,'账号状态',record.disabledAt?'已停用':'正常使用');
+      if(!record.disabledAt) root.append(workerAvailabilityForm(record));
+      const access=node('form',null,'detail-guidance');
+      const reason=node('input'); reason.placeholder='填写停用或恢复原因'; reason.required=true; reason.maxLength=1000;
+      reason.setAttribute('aria-label','账号状态变更原因');
+      const change=node('button',record.disabledAt?'恢复账号':'停用账号'); change.type='submit';
+      access.append(node('p','停用前须先改派或完成该师傅的待处理工单；停用立即注销旧登录和推送登记，恢复后须重新登录。'),reason,change);
+      access.onsubmit=event=>{
+        event.preventDefault();
+        if(!reason.reportValidity()) return;
+        if(!confirm(record.disabledAt?'确认恢复此维修账号？':'确认停用此维修账号并注销所有旧登录？')) return;
+        guarded(change,async()=>{
+          await api('/management/workers/'+encodeURIComponent(record.id)+'/access','PUT',
+            {revision:record.revision,enabled:Boolean(record.disabledAt),reason:reason.value.trim()});
+          await load(true);
+        });
+      };
+      root.append(access);
+      const history=node('button','查看账号变更记录','quiet'); history.type='button';
+      const entries=node('div');
+      history.onclick=()=>guarded(history,async()=>{
+        const generation=epoch, selected=selectedId;
+        const events=await api('/management/workers/'+encodeURIComponent(record.id)+'/account-events');
+        if(generation!==epoch || selected!==selectedId) return;
+        entries.replaceChildren(...events.map(event=>node('p',
+          `${new Date(event.createdAt).toLocaleString('zh-CN')} · ${event.enabled?'恢复':'停用'} · ${event.reason} · 操作人 ${event.actorId}`)));
+        if(!events.length) entries.append(node('p','暂无账号变更记录'));
+      });
+      root.append(history,entries);
     }
     const note=node('div',null,'detail-guidance');
     note.append(node('strong',`${rows.length} 位维修师傅`),node('p','新增和历史师傅都需要物业核实并登记技能，才能匹配派单。物业派单后，师傅点击“接单”进入处理中。'));
@@ -655,42 +742,92 @@ function renderDetail(record) {
   if(photos.childElementCount) root.append(photos);
   const actionError=node('p'); actionError.setAttribute('role','alert'); root.append(actionError);
   let saving=false;
-  async function mutate(button,path,body,method='PUT') {
-    if(saving||loading||button.disabled) return;
-    if(root.querySelector('[aria-busy="true"]')) { actionError.textContent='正在查询可选安排，请稍后提交'; return; }
-    saving=true;
-    const generation=epoch;
-    actionError.textContent='';
-    const controls=[...root.querySelectorAll('button, select, textarea, input')].map(control=>[control,control.disabled]);
-    controls.forEach(([control])=>control.disabled=true);
-    button.setAttribute('aria-busy','true');
+  // 提交物业操作，成功后刷新页面数据和待办。
+  async function submitAdminAction(actionButton, requestPath, requestData, requestMethod = 'PUT') {
+    if (saving || loading || actionButton.disabled) return;
+    if (root.querySelector('[aria-busy="true"]')) {
+      actionError.textContent = '正在查询可选安排，请稍后提交';
+      return;
+    }
+    saving = true;
+    const pageVersionAtSubmit = epoch;
+    actionError.textContent = '';
+    // 记住提交前每个按钮和输入框的状态，结束后按原样恢复。
+    const savedControlStates = [];
+    for (const control of root.querySelectorAll('button, select, textarea, input')) {
+      savedControlStates.push({ control, wasDisabled: control.disabled });
+    }
+    for (const savedState of savedControlStates) {
+      savedState.control.disabled = true;
+    }
+    actionButton.setAttribute('aria-busy', 'true');
     try {
-      await api(path,method,body);
-      if(generation!==epoch) return;
+      await api(requestPath, requestMethod, requestData);
+      // 用户已切换页面时，不再用这次提交的结果更新当前页面。
+      if (pageVersionAtSubmit !== epoch) return;
       await load(true);
-      if(generation===epoch) await loadNotifications();
-    } catch(error) {
-      if(generation!==epoch) return;
-      if(error.status===409) {
+      if (pageVersionAtSubmit === epoch) await loadNotifications();
+    } catch (error) {
+      if (pageVersionAtSubmit !== epoch) return;
+      if (error.status === 409) {
         await load(true);
-        if(generation===epoch) message(error.message+'；已刷新最新状态');
-      } else actionError.textContent=error.message;
+        if (pageVersionAtSubmit === epoch) {
+          message(error.message + '；已刷新最新状态');
+        }
+      } else {
+        showError(error, actionError);
+      }
     } finally {
-      saving=false;
-      controls.forEach(([control,disabled])=>control.disabled=disabled);
-      button.removeAttribute('aria-busy');
+      saving = false;
+      for (const savedState of savedControlStates) {
+        savedState.control.disabled = savedState.wasDisabled;
+      }
+      actionButton.removeAttribute('aria-busy');
     }
   }
-  if(tab==='rooms'&&record.status===1) {
-    const label=node('label','打回原因（打回时必填）'),reason=node('textarea');
-    reason.maxLength=1000; reason.placeholder='请说明需要住户补充或修改的内容'; label.append(reason); root.append(label);
-    const actions=node('div',null,'actions'),reject=node('button','打回'),approve=node('button','通过','primary');
-    approve.onclick=()=>mutate(approve,`/management/rooms/${record.id}/review`,{revision:record.revision||0,decision:'approve'});
-    reject.onclick=()=>{
-      if(!reason.value.trim()) {actionError.textContent='请填写打回原因';reason.focus();return;}
-      mutate(reject,`/management/rooms/${record.id}/review`,{revision:record.revision||0,decision:'reject',reason:reason.value.trim()});
-    };
-    actions.append(reject,approve); root.append(actions);
+  if (tab === 'rooms' && record.status === 1) {
+    const houseToReview = record;
+    const rejectionLabel = node('label', '打回原因（打回时必填）');
+    const rejectionReasonInput = node('textarea');
+    rejectionReasonInput.maxLength = 1000;
+    rejectionReasonInput.placeholder = '请说明需要住户补充或修改的内容';
+    rejectionLabel.append(rejectionReasonInput);
+    root.append(rejectionLabel);
+
+    const reviewButtons = node('div', null, 'actions');
+    const rejectReviewButton = node('button', '打回');
+    const approveReviewButton = node('button', '通过', 'primary');
+
+    function submitHouseApproval() {
+      const houseReviewPath = `/management/rooms/${houseToReview.id}/review`;
+      const approvalData = {
+        // 当前房屋资料的版本，供服务器检查是否已经被修改。
+        revision: houseToReview.revision || 0,
+        decision: 'approve',
+      };
+      return submitAdminAction(approveReviewButton, houseReviewPath, approvalData);
+    }
+
+    function submitHouseRejection() {
+      const rejectionReason = rejectionReasonInput.value.trim();
+      if (!rejectionReason) {
+        actionError.textContent = '请填写打回原因';
+        rejectionReasonInput.focus();
+        return;
+      }
+      const houseReviewPath = `/management/rooms/${houseToReview.id}/review`;
+      const rejectionData = {
+        revision: houseToReview.revision || 0,
+        decision: 'reject',
+        reason: rejectionReason,
+      };
+      submitAdminAction(rejectReviewButton, houseReviewPath, rejectionData);
+    }
+
+    approveReviewButton.onclick = submitHouseApproval;
+    rejectReviewButton.onclick = submitHouseRejection;
+    reviewButtons.append(rejectReviewButton, approveReviewButton);
+    root.append(reviewButtons);
   }
   if(isRepairTab()) {
     if(Array.isArray(record.timeline)) {
@@ -762,7 +899,7 @@ function renderDetail(record) {
       priority.value=record.priority||'';
       const reason=labeledInput(section,'定级原因','textarea');reason.maxLength=500;
       const save=node('button','保存等级');
-      save.onclick=()=>{if(!priority.value){actionError.textContent='请选择等级';return;}if(require(reason,'请填写定级原因'))mutate(save,`${base}/priority`,{revision,priority:priority.value,reason:reason.value.trim()});};
+      save.onclick=()=>{if(!priority.value){actionError.textContent='请选择等级';return;}if(require(reason,'请填写定级原因'))submitAdminAction(save,`${base}/priority`,{revision,priority:priority.value,reason:reason.value.trim()});};
       section.append(save);root.append(section);
       if(!record.slot&&!record.agreedTime) {
         const proposal=node('section',null,'schedule-section'); proposal.append(node('h3','首次上门时间提议'),node('p','住户同意或超时后才生效。','muted'));
@@ -774,10 +911,10 @@ function renderDetail(record) {
           if(!picker.value()){actionError.textContent='请选择可用时段';return;}
           if(!require(reason,'请填写提议原因'))return;
           if(!notified.checked){actionError.textContent='请先电话告知住户并勾选确认';return;}
-          mutate(send,`${base}/reschedule`,{revision,slot:picker.value(),reason:reason.value.trim(),notified:true},'POST');
+          submitAdminAction(send,`${base}/reschedule`,{revision,slot:picker.value(),reason:reason.value.trim(),notified:true},'POST');
         };proposal.append(send);root.append(proposal);
       }
-      if(record.priority==='urgent') root.append(dispatchPanel(record,mutate));
+      if(record.priority==='urgent') root.append(dispatchPanel(record,submitAdminAction));
     }
     if(tab==='shifts') {
       const section=node('section',null,'schedule-section');section.append(node('h3','手动顺延'));
@@ -786,7 +923,7 @@ function renderDetail(record) {
       else {
         const picker=slotPicker(record,true);section.append(picker.element);
         const reason=labeledInput(section,'顺延原因','textarea');reason.maxLength=500;
-        shift.onclick=()=>{if(!picker.value()){actionError.textContent='请选择更晚的可用时段';return;}if(require(reason,'请填写顺延原因'))mutate(shift,`${base}/shift`,{revision,slot:picker.value(),reason:reason.value.trim()});};
+        shift.onclick=()=>{if(!picker.value()){actionError.textContent='请选择更晚的可用时段';return;}if(require(reason,'请填写顺延原因'))submitAdminAction(shift,`${base}/shift`,{revision,slot:picker.value(),reason:reason.value.trim()});};
       }
       section.append(shift);root.append(section);
     }
@@ -798,7 +935,7 @@ function renderDetail(record) {
       if(record.requiredSkill)select.value=record.requiredSkill;
       const label=node('label','需要的技能');label.append(select);section.append(label);
       const reason=labeledInput(section,'分类依据','text');reason.maxLength=500;
-      const save=node('button','确认技能','primary');save.onclick=()=>{if(require(reason,'请填写分类依据'))mutate(save,`${base}/skill`,{revision,skill:select.value,reason:reason.value.trim()});};section.append(save);root.append(section);
+      const save=node('button','确认技能','primary');save.onclick=()=>{if(require(reason,'请填写分类依据'))submitAdminAction(save,`${base}/skill`,{revision,skill:select.value,reason:reason.value.trim()});};section.append(save);root.append(section);
     }
     const revoke=open('revoke');
     if(revoke) root.append(node('p','住户已申请撤销，请先处理撤销申请','detail-guidance'));
@@ -820,7 +957,7 @@ function renderDetail(record) {
       }).catch(error=>{if(select.isConnected)actionError.textContent=error.message||'师傅可用性查询失败，请刷新';});
       button.onclick=()=>{
         if(!select.value) {actionError.textContent='请选择维修人员';return;}
-        mutate(button,`${base}/assign`,{revision,workerId:select.value});
+        submitAdminAction(button,`${base}/assign`,{revision,workerId:select.value});
       };
       root.append(button);
     }
@@ -829,8 +966,8 @@ function renderDetail(record) {
       root.append(node('p',`住户申请售后返修：${aftersale.reason}`,'detail-guidance'));
       const reason=textBox('审核说明（拒绝时必填）','说明审核结果，拒绝时请写明原因');
       const actions=node('div',null,'actions'),reject=node('button','拒绝'),approve=node('button','通过，交回原师傅','primary');
-      approve.onclick=()=>mutate(approve,`${base}/aftersale`,{revision,approve:true,reason:reason.value.trim()});
-      reject.onclick=()=>{ if(require(reason,'拒绝售后申请必须填写原因')) mutate(reject,`${base}/aftersale`,{revision,approve:false,reason:reason.value.trim()}); };
+      approve.onclick=()=>submitAdminAction(approve,`${base}/aftersale`,{revision,approve:true,reason:reason.value.trim()});
+      reject.onclick=()=>{ if(require(reason,'拒绝售后申请必须填写原因')) submitAdminAction(reject,`${base}/aftersale`,{revision,approve:false,reason:reason.value.trim()}); };
       actions.append(reject,approve); root.append(actions);
     }
     const reschedule=open('reschedule');
@@ -843,8 +980,8 @@ function renderDetail(record) {
       root.append(node('p','改约待对方回应。已与双方电话核实后，可代为确认或保持原约定。','detail-guidance'));
       const reason=textBox('跟进说明（保持原约定时必填）','例如：已电话联系师傅，同意下午上门');
       const actions=node('div',null,'actions'),decline=node('button','保持原约定'),accept=node('button','确认新时间','primary');
-      accept.onclick=()=>mutate(accept,`${base}/reschedule`,{revision,accept:true,reason:reason.value.trim()});
-      decline.onclick=()=>{ if(require(reason,'请填写跟进说明')) mutate(decline,`${base}/reschedule`,{revision,accept:false,reason:reason.value.trim()}); };
+      accept.onclick=()=>submitAdminAction(accept,`${base}/reschedule`,{revision,accept:true,reason:reason.value.trim()});
+      decline.onclick=()=>{ if(require(reason,'请填写跟进说明')) submitAdminAction(decline,`${base}/reschedule`,{revision,accept:false,reason:reason.value.trim()}); };
       actions.append(decline,accept); root.append(actions);
     }
     const feedback=open('feedback');
@@ -870,7 +1007,7 @@ function renderDetail(record) {
       const body={revision,target:target.value==='resolveNeedsAdmin'?'follow':target.value,content:content.value.trim()};
       if(target.value==='resolveNeedsAdmin')body.resolveNeedsAdmin=true;
       if(target.value==='verify'&&cost.value!=='') body.cost=Number(cost.value);
-      mutate(save,`${base}/notes`,body,'POST');
+      submitAdminAction(save,`${base}/notes`,body,'POST');
     };
     const actions=node('div',null,'actions'); actions.append(save); root.append(actions);
   }
@@ -996,6 +1133,6 @@ async function loadNotifications() {
 $('enable-push').onclick=()=>guarded($('enable-push'),()=>enablePush());
 $('disable-push').onclick=()=>guarded($('disable-push'),async()=>{await disablePush();message('本机推送已停用，待办仍保留。');});
 $('refresh-notifications').onclick=()=>guarded($('refresh-notifications'),loadNotifications);
-window.addEventListener('haven-notification',event=>{if(token)void openNotification(event.detail).catch(error=>message(error.message));});
+window.addEventListener('haven-notification',event=>{if(token)void openNotification(event.detail).catch(error=>showError(error));});
 setInterval(()=>{if(token && !document.hidden)void loadNotifications().catch(()=>{});},30000);
-if(token) enter().catch(error=>{logout();message(error.message);});
+if(token) enter().catch(error=>{logout();showError(error);});

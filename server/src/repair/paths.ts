@@ -1,5 +1,7 @@
 // 新增 HTTP 路径先在此定义；旧路由保持既有地址。
 export const RepairPath = {
+  submission: '/repair-submissions/:submissionId',
+  closeSubmission: '/repair-submissions/:submissionId/close',
   pool: '/worker/repair-pool',
   claim: '/worker/repairs/:id/claim',
   skills: '/worker/skills',

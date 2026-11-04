@@ -7,6 +7,13 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "backup": "tsx tool/database-backup.ts",
+    "backup:job": "tsx tool/backup-job.ts",
+    "operations:check": "tsx tool/operations-check.ts",
+    "operations:key": "tsx tool/operations-key.ts",
+    "operations:monitor": "tsx tool/operations-monitor.ts",
+    "operations:monitor:status": "tsx tool/operations-monitor-status.ts",
+    "audit:security": "npm audit --audit-level=high --fetch-retries=0 --fetch-timeout=20000",
     "role": "tsx src/set-role.ts",
     "demo": "tsx tool/workflow-demo.ts",
     "dev": "tsx watch src/main.ts",
@@ -19,9 +26,9 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
-    "multer": "^2.0.2",
+    "multer": "^2.5.0",
     "qrcode": "^1.5.4",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.5",
     "web-push": "3.6.7",
     "zod": "^4.1.0"
   },

@@ -12,7 +12,9 @@ type F = Awaited<ReturnType<typeof fixture>>;
 const shortageNotes = (f: F) => f.store.db.prepare("SELECT * FROM notifications WHERE taskKey LIKE 'pool_shortage:%' AND active=1").all();
 async function skills(f: F, who: 'worker' | 'worker2', values: string[], preview = false) {
   const profile = await f.call(who, 'GET', '/worker/skills');
-  return f.call(who, 'PUT', '/worker/skills', { workforceRevision: profile.workforceRevision, skills: values, preview });
+  const body = { workforceRevision: profile.workforceRevision, skills: values };
+  const impact = await f.call(who, 'PUT', '/worker/skills', { ...body, preview: true });
+  return preview ? impact : f.call(who, 'PUT', '/worker/skills', { ...body, previewToken: impact.previewToken });
 }
 async function leave(f: F, preview = false) {
   const profile = await f.call('worker', 'GET', '/worker/skills');
@@ -50,7 +52,7 @@ for (const actor of ['worker','admin'] as const) test(`skills cleared by ${actor
   assert.equal(preview.returned[0].start,'2026-10-18T10:00:00+08:00');
   assert.equal(preview.returned[0].end,'2026-10-18T11:00:00+08:00');
   assert.equal(f.stored(row).status,2);
-  await f.call(actor,'PUT',path,body);
+  await f.call(actor,'PUT',path,{...body,previewToken:preview.previewToken});
   const saved=f.stored(row); assert.equal(saved.status,1);assert.equal(saved.workerId,'');
   assert.equal(saved.slot,row.slot);assert.equal(saved.agreedTime,row.agreedTime);
   assert.equal((await f.raw('worker','GET',`/worker/repairs/${row.id}`)).status,404);
@@ -245,7 +247,7 @@ test('return: preview includes returned orders with no eligible replacement, for
   const body={workforceRevision:profile.workforceRevision,skills:['doors']};
   const revokePreview=await f.call('admin','PUT',path,{...body,preview:true});
   assert.deepEqual(ids(revokePreview.returned),[assigned.id]); assert.deepEqual(ids(revokePreview.property),[assigned.id]);
-  await f.call('admin','PUT',path,body);
+  await f.call('admin','PUT',path,{...body,previewToken:revokePreview.previewToken});
   assert.equal(f.stored(assigned).status,1); assert.match(f.stored(assigned).staffingIssue,/暂无/);
 });
 
@@ -321,8 +323,9 @@ test('skills: self additions, removal preview, revision conflicts, authorization
   await skills(f,'worker',['plumbing','doors']); accepted=await f.change('worker',await f.detail(row),'claim',{slot:SLOT});
   const current=await f.call('worker','GET','/worker/skills'); const path=`/management/workers/${f.ids.worker}/skills`;
   const body={workforceRevision:current.workforceRevision,skills:['doors']};
-  assert.deepEqual(ids((await f.call('admin','PUT',path,{...body,preview:true})).returned),[row.id]);
-  await f.call('admin','PUT',path,body); assert.equal(f.stored(row).status,1);
+  const adminPreview=await f.call('admin','PUT',path,{...body,preview:true});
+  assert.deepEqual(ids(adminPreview.returned),[row.id]);
+  await f.call('admin','PUT',path,{...body,previewToken:adminPreview.previewToken}); assert.equal(f.stored(row).status,1);
   const worker=(await f.call('admin','GET','/management/workers')).find((item:Row)=>item.id===f.ids.worker);
   assert.equal(worker.skillChange.actorId,f.ids.admin);
   assert.equal((await f.raw('admin','PUT',path,{workforceRevision:worker.revision,skills:['doors','electrical']})).code,40001);
@@ -462,9 +465,10 @@ test('settlement owner filter includes another owners competing order and leaves
 test('skills: injected settlement write failure rolls back skills and audit with returned orders', async t => {
   const f=await fixture(t); const row=await f.processing(); await skills(f,'worker2',['doors']);
   const before=f.stored(row), profile=await f.call('worker','GET','/worker/skills');
+  const impact=await skills(f,'worker',['doors'],true);
   const save=f.store.save.bind(f.store);let count=0;
   f.store.save=((...args:Parameters<typeof save>)=>{if(args[0]==='repairs'&&++count===2)throw new Error('settlement failure');return save(...args);}) as typeof save;
-  try {assert.equal((await f.raw('worker','PUT','/worker/skills',{workforceRevision:profile.workforceRevision,skills:['doors']})).status,500);}
+  try {assert.equal((await f.raw('worker','PUT','/worker/skills',{workforceRevision:profile.workforceRevision,skills:['doors'],previewToken:impact.previewToken})).status,500);}
   finally {f.store.save=save;}
   assert.deepEqual(f.stored(row),before); assert.deepEqual(await f.call('worker','GET','/worker/skills'),profile);
 });

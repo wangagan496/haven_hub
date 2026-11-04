@@ -8,9 +8,19 @@ import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { CommunityService } from '../src/community/service.js';
 import { registerPhaseOneTests } from './repair-phase-one-cases.js';
+import { registerRoomConcurrencyTests } from './room-concurrency-cases.js';
+import { registerVisitorSubmissionTests } from './visitor-submission-cases.js';
+import { registerRoomSubmissionTests } from './room-submission-cases.js';
+import { registerRoomDeleteTests } from './room-delete-cases.js';
+import { registerRepairCancelTests } from './repair-cancel-cases.js';
 
 export type ApiFixtureFactory = typeof fixture;
 registerPhaseOneTests(fixture);
+registerRoomConcurrencyTests(fixture);
+registerVisitorSubmissionTests(fixture);
+registerRoomSubmissionTests(fixture);
+registerRoomDeleteTests(fixture);
+registerRepairCancelTests(fixture);
 
 type Envelope = { code: number; data: any; message: string };
 
@@ -23,7 +33,7 @@ test('version one database migration preserves resident data and defaults role s
   original.store.db.exec('DROP TABLE repair_capacity_weekdays; ALTER TABLE users DROP COLUMN role; PRAGMA user_version = 1;');
   await original.close();
   const migrated = await fixture(t, path);
-  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 7);
+  assert.equal(migrated.store.one('PRAGMA user_version')?.user_version, 13);
   assert.equal((await migrated.request('GET', '/userInfo', session.token)).data.role, 'resident');
   assert.equal((await migrated.request('GET', `/room/${house.record.id}`, session.token)).data.name, house.record.name);
   await migrated.close();
@@ -31,7 +41,7 @@ test('version one database migration preserves resident data and defaults role s
   rmdirSync(folder);
 });
 
-test('property review: reject, edit and resubmit the same room, approve; stale and unauthorized reviews rejected', async t => {
+test('property review: review and resubmission increment revision; stale and unauthorized reviews rejected', async t => {
   const f = await fixture(t);
   const resident = await f.login();
   const admin = await f.login('13800138090');
@@ -43,15 +53,47 @@ test('property review: reject, edit and resubmit the same room, approve; stale a
   assert.notEqual((await f.request('PUT',path,admin.token,{revision:1,decision:'reject',reason:''})).code,10000);
   const rejected = await f.request('PUT',path,admin.token,{revision:1,decision:'reject',reason:'证件照片不清楚'});
   assert.equal(rejected.data.status,3);
+  assert.equal(rejected.data.revision,2);
+  const reviewAfterRejection = await f.request('PUT',path,admin.token,{revision:2,decision:'approve'});
+  assert.equal(reviewAfterRejection.status,409);
+  assert.equal(reviewAfterRejection.code,40900);
+  assert.deepEqual((await f.request('GET',`/room/${house.record.id}`,resident.token)).data,rejected.data);
   assert.equal((await f.request('GET',`/room/${house.record.id}`,resident.token)).data.reviewReason,'证件照片不清楚');
-  const edited = await f.request('POST','/room',resident.token,{...house.body,id:house.record.id});
+  const edited = await f.request('POST','/room',resident.token,{...house.body,id:house.record.id,revision:rejected.data.revision});
   assert.equal(edited.data.rows[0].status,1);
+  assert.equal(edited.data.rows[0].revision,3);
   assert.equal(edited.data.rows[0].reviewReason,'');
   assert.equal(edited.data.rows[0].id,house.record.id);
   assert.equal((await f.request('PUT',path,admin.token,{revision:1,decision:'approve'})).status,409);
   const approved = await f.request('PUT',path,admin.token,{revision:3,decision:'approve'});
   assert.equal(approved.data.status,2);
-  assert.equal((await f.request('PUT',path,admin.token,{revision:4,decision:'reject',reason:'重复审核'})).code,40001);
+  assert.equal(approved.data.revision,4);
+  const reviewAfterApproval = await f.request('PUT',path,admin.token,{revision:4,decision:'reject',reason:'重复审核'});
+  assert.equal(reviewAfterApproval.status,409);
+  assert.equal(reviewAfterApproval.code,40900);
+  assert.deepEqual((await f.request('GET',`/room/${house.record.id}`,resident.token)).data,approved.data);
+});
+
+test('property review: concurrent reviewers cannot overwrite the first result even with the same revision', async t => {
+  const f = await fixture(t);
+  const resident = await f.login();
+  const firstAdmin = await f.login('13800138090');
+  const secondAdmin = await f.login('13800138091');
+  f.store.run("UPDATE users SET role = 'admin' WHERE mobile IN (?, ?)", '13800138090', '13800138091');
+  const house = await f.room(resident.token);
+  const path = `/management/rooms/${house.record.id}/review`;
+  const results = await Promise.all([
+    f.request('PUT',path,firstAdmin.token,{revision:1,decision:'approve'}),
+    f.request('PUT',path,secondAdmin.token,{revision:1,decision:'reject',reason:'证件照片不清楚'}),
+  ]);
+  assert.deepEqual(results.map(result => result.status).sort(),[200,409]);
+  const successfulReview = results.find(result => result.code === 10000)!;
+  const conflictingReview = results.find(result => result.status === 409)!;
+  assert.equal(conflictingReview.code,40900);
+  assert.equal(conflictingReview.message,'记录已更新，请刷新后再操作');
+  assert.equal(successfulReview.data.revision,2);
+  const savedHouse = await f.request('GET',`/room/${house.record.id}`,resident.token);
+  assert.deepEqual(savedHouse.data,successfulReview.data);
 });
 
 test('one repair flows through assignment, worker acceptance and completion with revision and ownership checks', async t => {
@@ -68,7 +110,8 @@ test('one repair flows through assignment, worker acceptance and completion with
   const other = await f.login('13800138092');
   f.store.run("UPDATE users SET role = 'worker' WHERE mobile = ?", '13800138092');
   const house = await f.room(resident.token);
-  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10',attachment:[house.body.idcardFrontUrl]});
+  const repairPhoto = await f.upload(resident.token);
+  const created = await f.request('POST','/repair',resident.token,{houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10',attachment:[repairPhoto]});
   const id = created.data.rows[0].id;
   const assign = `/management/repairs/${id}/assign`;
   assert.equal((await f.request('PUT',assign,worker.token,{revision:1,workerId})).status,403);
@@ -111,8 +154,9 @@ test('repair photos enforce eight and ownership; public profile cannot escalate 
   const house = await f.room(resident.token);
   const foreign = await f.upload(other.token);
   const body = {houseId:house.record.id,repairItemId:'1004',mobile:'13800138000',slot:'2026-10-20#10'};
-  assert.equal((await f.request('POST','/repair',resident.token,{...body,attachment:Array(8).fill(house.body.idcardFrontUrl)})).code,10000);
-  assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:Array(9).fill(house.body.idcardFrontUrl)})).code,10000);
+  const repairPhoto = await f.upload(resident.token);
+  assert.equal((await f.request('POST','/repair',resident.token,{...body,attachment:Array(8).fill(repairPhoto)})).code,10000);
+  assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:Array(9).fill(repairPhoto)})).code,10000);
   assert.notEqual((await f.request('POST','/repair',resident.token,{...body,attachment:[foreign]})).code,10000);
   assert.notEqual((await f.request('PUT','/userInfo',resident.token,{nickName:'伪造管理员',avatar:'',role:'admin'})).code,10000);
   assert.equal((await f.request('GET','/userInfo',resident.token)).data.role,'resident');
@@ -229,14 +273,16 @@ test('optional floors round trip through HTTP and invalid floors explain the err
   });
   assert.equal(visitor.code, 10000);
   assert.equal(visitor.data.rows[0].houseInfo, '学习小区 1栋 63层 101');
+  let revision = created.data.rows[0].revision;
   for (const floor of ['100', 'B1', '']) {
-    const edited = await f.request('POST', '/room', session.token, { ...body, id, floor });
+    const edited = await f.request('POST', '/room', session.token, { ...body, id, revision, floor });
     assert.equal(edited.code, 10000);
+    revision = edited.data.rows[0].revision;
     assert.equal(edited.data.rows[0].floor, floor);
     assert.equal((await f.request('GET', '/room', session.token)).data[0].floor, floor);
   }
   for (const floor of ['0', 'abc', 'B0', '-1', '10000']) {
-    const invalid = await f.request('POST', '/room', session.token, { ...body, id, floor });
+    const invalid = await f.request('POST', '/room', session.token, { ...body, id, revision, floor });
     assert.equal(invalid.code, 40000);
     assert.equal(invalid.message, '请输入有效楼层，例如33、100或B1');
     assert.equal((await f.request('GET', `/room/${id}`, session.token)).data.floor, '');
@@ -275,7 +321,7 @@ test('English owner names are unique across accounts; Chinese names may repeat',
   assert.equal(duplicate.message, '该英文姓名已被登记，请更换姓名');
   assert.deepEqual((await f.request('GET', '/room', b.token)).data, []);
 
-  const edited = await f.request('POST', '/room', a.token, { ...aBody, id: firstId, room: '102' });
+  const edited = await f.request('POST', '/room', a.token, { ...aBody, id: firstId, revision: first.data.rows[0].revision, room: '102' });
   assert.equal(edited.code, 10000, 'editing a record must not conflict with itself');
 
   const chineseA = await f.request('POST', '/room', a.token, { ...aBody, name: '张三' });
@@ -288,7 +334,8 @@ test('English owner names are unique across accounts; Chinese names may repeat',
   assert.equal(mixedA.code, 10000);
   assert.equal(mixedB.code, 40002, 'names containing Latin letters use the English rule');
 
-  await f.request('DELETE', `/room/${firstId}`, a.token);
+  assert.equal((await f.request('DELETE', `/room/${firstId}`, a.token,
+    { revision: edited.data.rows.find((row: { id: string }) => row.id === firstId).revision })).code, 10000);
   const reused = await f.request('POST', '/room', b.token, bBody);
   assert.equal(reused.code, 10000, 'deleting a record releases its English name');
 });
@@ -342,7 +389,7 @@ test('room writes return full authoritative lists, enforce ownership and preserv
   const a = await f.login();
   const b = await f.login('13800138001');
   const { record, body } = await f.room(a.token);
-  const edited = await f.request('POST', '/room', a.token, { ...body, id: record.id, room: '102' });
+  const edited = await f.request('POST', '/room', a.token, { ...body, id: record.id, revision: record.revision, room: '102' });
   assert.equal(edited.data.rows[0].room, '102');
   assert.equal(edited.data.total, 1);
   assert.equal((await f.request('GET', `/room/${record.id}`, b.token)).status, 404);
@@ -354,7 +401,7 @@ test('room writes return full authoritative lists, enforce ownership and preserv
   const reopened = await fixture(t, join(directory, 'test.sqlite'));
   const persisted = await reopened.request('GET', '/room', a.token);
   assert.equal(persisted.data[0].room, '102');
-  const deleted = await reopened.request('DELETE', `/room/${record.id}`, a.token);
+  const deleted = await reopened.request('DELETE', `/room/${record.id}`, a.token, { revision: persisted.data[0].revision });
   assert.deepEqual(deleted.data, { complete: true, rows: [], total: 0 });
   await reopened.close();
   rmSync(directory, { recursive: true });
@@ -379,7 +426,8 @@ test('repair creation returns all rows beyond a page, cancellation updates statu
   assert.equal((await f.request('POST', '/repair', b.token, body)).status, 404);
   assert.equal((await f.request('GET', `/repair/${record.id}`, b.token)).status, 404);
   assert.equal((await f.request('PUT', `/cancel/repair/${record.id}`, b.token)).status, 404);
-  const cancelled = await f.request('PUT', `/cancel/repair/${record.id}`, a.token);
+  const current = (await f.request('GET', `/repair/${record.id}`, a.token)).data;
+  const cancelled = await f.request('PUT', `/cancel/repair/${record.id}`, a.token, { revision: current.revision });
   assert.equal(cancelled.data.rows[0].status, 0);
   assert.equal(cancelled.data.rows.length, 23);
   assert.notEqual((await f.request('PUT', `/cancel/repair/${record.id}`, a.token)).code, 10000);
@@ -390,17 +438,17 @@ test('visitor, profile, announcement and upload contracts are usable by the app'
   const f = await fixture(t);
   const a = await f.login();
   const b = await f.login('13800138001');
-  const { record: house, body } = await f.room(a.token);
+  const { record: house } = await f.room(a.token);
   const visitor = await f.request('POST', '/visitor', a.token, { houseId: house.id, name: '李四', gender: 0,
     mobile: '13800138001', visitDate: '2026-10-20' });
   assert.equal(visitor.code, 10000);
   assert.equal(visitor.data.total, 1);
   assert.equal(visitor.data.rows[0].status, 1);
   assert.equal((await f.request('GET', `/visitor/${visitor.data.rows[0].id}`, b.token)).status, 404);
-  const png = await fetch(f.base + new URL(visitor.data.rows[0].url).pathname);
+  const png = await fetch(f.base + new URL(visitor.data.rows[0].url).pathname, { headers: { Authorization: `Bearer ${a.token}` } });
   assert.equal(png.headers.get('content-type'), 'image/png');
   assert.deepEqual([...new Uint8Array(await png.arrayBuffer()).slice(0, 4)], [137, 80, 78, 71]);
-  const profile = await f.request('PUT', '/userInfo', a.token, { nickName: '测试用户', avatar: body.idcardFrontUrl });
+  const profile = await f.request('PUT', '/userInfo', a.token, { nickName: '测试用户', avatar: await f.upload(a.token) });
   assert.equal(profile.data.nickName, '测试用户');
   assert(profile.data.id);
   assert.equal((await f.request('GET', '/announcement')).data.length, 1);

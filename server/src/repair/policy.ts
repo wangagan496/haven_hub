@@ -1,10 +1,29 @@
 import type { RecordData } from '../database.js';
-import { Status, type Actor, type Pending, addEvent, currentRound, ensureRounds, openPending, pendings, voidReschedule, repairRoundNumber } from './model.js';
+import { Status, type Actor, type Pending, type Role, addEvent, currentRound, ensureRounds, openPending, pendings, rounds, voidReschedule, repairRoundNumber } from './model.js';
 import { clearFutureSlot, parseSlot, setSlot } from './schedule.js';
 import { requireValue } from '../errors.js';
 
 export function activeRepair(record: RecordData) {
   return ([Status.pending, Status.assigned, Status.processing] as number[]).includes(Number(record.status));
+}
+
+export type ConfirmationReason = '' | 'resident_only' | 'not_in_progress' | 'result_not_ready'
+  | 'revoke_pending' | 'already_completed' | 'cancelled';
+
+/** Read-only snapshot after settlement; authorization and revision are still checked on execution. */
+export function confirmationAvailability(record: RecordData, role: Role) {
+  let reasonCode: ConfirmationReason = '';
+  if (role !== 'resident') reasonCode = 'resident_only';
+  else if (record.status === Status.completed) reasonCode = 'already_completed';
+  else if (record.status === Status.cancelled || record.status === 4) reasonCode = 'cancelled';
+  else if (record.status !== Status.processing && record.status !== Status.confirming) reasonCode = 'not_in_progress';
+  else {
+    // Do not call currentRound: its legacy normalization mutates the record.
+    const round = rounds(record).at(-1);
+    if (record.status === Status.processing && !(round?.resultSavedAt && round.note)) reasonCode = 'result_not_ready';
+    else if (openPending(record, 'revoke')) reasonCode = 'revoke_pending';
+  }
+  return { code: 'confirm' as const, enabled: reasonCode === '', reasonCode };
 }
 export function urgentAwaitingRating(record: RecordData) {
   return activeRepair(record) && record.urgentRequest === true && !record.priority;

@@ -3,15 +3,28 @@ import { requiredSkill, repairItems, Status, type RepairSkill } from './model.js
 import { availableDates, businessDate, parseSlot, scheduleRules, slotAvailability, slotOrders, workerConflict, workerOnLeave, type Capacity, type WorkerAvailability } from './schedule.js';
 
 export function readWorkforce(store: Store): WorkerAvailability[] {
-  const skills = store.db.prepare('SELECT workerId,skill FROM worker_skills').all();
-  const known = new Set([...skills, ...store.db.prepare('SELECT workerId FROM worker_skill_audit').all()].map(row => String(row.workerId)));
-  const leaves = store.db.prepare('SELECT workerId,date,hour FROM worker_leaves').all();
-  return store.db.prepare("SELECT id FROM users WHERE role='worker'").all().map(row => ({
-    id: String(row.id),
-    skillsKnown: known.has(String(row.id)),
-    skills: skills.filter(item => item.workerId === row.id).map(item => String(item.skill) as RepairSkill),
-    leaves: leaves.filter(item => item.workerId === row.id).map(item => ({ date: String(item.date), hour: String(item.hour) })),
-  }));
+  // 每次读取独立分组，避免逐个师傅重扫全部技能/请假，也不缓存跨请求的人员状态。
+  const skillsByWorker = new Map<string, RepairSkill[]>();
+  const known = new Set<string>();
+  for (const row of store.db.prepare('SELECT workerId,skill FROM worker_skills').all()) {
+    const id = String(row.workerId);
+    const skills = skillsByWorker.get(id) ?? [];
+    skills.push(String(row.skill) as RepairSkill);
+    skillsByWorker.set(id, skills);
+    known.add(id);
+  }
+  for (const row of store.db.prepare('SELECT workerId FROM worker_skill_audit').all()) known.add(String(row.workerId));
+  const leavesByWorker = new Map<string, { date: string; hour: string }[]>();
+  for (const row of store.db.prepare('SELECT workerId,date,hour FROM worker_leaves').all()) {
+    const id = String(row.workerId);
+    const leaves = leavesByWorker.get(id) ?? [];
+    leaves.push({ date: String(row.date), hour: String(row.hour) });
+    leavesByWorker.set(id, leaves);
+  }
+  return store.db.prepare("SELECT id FROM users WHERE role='worker' AND disabledAt=0").all().map(row => {
+    const id = String(row.id);
+    return { id, skillsKnown: known.has(id), skills: skillsByWorker.get(id) ?? [], leaves: leavesByWorker.get(id) ?? [] };
+  });
 }
 
 /** 检查师傅的技能和请假情况；返回拒绝原因，空字符串表示这两项通过。 */
@@ -168,7 +181,16 @@ export function inRepairPool(record: RecordData) {
     && (!record.urgentRequest || Boolean(record.priority)) && Boolean(requiredSkill(record));
 }
 
-/** 请求级快照。索引包含全部工单，筛选条件只影响结算对象。 */
+/** 只保留调度、缺人汇总和接单卡片读取的字段；不能作为完整工单保存。 */
+function staffingRecord(record: RecordData): RecordData {
+  return { id: record.id, status: record.status, workerId: record.workerId, slot: record.slot,
+    requiredSkill: record.requiredSkill, repairItemId: record.repairItemId, priority: record.priority,
+    urgentRequest: record.urgentRequest, createdAt: record.createdAt, repairItemName: record.repairItemName,
+    agreedTime: record.agreedTime, revision: record.revision, houseId: record.houseId,
+    community: record.community, building: record.building, description: record.description };
+}
+
+/** 请求级只读投影。仍索引全部工单，完成单也可能占用时段；筛选只影响结算对象。 */
 export class StaffingContext {
   readonly slots = new Map<string, RecordData[]>();
   private readonly plans = new Map<string, ReturnType<typeof staffingPlan>>();
@@ -178,11 +200,11 @@ export class StaffingContext {
   private readonly alternativeWorkers = new Map<string, number>();
   private readonly skillOptions = new Map<RepairSkill | '', (ReturnType<typeof slotAvailability>[number] & { eligibleWorkerCount: number })[]>();
   private optionsClock = '';
-  constructor(readonly workers: readonly WorkerAvailability[], records: readonly RecordData[]) {
+  constructor(readonly workers: readonly WorkerAvailability[], records: Iterable<RecordData>) {
     for (const record of records) {
       const timeSlot = String(record.slot ?? '');
       const rows = this.slots.get(timeSlot) ?? [];
-      rows.push(record); this.slots.set(timeSlot, rows);
+      rows.push(staffingRecord(record)); this.slots.set(timeSlot, rows);
     }
   }
   plan(timeSlot: string) {
@@ -263,7 +285,7 @@ export class StaffingContext {
     const next = String(record.slot ?? '');
     for (const timeSlot of new Set([previousSlot, next])) {
       const rows = (this.slots.get(timeSlot) ?? []).filter(row => row.id !== record.id);
-      if (timeSlot === next) rows.push(structuredClone(record));
+      if (timeSlot === next) rows.push(structuredClone(staffingRecord(record)));
       this.slots.set(timeSlot, rows); this.plans.delete(timeSlot);
       for (const key of this.poolCandidates.keys()) if (key.startsWith(`${timeSlot}:`)) this.poolCandidates.delete(key);
       for (const key of this.alternativeWorkers.keys()) if (key.startsWith(`${timeSlot}:`)) this.alternativeWorkers.delete(key);

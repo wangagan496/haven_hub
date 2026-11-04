@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { RecordData, Store } from '../database.js';
 import { requireValue } from '../errors.js';
+import { requireMediaPurpose, type MediaPurpose } from '../media.js';
 
 export const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   const timestamp = Date.parse(`${value}T00:00:00Z`);
@@ -13,9 +14,10 @@ export function houseInfo(house: RecordData) {
   return [house.point, house.building, floor, house.room].filter(Boolean).join(' ');
 }
 
-export function ownedUpload(store: Store, publicBaseUrl: string, userId: string, url: string) {
+export function ownedUpload(store: Store, publicBaseUrl: string, userId: string, url: string, purpose?: MediaPurpose) {
   const prefix = `${publicBaseUrl}/media/`;
   requireValue(url.startsWith(prefix), '图片必须先上传到当前服务');
   const upload = store.one('SELECT id FROM uploads WHERE id = ? AND userId = ?', url.slice(prefix.length), userId);
   requireValue(upload, '图片不存在或不属于当前账号');
+  if (purpose) requireMediaPurpose(store, String(upload.id), purpose);
 }

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>操作记录 · 享家物业</title>
+  <link rel="icon" type="image/svg+xml" href="./brand.svg">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./audit.css">
+  <script src="./client-version.js" defer></script>
+  <script src="./audit.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><img src="./brand.svg" width="38" height="38" alt=""><div><strong>享家社区</strong><span>管理操作记录</span></div></div>
+  <a href="./">返回物业工作台</a>
+</header>
+<main class="audit-main">
+  <h1>操作记录</h1>
+  <p class="muted">查看已保存的管理变更，按操作人、业务对象或操作类型查找。</p>
+  <section class="records-panel" aria-label="操作记录查询">
+    <form id="audit-filters" class="audit-filters">
+      <label>操作人编号<input id="actorId" maxlength="128" placeholder="留空查看所有操作人"></label>
+      <label>业务对象<select id="targetType"><option value="">全部对象</option><option value="room">房屋</option><option value="repair">报修</option><option value="worker">维修人员</option><option value="capacity-default">默认容量</option><option value="capacity-weekday">星期容量</option><option value="capacity-date">日期容量</option></select></label>
+      <label>对象编号<input id="targetId" maxlength="128" placeholder="房屋、工单或师傅编号"></label>
+      <label>操作类型<select id="action"><option value="">全部操作</option></select></label>
+      <button id="audit-query" type="submit" class="primary">查询记录</button>
+      <button id="audit-reset" type="button">清空条件</button>
+    </form>
+    <p id="audit-status" role="status" aria-live="polite"></p>
+    <div id="audit-rows" aria-live="polite"></div>
+    <div class="audit-footer"><button id="audit-more" type="button" hidden>加载更早记录</button></div>
+  </section>
+  <p class="field-hint">记录保留操作人编号和必要的前后变化，不重复展示电话、证件、图片或备注正文；历史导入项会单独标明。</p>
+</main>
+</body>
+</html>

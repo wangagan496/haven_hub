@@ -1,6 +1,6 @@
 import type { RecordData } from '../database.js';
 import { Status, type Role, currentRound, ensureRounds, events, openPending, repairRoundNumber, repairFees } from './model.js';
-import { activeRepair, closed, reworkUsed, todoTags, warrantyEnd } from './policy.js';
+import { activeRepair, closed, confirmationAvailability, reworkUsed, todoTags, warrantyEnd } from './policy.js';
 import { parseSlot, scheduleDefaults } from './schedule.js';
 import { openOffer } from './unstaffed.js';
 
@@ -36,6 +36,7 @@ export class RepairViews {
     const defaults = scheduleDefaults(record);
     const slot = parseSlot(record.slot ?? defaults.slot);
     const result: RecordData = { ...defaults, ...record,
+      availableActions: [confirmationAvailability(record, role)],
       round: repairRoundNumber(record),
       fees: repairFees(record),
       resultReady: Boolean(round.resultSavedAt && round.note && round.cost !== null),
@@ -84,20 +85,38 @@ export class RepairViews {
   }
 
   listViews(rows: Record<string, unknown>[], role: Role, keep?: (record: RecordData) => boolean): RecordData[] {
-    const views: RecordData[] = [];
+    return [...this.iterateViews(rows, role, keep)];
+  }
+
+  /** Count successfully rendered records, including those outside the requested page.
+   * SQL COUNT/LIMIT alone would change the contract when historical payloads are corrupt. */
+  pageViews(rows: Iterable<Record<string, unknown>>, role: Role, current: number, pageSize: number,
+    keep?: (view: RecordData) => boolean) {
+    const page: RecordData[] = [];
+    const offset = (current - 1) * pageSize;
+    let total = 0;
+    for (const view of this.iterateViews(rows, role)) {
+      if (keep && !keep(view)) continue;
+      if (total >= offset && page.length < pageSize) page.push(view);
+      total++;
+    }
+    return { rows: page, total, pageTotal: Math.ceil(total / pageSize), current };
+  }
+
+  private *iterateViews(rows: Iterable<Record<string, unknown>>, role: Role, keep?: (record: RecordData) => boolean): Generator<RecordData> {
     for (const row of rows) {
       try {
         const record = JSON.parse(String(row.payload)) as RecordData;
         if (!record || typeof record !== 'object' || Array.isArray(record)) throw new TypeError();
         if (keep && !keep(record)) continue;
         ensureRounds(record);
-        views.push(this.view(record, role));
+        const view = this.view(record, role);
         this.badRecordLogs.delete(`repair_list_record_skipped:${String(row.id)}`);
+        yield view;
       } catch (error) {
         this.logBadRecordOnce('repair_list_record_skipped', String(row.id), { role, type: error instanceof Error ? error.name : 'unknown' });
       }
     }
-    return views;
   }
 
 }
