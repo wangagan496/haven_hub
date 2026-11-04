@@ -1,10 +1,16 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../utils/request_dio.dart';
+import '../utils/token_manager.dart';
 
 /// 带缓存的网络图片组件。
 ///
-/// 鸿蒙使用 Flutter 内存缓存，其他平台沿用 [CachedNetworkImage] 磁盘缓存。
+/// 本服务受保护图片仅驻留内存，换号、退出或页面销毁时清理。
+/// 公开图片在鸿蒙使用 Flutter 内存缓存，其他平台沿用磁盘缓存。
 /// 统一加载、错误处理和占位符样式。
 class CachedImage extends StatelessWidget {
   /// 创建带缓存的网络图片。
@@ -45,7 +51,11 @@ class CachedImage extends StatelessWidget {
     // 当前 path_provider 依赖没有 OHOS 实现。磁盘缓存初始化会失败，
     // 并使 flutter_cache_manager 的加载 Future 一直不结束。
     // NetworkImage 使用 Flutter 内存缓存，无需新增原生插件或权限。
-    Widget image = !kIsWeb && defaultTargetPlatform == TargetPlatform.ohos
+    Widget image = RequestDio.isServiceMedia(imageUrl)
+        ? _ProtectedImage(imageUrl: imageUrl, width: width, height: height, fit: fit,
+            placeholder: placeholder ?? _buildDefaultPlaceholder(context),
+            errorWidget: errorWidget ?? _buildDefaultErrorWidget(context))
+        : !kIsWeb && defaultTargetPlatform == TargetPlatform.ohos
         ? Image.network(
             imageUrl,
             width: width,
@@ -129,6 +139,86 @@ class CachedImage extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Private bytes live only while this view is active, and are removed on account changes.
+class _ProtectedImage extends StatefulWidget {
+  const _ProtectedImage({required this.imageUrl, required this.width,
+    required this.height, required this.fit, required this.placeholder, required this.errorWidget});
+  final String imageUrl;
+  final double? width;
+  final double? height;
+  final BoxFit fit;
+  final Widget placeholder;
+  final Widget errorWidget;
+  @override
+  State<_ProtectedImage> createState() => _ProtectedImageState();
+}
+
+class _ProtectedImageState extends State<_ProtectedImage> with WidgetsBindingObserver {
+  CancelToken? _cancel;
+  MemoryImage? _image;
+  bool _failed = false;
+  int _generation = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    tokenManager.sessionChanges.addListener(_reload);
+    WidgetsBinding.instance.addObserver(this);
+    _reload();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProtectedImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.imageUrl != oldWidget.imageUrl) _reload();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _reload();
+  }
+
+  void _reload() {
+    final generation = ++_generation;
+    _cancel?.cancel();
+    final previous = _image;
+    if (previous != null) unawaited(previous.evict());
+    final cancel = _cancel = CancelToken();
+    setState(() { _image = null; _failed = false; });
+    unawaited(() async {
+      try {
+        final bytes = await requestDio.getMedia(widget.imageUrl, cancelToken: cancel);
+        if (!mounted || generation != _generation) return;
+        setState(() => _image = MemoryImage(bytes));
+      } on Object {
+        if (!mounted || generation != _generation) return;
+        setState(() => _failed = true);
+      }
+    }());
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    _cancel?.cancel();
+    tokenManager.sessionChanges.removeListener(_reload);
+    WidgetsBinding.instance.removeObserver(this);
+    final image = _image;
+    if (image != null) unawaited(image.evict());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _image;
+    if (_failed) return widget.errorWidget;
+    if (image == null) return widget.placeholder;
+    return Image(image: image, width: widget.width, height: widget.height,
+        fit: widget.fit,
+        errorBuilder: (_, error, stack) => widget.errorWidget);
   }
 }
 

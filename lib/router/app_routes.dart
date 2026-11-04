@@ -1,4 +1,29 @@
 import 'package:flutter/material.dart';
+import '../models/device_map_location.dart';
+
+/// 页面路径的简短名字，统一沿用 AppRoutes 中的地址。
+const home = AppRoutes.home;
+const login = AppRoutes.login;
+const profile = AppRoutes.profile;
+const noticeDetail = AppRoutes.noticeDetail;
+
+// 房屋列表、详情、表单，以及位置、楼栋和房间选择。
+const houseList = AppRoutes.houseList;
+const houseDetail = AppRoutes.houseDetail;
+const houseForm = AppRoutes.houseForm;
+const houseDrafts = AppRoutes.houseDrafts;
+const locationList = AppRoutes.locationList;
+const buildingList = AppRoutes.buildingList;
+const roomList = AppRoutes.roomList;
+
+// 报修、访客和通知页面。
+const repairList = AppRoutes.repairList;
+const repairDetail = AppRoutes.repairDetail;
+const repairForm = AppRoutes.repairForm;
+const visitorList = AppRoutes.visitorList;
+const visitorDetail = AppRoutes.visitorDetail;
+const visitorForm = AppRoutes.visitorForm;
+const notifications = AppRoutes.notifications;
 
 /// 应用路由配置类。
 ///
@@ -28,6 +53,7 @@ class AppRoutes {
 
   /// 房屋表单页（新增/编辑）。
   static const String houseForm = '/house-form';
+  static const String houseDrafts = '/house-drafts';
 
   /// 位置选择页。
   static const String locationList = '/location-list';
@@ -75,7 +101,8 @@ class AppRoutes {
     return Navigator.pushNamed<T>(context, profile);
   }
 
-  /// 导航到公告详情页。
+  /// 打开指定公告的详情页。
+  /// [noticeId] 接收调用处传来的公告编号，详情页用它查找对应公告。
   static Future<T?> toNoticeDetail<T>(
     BuildContext context, {
     required String noticeId,
@@ -263,6 +290,7 @@ class HouseFormArguments {
   const HouseFormArguments({
     required this.mode,
     this.houseId,
+    this.draftId,
   });
 
   /// 表单模式（新增/编辑）。
@@ -270,10 +298,18 @@ class HouseFormArguments {
 
   /// 房屋 ID（编辑模式必传）。
   final String? houseId;
+  final String? draftId;
 
   /// 是否为新增模式。
   bool get isCreate => mode == HouseFormMode.create;
 
   /// 是否为编辑模式。
   bool get isEdit => mode == HouseFormMode.edit;
+}
+
+/// 将同一份草稿沿选小区、楼栋、房号流程传递。
+class HouseSelectionArguments {
+  const HouseSelectionArguments(this.draftId, {this.deviceLocation});
+  final String draftId;
+  final DeviceMapLocation? deviceLocation;
 }

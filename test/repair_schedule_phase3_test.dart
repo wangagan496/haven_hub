@@ -50,7 +50,7 @@ void tallPage(WidgetTester tester) {
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
@@ -138,7 +138,7 @@ void main() {
   ]) {
     testWidgets('P3 resident schedule state ${entry.$2}', (tester) async {
       tallPage(tester);
-      await pumpPage(tester, RepairDetailPage(loader: (_) async => entry.$1), arguments: 'p3');
+      await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => entry.$1), arguments: 'p3');
       expect(find.text(entry.$2), findsOneWidget);
       expect(find.text('同意'), entry.$1.firstSchedule != null ? findsOneWidget : findsNothing);
       expect(find.text('这个时间不方便'), entry.$1.autoAccepted ? findsOneWidget : findsNothing);
@@ -150,7 +150,7 @@ void main() {
   for (final accept in [true, false]) {
     testWidgets('P3 resident first proposal ${accept ? 'accept' : 'refuse with mandatory reason'}', (tester) async {
       tallPage(tester); final actions = <RepairAction>[];
-      await pumpPage(tester, RepairDetailPage(loader: (_) async => _pending, actionLoader: (_, action) async {
+      await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => _pending, submitAction: (_, action) async {
         actions.add(action); return accept ? _agreed : const RepairRecord(id: 'p3', status: 2);
       }), arguments: 'p3');
       await tapText(tester, accept ? '同意' : '拒绝');
@@ -167,8 +167,8 @@ void main() {
 
   testWidgets('P3 refusal conflict refreshes and retains the entered reason', (tester) async {
     tallPage(tester); int loads = 0, calls = 0;
-    await pumpPage(tester, RepairDetailPage(loader: (_) async { loads++; return _pending; },
-      actionLoader: (_, action) async { calls++; throw const NetworkException('名额已占', statusCode: 409); }), arguments: 'p3');
+    await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async { loads++; return _pending; },
+      submitAction: (_, action) async { calls++; throw const NetworkException('名额已占', statusCode: 409); }), arguments: 'p3');
     await tapText(tester, '拒绝'); await tester.enterText(find.byType(TextField), '请另约明天');
     await tapText(tester, '确认拒绝'); expect(loads, 2); expect(calls, 1);
     await tapText(tester, '拒绝'); expect(find.text('请另约明天'), findsOneWidget);
@@ -177,8 +177,8 @@ void main() {
 
   testWidgets('P3 auto accepted inconvenience uses existing feedback action', (tester) async {
     tallPage(tester); RepairAction? sent;
-    await pumpPage(tester, RepairDetailPage(loader: (_) async => const RepairRecord(id:'p3', status:2, autoAccepted:true, agreedTime:_time),
-      actionLoader: (_, action) async { sent = action; return _agreed; }), arguments: 'p3');
+    await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => const RepairRecord(id:'p3', status:2, autoAccepted:true, agreedTime:_time),
+      submitAction: (_, action) async { sent = action; return _agreed; }), arguments: 'p3');
     await tapText(tester, '这个时间不方便'); await tester.enterText(find.byType(TextField), '需要换一天');
     await tapText(tester, '提交反馈'); expect(sent, isA<FeedbackAction>());
     await finishPage(tester);

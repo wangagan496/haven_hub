@@ -18,7 +18,7 @@ void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     preferences = await SharedPreferences.getInstance();
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() async {
     tokenManager.beforeSessionEnd = null;

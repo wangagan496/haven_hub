@@ -30,7 +30,7 @@ class _ResultAdapter implements HttpClientAdapter {
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues({});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   testWidgets('rework progress and ready buttons send distinct ready flags and stay on detail', (tester) async {
     const record = RepairRecord(id: 'rework', status: 2, round: 3,
@@ -76,9 +76,9 @@ void main() {
   testWidgets('owner may confirm an onsite result while still processing', (tester) async {
     var calls = 0;
     await pumpPage(tester, RepairDetailPage(
-      loader: (_) async => const RepairRecord(id: 'onsite', workflowVersion: 1, status: 2, resultReady: true,
+      loadRepairDetail: (_) async => const RepairRecord(id: 'onsite', workflowVersion: 1, status: 2, resultReady: true,
         completionNote: '更换水管并复测', rounds: [RepairRound(number: 1, note: '更换水管并复测', cost: 19)]),
-      actionLoader: (_, action) async {
+      submitAction: (_, action) async {
         expect(action, isA<ConfirmAction>()); calls++;
         return const RepairRecord(id: 'onsite', status: 3);
       }), arguments: 'onsite');

@@ -10,7 +10,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   Widget? resolve(String path) => getRouteWidget(path,
       announcementLoader: getAnnouncementListApi,

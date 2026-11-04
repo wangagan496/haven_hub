@@ -47,7 +47,7 @@ Future<void> _tap(WidgetTester tester, String text) async {
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
 
   test('P1 model parses dates, rounds, pending resolution, costs and derived fields', () {
@@ -153,7 +153,7 @@ void main() {
     (0, false, true, <String>[]),
   ]) {
     testWidgets('P1 resident action matrix ${scenario.$1}/${scenario.$2}/${scenario.$3}', (tester) async {
-      await pumpPage(tester, RepairDetailPage(loader: (_) async =>
+      await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async =>
           _record(scenario.$1, second: scenario.$2, closed: scenario.$3)), arguments: 'phase-one');
       for (final label in <String>['取消报修', '修改预约', '申请撤销', '确认修好', '还没修好', '反馈问题', '申请售后返修']) {
         expect(find.text(label), scenario.$4.contains(label) ? findsOneWidget : findsNothing);
@@ -176,7 +176,7 @@ void main() {
     (const RepairPending(kind: 'feedback', by: 'resident', reason: '漏水'), '反馈已提交，等待物业回复'),
   ]) {
     testWidgets('P1 pending card ${scenario.$2}', (tester) async {
-      await pumpPage(tester, RepairDetailPage(loader: (_) async =>
+      await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async =>
           _record(scenario.$1.kind == 'aftersale' ? 3 : 2, pendings: <RepairPending>[scenario.$1])), arguments: 'phase-one');
       expect(find.text(scenario.$2), findsOneWidget);
       expect(find.text('同意新时间'), scenario.$1.kind == 'reschedule' && scenario.$1.by == 'worker' ? findsOneWidget : findsNothing);
@@ -188,8 +188,8 @@ void main() {
 
   testWidgets('P1 processing revoke requires reason and checked phone notice', (tester) async {
     final requests = <RepairAction>[];
-    await pumpPage(tester, RepairDetailPage(loader: (_) async => _record(2),
-      actionLoader: (record, action) async {
+    await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => _record(2),
+      submitAction: (record, action) async {
         requests.add(action);
         return _record(2, pendings: const <RepairPending>[
           RepairPending(kind: 'revoke', by: 'resident', deadline: _deadline)]);
@@ -211,24 +211,45 @@ void main() {
   });
 
   testWidgets('P1 resident 409 warns reloads authoritative state without replay', (tester) async {
-    int loads = 0, calls = 0;
-    await pumpPage(tester, RepairDetailPage(loader: (_) async =>
-      ++loads == 1 ? _record(6) : _record(3, revision: 5),
-      actionLoader: (record, action) async {
-        calls++;
-        expect(record.revision, 4);
-        expect(action, isA<ConfirmAction>());
-        throw const NetworkException('版本冲突', statusCode: 409);
-      }), arguments: 'phase-one');
+    int detailLoadCount = 0;
+    int submissionCount = 0;
+
+    Future<RepairRecord> loadRepairForTest(String id) async {
+      detailLoadCount++;
+      if (detailLoadCount == 1) {
+        return _record(6);
+      }
+      return _record(3, revision: 5);
+    }
+
+    // 不请求服务器，主动报错，检查页面是否刷新且不重复提交。
+    Future<RepairRecord> simulateVersionConflict(
+      RepairRecord currentRepair,
+      RepairAction action,
+    ) async {
+      submissionCount++;
+      expect(currentRepair.revision, 4);
+      expect(action, isA<ConfirmAction>());
+      throw const NetworkException('版本冲突', statusCode: 409);
+    }
+
+    await pumpPage(
+      tester,
+      RepairDetailPage(
+        loadRepairDetail: loadRepairForTest,
+        submitAction: simulateVersionConflict,
+      ),
+      arguments: 'phase-one',
+    );
     await _tap(tester, '确认修好');
     await _tap(tester, '确认修好');
-    expect(calls, 1);
-    expect(loads, 2);
+    expect(submissionCount, 1);
+    expect(detailLoadCount, 2);
     expect(find.text('版本冲突，已刷新最新状态'), findsOneWidget);
     expect(find.text('确认修好'), findsNothing);
     expect(find.text('申请售后返修'), findsOneWidget);
     await tester.pump(const Duration(seconds: 2));
-    expect(calls, 1);
+    expect(submissionCount, 1);
     await finishPage(tester);
   });
 

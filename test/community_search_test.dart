@@ -154,7 +154,7 @@ void main() {
     expect(find.text('楼栋选择页'), findsOneWidget);
     expect(BuildController.instance().buildingInfo.communityId, target.id);
     expect(BuildController.instance().buildingInfo.latitude, target.latitude);
-    BuildController.instance().clearBuildingInfo();
+    BuildController.instance().clearSelection();
     await finishPage(tester);
   });
 

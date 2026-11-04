@@ -26,7 +26,7 @@ class VisitorShareReminder with WidgetsBindingObserver {
       if (_delivered || (current != null && current != AppLifecycleState.resumed)) return;
       _delivered = true;
       WidgetsBinding.instance.removeObserver(this);
-      unawaited(PromptAction.showWarning('刚才的分享未完成，请返回通行码页面重新分享'));
+      unawaited(AppPrompt.showWarning('刚才的分享未完成，请返回通行码页面重新分享'));
     });
     WidgetsBinding.instance.scheduleFrame();
   }

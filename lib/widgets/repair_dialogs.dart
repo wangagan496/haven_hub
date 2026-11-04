@@ -157,7 +157,7 @@ class PhoneLine extends StatelessWidget {
           icon: const Icon(Icons.copy, size: 18),
           onPressed: () async {
             await Clipboard.setData(ClipboardData(text: phone));
-            await PromptAction.showToast('号码已复制');
+            await AppPrompt.showToast('号码已复制');
           },
         ),
     ]);

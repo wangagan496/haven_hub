@@ -10,11 +10,13 @@ typedef LoginLoader = Future<Map<String, dynamic>> Function(
   String code,
 );
 typedef UserInfoLoader = Future<UserInfo> Function();
-typedef UpdateUserInfoLoader = Future<Map<String, dynamic>> Function({
+/// 把用户资料修改提交给服务器。
+typedef SubmitUserInfoAction = Future<Map<String, dynamic>> Function({
   required String nickName,
   required String avatar,
 });
-typedef UploadAvatarLoader = Future<String> Function({
+/// 上传头像图片，返回上传后的图片地址。
+typedef UploadAvatarAction = Future<String> Function({
   required Uint8List fileBytes,
   required String fileName,
 });

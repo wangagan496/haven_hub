@@ -13,6 +13,9 @@ import '../../widgets/repair_availability_hint.dart';
 import 'components/home_list.dart';
 import 'components/home_nav.dart';
 
+/// 不等待任务完成，让后面的代码继续执行。
+const doNotWait = unawaited;
+
 class HomePage extends StatefulWidget {
   const HomePage({
     this.announcementLoader = getAnnouncementListApi,
@@ -28,15 +31,20 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<NoticeData> _dataList = const <NoticeData>[];
+  List<NoticeData> _notices = const <NoticeData>[];
   bool _isLoading = false;
   String? _errorMessage;
   late final StreamSubscription<LoginSuccessEvent> _loginSubscription;
 
+  /// 页面状态是否仍有效；每次读取当前状态，不代表页面当前可见。
+  bool get isPageAlive => mounted;
+
+  /// 首页状态首次创建时，由 Flutter 自动调用。
   @override
   void initState() {
+    // 先执行 Flutter 原有的初始化步骤。
     super.initState();
-    unawaited(_getAnnouncementList());
+    doNotWait(_loadNotices());
     _loginSubscription = eventBus.on<LoginSuccessEvent>().listen((_) {
       _scheduleRepairPreload();
     });
@@ -45,7 +53,7 @@ class _HomePageState extends State<HomePage> {
 
   void _scheduleRepairPreload() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(widget.repairPreloader());
+      if (isPageAlive) doNotWait(widget.repairPreloader());
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -56,7 +64,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Future<void> _getAnnouncementList() async {
+  Future<void> _loadNotices() async {
     if (_isLoading) {
       return;
     }
@@ -65,26 +73,31 @@ class _HomePageState extends State<HomePage> {
       _errorMessage = null;
     });
     try {
-      final List<NoticeData> result = await widget.announcementLoader();
-      if (!mounted) {
+      final List<NoticeData> loadedNotices = await widget.announcementLoader();
+      if (!isPageAlive) {
         return;
       }
-      setState(() => _dataList = result);
+      _updateNoticeList(loadedNotices);
     } on Object catch (error) {
       final String message = describeError(
         error,
         fallback: '公告加载失败，请稍后重试',
       );
-      if (!mounted) {
+      if (!isPageAlive) {
         return;
       }
       setState(() => _errorMessage = message);
-      await PromptAction.showError(message);
+      await AppPrompt.showError(message);
     } finally {
-      if (mounted) {
+      if (isPageAlive) {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  /// 更新页面里的公告列表，并让界面显示最新数据。
+  void _updateNoticeList(List<NoticeData> notices) {
+    setState(() => _notices = notices);
   }
 
   @override
@@ -92,7 +105,7 @@ class _HomePageState extends State<HomePage> {
     final AppLocalizations l10n = AppLocalizations.of(context)!;
     return SafeArea(
       child: RefreshIndicator(
-        onRefresh: _getAnnouncementList,
+        onRefresh: _loadNotices,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
@@ -104,7 +117,7 @@ class _HomePageState extends State<HomePage> {
                     children: <Widget>[
                       Expanded(child: Text(_errorMessage!)),
                       TextButton(
-                        onPressed: _isLoading ? null : _getAnnouncementList,
+                        onPressed: _isLoading ? null : _loadNotices,
                         child: Text(l10n.retry),
                       ),
                     ],
@@ -137,8 +150,8 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               ),
-              HomeList(list: _dataList),
-              if (_dataList.isEmpty && !_isLoading && _errorMessage == null)
+              HomeList(list: _notices),
+              if (_notices.isEmpty && !_isLoading && _errorMessage == null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 24),
                   child: Text(l10n.noAnnouncement),

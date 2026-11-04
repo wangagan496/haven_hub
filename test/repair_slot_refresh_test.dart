@@ -16,7 +16,7 @@ import 'repair_flow_test.dart' show form, fillRepair;
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
   testWidgets('skill category reaches initial load, periodic refresh and selection recheck', (tester) async {

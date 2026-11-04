@@ -30,9 +30,9 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-      ..updateBuild('A座')
-      ..updateRoom('', floor: '16');
+      ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+      ..selectBuilding('A座')
+      ..selectRoom('', floor: '16');
     House? selected;
     await pumpPage(tester, const RoomList(), routes: <String, WidgetBuilder>{
       HouseForm.routeName: (_) {
@@ -96,8 +96,8 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-      ..updateBuild('A座');
+      ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+      ..selectBuilding('A座');
     House? selected;
     await pumpPage(tester, const RoomList(), routes: <String, WidgetBuilder>{
       HouseForm.routeName: (_) {
@@ -134,8 +134,8 @@ void main() {
       'floor changes clear selected suggestions but preserve custom room input',
       (WidgetTester tester) async {
     BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-      ..updateBuild('A座');
+      ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+      ..selectBuilding('A座');
     await pumpPage(tester, const RoomList());
     await tester.enterText(_floorField, '16');
     await tester.pumpAndSettle();
@@ -222,8 +222,8 @@ void main() {
     testWidgets('manual floor "$floor" reaches the registration form unchanged',
         (WidgetTester tester) async {
       final BuildController controller = BuildController.instance()
-        ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-        ..updateBuild('A座');
+        ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+        ..selectBuilding('A座');
       House? selected;
       await pumpPage(tester, const RoomList(), routes: <String, WidgetBuilder>{
         HouseForm.routeName: (_) {
@@ -252,8 +252,8 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-      ..updateBuild('A座');
+      ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+      ..selectBuilding('A座');
     House? selected;
     await pumpPage(tester, const RoomList(), routes: <String, WidgetBuilder>{
       HouseForm.routeName: (_) {
@@ -289,8 +289,8 @@ void main() {
       'invalid floor immediately shows an inline error and cannot navigate',
       (WidgetTester tester) async {
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '测试小区'})
-      ..updateBuild('A座');
+      ..selectCommunity(<String, dynamic>{'name': '测试小区'})
+      ..selectBuilding('A座');
     await pumpPage(tester, const RoomList());
     await tester.enterText(_roomField, '101');
     for (final String value in <String>['0', 'abc']) {

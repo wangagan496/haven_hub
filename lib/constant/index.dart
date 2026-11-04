@@ -85,11 +85,17 @@ class HttpPath {
   static const String userInfo = 'userInfo';
   static const String upload = 'upload';
   static const String houseList = 'room';
+  static String houseSubmission(String id) => 'room-submissions/${Uri.encodeComponent(id)}';
+  static String closeHouseSubmission(String id) => '${houseSubmission(id)}/close';
   static const String refreshToken = 'refreshToken';
   static const String repair = 'repair';
+  static String repairSubmission(String id) => 'repair-submissions/${Uri.encodeComponent(id)}';
+  static String closeRepairSubmission(String id) => '${repairSubmission(id)}/close';
   static const String repairSlots = 'repair/slots';
   static const String repairItem = 'repairItem';
   static const String visitor = 'visitor';
+  static String visitorSubmission(String id) => 'visitor-submissions/${Uri.encodeComponent(id)}';
+  static String closeVisitorSubmission(String id) => '${visitorSubmission(id)}/close';
   static const String notifications = 'notifications';
   static const String notificationConfig = 'notifications/config';
   static const String notificationDevices = 'notifications/devices';

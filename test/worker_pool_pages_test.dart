@@ -13,7 +13,7 @@ import 'helpers/widget_harness.dart';
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   testWidgets('pool lists limited location, pending time and server claim conflict', (tester) async {
     const row = RepairRecord(id: 'pool', revision: 3, repairItemName: '水暖维修', houseInfo: '测试小区 1栋',
@@ -30,7 +30,7 @@ void main() {
   testWidgets('skills deletion previews before saving and cancellation leaves skills unchanged', (tester) async {
     final calls = <bool>[];
     await pumpPage(tester, WorkerSkillsPage(loader: () async => const WorkerSkills(<String>['plumbing','doors'], 2),
-      saver: (profile, values, {preview = false}) async {
+      saver: (profile, values, {preview = false, previewToken}) async {
         calls.add(preview);
         return <String,dynamic>{'returned': <dynamic>[<String,dynamic>{'id':'repair-1','repairItemName':'水暖维修','slot':'2030-10-20#10',
           'start':'2030-10-20T10:00:00+08:00','end':'2030-10-20T11:00:00+08:00'}], 'property': <dynamic>[]};
@@ -46,7 +46,7 @@ void main() {
   testWidgets('skills preview confirmation saves once with original revision', (tester) async {
     final calls = <bool>[];
     await pumpPage(tester, WorkerSkillsPage(loader: () async => const WorkerSkills(<String>['plumbing','doors'], 8),
-      saver: (profile, values, {preview = false}) async {
+      saver: (profile, values, {preview = false, previewToken}) async {
         expect(profile.revision, 8); expect(values, <String>['doors']); calls.add(preview);
         return preview ? <String,dynamic>{'returned': <dynamic>[], 'property': <dynamic>[]}
           : <String,dynamic>{'skills': values, 'workforceRevision': 9};
@@ -59,7 +59,7 @@ void main() {
     final returned=<String,dynamic>{'id':'hidden-returned-id','repairItemName':'水暖维修','slot':'2030-10-18#10',
       'start':'2030-10-18T10:00:00+08:00','end':'2030-10-18T11:00:00+08:00'};
     await pumpPage(tester, WorkerSkillsPage(loader: () async => const WorkerSkills(<String>['plumbing'], 2),
-      saver: (profile, values, {preview = false}) async => <String,dynamic>{
+      saver: (profile, values, {preview = false, previewToken}) async => <String,dynamic>{
         'returned':<dynamic>[returned],
         'property':<dynamic>[<String,dynamic>{'id':'hidden-pending-id','repairItemName':'电气维修','start':'','end':''}],
         'shortages':<dynamic>[<String,dynamic>{'message':'2 张单只有 1 位师傅能接，可能有 1 张需要物业安排','orders':<dynamic>[returned]}],
@@ -79,6 +79,71 @@ void main() {
     response.complete(<RepairRecord>[const RepairRecord(id:'old',repairItemName:'旧账号工单')]);
     await tester.pump(); expect(find.text('旧账号工单'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+  testWidgets('stale skill confirmation shows latest state and requires another explicit confirmation', (tester) async {
+    var saves = 0;
+    await pumpPage(tester, WorkerSkillsPage(
+      loader: () async => const WorkerSkills(<String>['plumbing', 'doors'], 8),
+      saver: (profile, values, {preview = false, previewToken}) async {
+        if (preview) {
+          return <String, dynamic>{
+          'previewToken': 'first', 'returned': <dynamic>[], 'property': <dynamic>[],
+          };
+        }
+        saves++;
+        if (saves == 1) {
+          expect(previewToken, 'first');
+          throw const BusinessException('工单影响已更新，请查看最新结果后重新确认', code: 40901,
+            data: <String, dynamic>{'previewToken': 'updated', 'returned': <dynamic>[], 'property': <dynamic>[],
+              'changed': <dynamic>[<String, dynamic>{'repairItemName': '水暖维修', 'status': 5, 'assignmentChanged': true}]});
+        }
+        expect(previewToken, 'updated');
+        return <String, dynamic>{'skills': values, 'workforceRevision': 9};
+      },
+    ));
+    await tester.tap(find.text('水暖'));
+    await tester.tap(find.text('保存技能'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('确认保存'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(saves, 1);
+    expect(find.text('工单已变化，请重新确认'), findsOneWidget);
+    expect(find.textContaining('接单人员已变化'), findsOneWidget);
+    expect(find.textContaining('待接单'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(saves, 1);
+    await tester.tap(find.text('确认保存'));
+    await tester.pumpAndSettle();
+    expect(saves, 2);
+    await finishPage(tester);
+  });
+
+  testWidgets('cancelling an updated skill preview does not retry the save', (tester) async {
+    var saves = 0;
+    await pumpPage(tester, WorkerSkillsPage(
+      loader: () async => const WorkerSkills(<String>['plumbing'], 1),
+      saver: (profile, values, {preview = false, previewToken}) async {
+        if (preview) return <String, dynamic>{'previewToken': 'first', 'returned': <dynamic>[], 'property': <dynamic>[]};
+        saves++;
+        throw const BusinessException('工单影响已更新', code: 40901, data: <String, dynamic>{
+          'previewToken': 'updated', 'returned': <dynamic>[], 'property': <dynamic>[], 'changed': <dynamic>[],
+        });
+      },
+    ));
+    await tester.tap(find.text('水暖'));
+    await tester.tap(find.text('保存技能'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('确认保存'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(saves, 1);
+    expect(find.text('保存技能'), findsOneWidget);
+    await finishPage(tester);
   });
   testWidgets('empty skills shows registration hint on worker home', (tester) async {
     await pumpPage(tester, WorkerPage(recordsLoader: () async => <RepairRecord>[],

@@ -114,7 +114,7 @@ class _RepairSlotPickerState extends State<RepairSlotPicker> with WidgetsBinding
         final String message = describeError(error, fallback: '时段查询失败，请重试');
         if (widget.onConfirm != null) {
           setState(() => _selectionNotice = message);
-          await PromptAction.showError(message);
+          await AppPrompt.showError(message);
           if (!mounted || tokenManager.sessionId != _ownerSession) return;
           _confirmingSelection = false;
           await _load();

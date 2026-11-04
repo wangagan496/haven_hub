@@ -11,7 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 

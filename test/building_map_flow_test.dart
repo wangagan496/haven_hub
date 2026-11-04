@@ -25,7 +25,7 @@ const TencentBuildingPage mappedPage = TencentBuildingPage(
 );
 
 BuildController selectCommunity() => BuildController.instance()
-  ..updateBuildingInfo(<String, dynamic>{
+  ..selectCommunity(<String, dynamic>{
     'name': '榴苑三街小区',
     'address': '佛山市榴苑三街16号',
     'communityId': 'community',
@@ -301,7 +301,7 @@ void main() {
           buildingLookup: (BuildingInfo info, int page) => pending.future),
     ));
     await tester.pump();
-    controller.updateBuildingInfo(<String, dynamic>{'name': '其他小区'});
+    controller.selectCommunity(<String, dynamic>{'name': '其他小区'});
     pending.complete(mappedPage);
     await tester.pumpAndSettle();
     expect(find.byType(ListTile), findsNothing);

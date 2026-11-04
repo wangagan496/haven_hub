@@ -56,7 +56,7 @@ class _RepairLifecycleSmokeState extends State<RepairLifecycleSmoke> {
       if (mounted) setState(() => _summary = lines.join('\n'));
     } on Object catch (error) {
       if (!mounted) return;
-      await PromptAction.showError(describeError(error, fallback: '读取失败'));
+      await AppPrompt.showError(describeError(error, fallback: '读取失败'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -81,10 +81,10 @@ class _RepairLifecycleSmokeState extends State<RepairLifecycleSmoke> {
         ),
       );
       if (!mounted) return;
-      await PromptAction.showToast(saved ? '$account 测试草稿已写入' : '测试草稿写入失败');
+      await AppPrompt.showToast(saved ? '$account 测试草稿已写入' : '测试草稿写入失败');
     } on Object catch (error) {
       if (!mounted) return;
-      await PromptAction.showError(describeError(error, fallback: '写入失败'));
+      await AppPrompt.showError(describeError(error, fallback: '写入失败'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

@@ -30,7 +30,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
     await tokenManager.setToken('test-only-token',
         refreshToken: 'test-only-refresh');
   });

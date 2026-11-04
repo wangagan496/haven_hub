@@ -95,16 +95,15 @@ class _WorkerPageState extends State<WorkerPage> {
       if (!removed) {
         // 与 TabsPage 一致：磁盘清理失败也要立即作废内存会话，避免继续带旧凭证请求。
         _tokens.invalidateLocalSession();
-        if (mounted) await PromptAction.showError('本地登录信息清除失败，请重试');
+        if (mounted) await AppPrompt.showError('本地登录信息清除失败，请重试');
         return;
       }
       if (!mounted) return;
       await Navigator.pushNamedAndRemoveUntil<void>(
-          context, AppRoutes.login, (_) => false);
+          context, login, (_) => false);
     } on Object catch (error) {
       if (mounted) {
-        await PromptAction.showError(
-            describeError(error, fallback: '退出登录失败，请重试'));
+        await AppPrompt.showException(error, fallback: '退出登录失败，请重试');
       }
     } finally {
       if (mounted) setState(() => _loggingOut = false);
@@ -405,7 +404,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
     try {
       final RepairRecord? updated = await widget.actionLoader(record, action);
       if (!mounted || session != tokenManager.sessionId) return;
-      await PromptAction.showSuccess(success);
+      await AppPrompt.showSuccess(success);
       if (!mounted || session != tokenManager.sessionId) return;
       if (leaveOnSuccess || updated == null) {
         // 退出后已无权查看此工单，返回工作台并刷新列表。
@@ -417,14 +416,13 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
       if (!mounted || session != tokenManager.sessionId) return;
       if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
       if (error is NetworkException && error.statusCode == 409) {
-        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        await AppPrompt.showWarning('${error.message}，已刷新最新状态');
         if (!mounted) return;
         if (mounted) setState(() => _saving = false);
         await _load();
         return;
       }
-      await PromptAction.showError(
-          describeError(error, fallback: '操作失败，请刷新后重试'));
+      await AppPrompt.showException(error, fallback: '操作失败，请刷新后重试');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -520,7 +518,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
       saved = false;
     }
     if (!saved && mounted && session == tokenManager.sessionId) {
-      await PromptAction.showWarning('查看记录保存失败，下次可能再次提醒');
+      await AppPrompt.showWarning('查看记录保存失败，下次可能再次提醒');
     }
   }
 
@@ -627,19 +625,19 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
     ({String? slot, String reason})? visit;
     if (complete) {
       if (record.round > 1 && (_problem.text.trim().isEmpty || _cause.text.trim().isEmpty)) {
-        await PromptAction.showWarning('请填写本次问题和排查原因，原因不明可填待排查');
+        await AppPrompt.showWarning('请填写本次问题和排查原因，原因不明可填待排查');
         return;
       }
       if ((!saveOnly || ready) && result.isEmpty) {
         setState(() => _resultError = '请填写处理结果后再完成维修');
         _resultFocus.requestFocus();
-        await PromptAction.showWarning('请填写处理结果后再完成维修');
+        await AppPrompt.showWarning('请填写处理结果后再完成维修');
         return;
       }
       final num? parsed = num.tryParse(_cost.text.trim().isEmpty ? '0' : _cost.text.trim());
       if (parsed == null || !parsed.isFinite || parsed < 0) {
         setState(() => _costError = '请填写有效金额，无费用填 0');
-        await PromptAction.showWarning('请填写有效金额，无费用填 0');
+        await AppPrompt.showWarning('请填写有效金额，无费用填 0');
         return;
       }
       cost = parsed;
@@ -672,7 +670,7 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
       if (!mounted || session != tokenManager.sessionId) return;
       setState(() => _record = updated);
       _rememberDisplayed(updated, session);
-      await PromptAction.showSuccess(saveOnly ? (ready ? '结果已保存，业主可在报修详情直接确认修好' : '进度已保存') : updated.status == RepairStatus.processing
+      await AppPrompt.showSuccess(saveOnly ? (ready ? '结果已保存，业主可在报修详情直接确认修好' : '进度已保存') : updated.status == RepairStatus.processing
           ? '接单成功'
           : updated.status == RepairStatus.completed
               ? '维修已完成'
@@ -684,14 +682,13 @@ class _WorkerDetailPageState extends State<WorkerDetailPage> with WidgetsBinding
       if (!mounted || session != tokenManager.sessionId) return;
       if (error is NetworkException && error.statusCode == 404) { await _handleReassigned(); return; }
       if (error is NetworkException && error.statusCode == 409) {
-        await PromptAction.showWarning('${error.message}，已刷新最新状态');
+        await AppPrompt.showWarning('${error.message}，已刷新最新状态');
         if (!mounted) return;
         if (mounted) setState(() => _saving = false);
         await _load();
         return;
       }
-      await PromptAction.showError(
-          describeError(error, fallback: '操作失败，请刷新后重试'));
+      await AppPrompt.showException(error, fallback: '操作失败，请刷新后重试');
     } finally {
       if (mounted) setState(() => _saving = false);
     }

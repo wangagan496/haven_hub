@@ -60,12 +60,13 @@ void main() {
     debugPrint = previousDebugPrint;
   });
 
-  test('redacts sensitive request and response values from network logs',
+  test('logs a fixed summary without request headers, parameters or bodies',
       () async {
-    final Dio dio = Dio()..httpClientAdapter = _LoggingAdapter();
+    final _LoggingAdapter adapter = _LoggingAdapter();
+    final Dio dio = Dio()..httpClientAdapter = adapter;
     final RequestDio client = RequestDio(client: dio);
 
-    await client.post(
+    final dynamic result = await client.post(
       'login?mobile=13800138000&code=123456',
       data: <String, dynamic>{
         'mobile': '13800138000',
@@ -79,50 +80,51 @@ void main() {
     );
 
     final String output = messages.join('\n');
-    expect(output, contains('mobile: ***'));
-    expect(output, contains('code: ***'));
-    expect(output, contains('password: ***'));
-    expect(output, contains('token: ***'));
-    expect(output, contains('refreshToken: ***'));
-    expect(output, contains('Authorization: ***'));
-    expect(output, contains('X-Api-Secret: ***'));
-    expect(output, contains('nickname: safe-value'));
+    expect(output, contains('method: POST'));
+    expect(output, contains('path: login'));
+    expect(output, contains('status: 200'));
+    expect(output, contains('code: 10000'));
+    expect(output, isNot(contains('body:')));
+    expect(output, isNot(contains('headers:')));
+    expect(output, isNot(contains('params:')));
+    expect(output, isNot(contains('safe-value')));
     expect(output, isNot(contains('13800138000')));
     expect(output, isNot(contains('123456')));
     expect(output, isNot(contains('password-value')));
     expect(output, isNot(contains('response-token')));
     expect(output, isNot(contains('response-refresh')));
     expect(output, isNot(contains('header-secret')));
+    expect(output, isNot(contains('request-token')));
+    expect(adapter.request!.path, 'login?mobile=13800138000&code=123456');
+    expect((adapter.request!.data as Map<String, dynamic>)['mobile'],
+        '13800138000');
+    expect(result['token'], 'response-token');
 
     dio.close();
   });
 
-  // 响应里的 `code` 出现在两层，含义不同：信封顶层是业务状态码，要留；嵌进
-  // `data` 之后是验证码，要脱。只按「请求侧/响应侧」分是分不出来的，会把验证
-  // 码原样写进日志。
-  test('keeps the business status code but redacts nested verification codes',
+  // 只取外层数字业务码，data 内的验证码连同其他业务内容一起省略。
+  test('keeps the business status code without logging nested business data',
       () async {
     final Dio dio = Dio()..httpClientAdapter = _NestedCodeAdapter();
     final RequestDio client = RequestDio(client: dio);
 
-    await client.get('sendCode');
+    final dynamic result = await client.get('sendCode');
 
     final String output = messages.join('\n');
     // 顶层业务状态码保留，否则排查「接口返回了非成功码」时没有依据。
     expect(output, contains('code: 10000'));
-    // 嵌在 data 里的验证码必须脱敏。
-    expect(output, contains('code: ***'));
-    expect(output, contains('verificationCode: ***'));
+    expect(output, isNot(contains('verificationCode:')));
     expect(output, isNot(contains('920739')));
     expect(output, isNot(contains('888888')));
-    expect(output, contains('safe-value'));
+    expect(output, isNot(contains('safe-value')));
+    expect(result['code'], '920739');
 
     dio.close();
   });
 
-  // 失败响应体只出现在错误分支：onResponse 拦截器不会经过这里，所以必须由
-  // onError 自行记录，否则 5xx 的服务端说明在客户端完全不可见。
-  test('logs status code and error body for failed responses', () async {
+  // 失败请求保留错误类型、HTTP 状态和业务码，原始说明不写入日志。
+  test('logs failure status and business code without the error body', () async {
     final Dio dio = Dio()
       ..httpClientAdapter = _FailingAdapter(
         500,
@@ -138,7 +140,8 @@ void main() {
     final String output = messages.join('\n');
     expect(output, contains('type: badResponse'));
     expect(output, contains('status: 500'));
-    expect(output, contains('houseId 不存在'));
+    expect(output, contains('code: 50001'));
+    expect(output, isNot(contains('houseId 不存在')));
 
     dio.close();
   });
@@ -158,8 +161,7 @@ void main() {
     expect(messages.join('\n'), contains('status: 409'));
   });
 
-  // 复用 _buildResponseLog 的同时也继承了它的脱敏；否则错误日志会成为新的泄漏面。
-  test('redacts sensitive values in failed response bodies', () async {
+  test('omits sensitive values in failed response bodies', () async {
     final Dio dio = Dio()
       ..httpClientAdapter = _FailingAdapter(
         500,
@@ -173,15 +175,16 @@ void main() {
     await expectLater(client.get('userInfo'), throwsA(isA<NetworkException>()));
 
     final String output = messages.join('\n');
-    expect(output, contains('token: ***'));
-    expect(output, contains('code: ***'));
+    expect(output, contains('status: 500'));
+    expect(output, contains('code: 500'));
+    expect(output, isNot(contains('body:')));
     expect(output, isNot(contains('leaked-token')));
     expect(output, isNot(contains('920739')));
 
     dio.close();
   });
 
-  test('redacts credentials echoed in JSON error messages', () async {
+  test('omits JSON error messages that echo credentials', () async {
     final Dio dio = Dio()
       ..httpClientAdapter = _FailingAdapter(
         500,
@@ -200,7 +203,7 @@ void main() {
     final String output = messages.join('\n');
     expect(output, contains('status: 500'));
     expect(output, contains('code: 50001'));
-    expect(output, contains('houseId invalid'));
+    expect(output, isNot(contains('houseId invalid')));
     for (final String secret in <String>[
       'echoed-token',
       'echoed-refresh',
@@ -212,7 +215,7 @@ void main() {
     }
   });
 
-  test('sanitizes free text logs without mutating the actual request',
+  test('omits free text from logs without mutating the actual request',
       () async {
     const String original =
         'houseId=7177501402628096; password="request secret"; '
@@ -229,7 +232,7 @@ void main() {
     expect((adapter.request!.data as Map<String, dynamic>)['description'],
         original);
     final String output = messages.join('\n');
-    expect(output, contains('houseId=7177501402628096'));
+    expect(output, isNot(contains('houseId=7177501402628096')));
     for (final String secret in <String>[
       'request secret',
       'dXNlcjpwYXNz',
@@ -254,8 +257,7 @@ void main() {
 
       final String output = messages.join('\n');
       expect(output, contains('status: 500'));
-      expect(output, contains('body: <omitted: unstructured text>'));
-      expect(output, contains('bodyLength: ${body.length}'));
+      expect(output, isNot(contains('body:')));
       expect(output, isNot(contains('unstructured-token')));
       expect(output, isNot(contains('raw-secret')));
     });
@@ -276,7 +278,7 @@ void main() {
     expect(messages, isEmpty);
   });
 
-  test('timeout logs redact echoed credentials without a response', () async {
+  test('timeout logs keep only the error type when there is no response', () async {
     final Dio dio = Dio()..httpClientAdapter = _TimeoutAdapter();
     addTearDown(dio.close);
     final RequestDio client = RequestDio(client: dio);
@@ -288,6 +290,161 @@ void main() {
     expect(output, isNot(contains('status:')));
     expect(output, isNot(contains('body:')));
     expect(output, isNot(contains('timeout-token')));
+  });
+
+  test('logging does not traverse large nested response data', () async {
+    final Map<String, dynamic> businessData = <String, dynamic>{
+      'items': Iterable<int>.generate(1000000000, (int index) {
+        throw StateError('日志不应遍历业务数据');
+      }),
+    };
+    final Dio dio = Dio()..httpClientAdapter = _LoggingAdapter();
+    dio.interceptors.add(InterceptorsWrapper(
+      onResponse: (
+        Response<dynamic> response,
+        ResponseInterceptorHandler handler,
+      ) {
+        response.data = <String, dynamic>{
+          'code': 10000,
+          'data': businessData,
+        };
+        handler.next(response);
+      },
+    ));
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+
+    final dynamic result = await client.get('repair');
+
+    expect(identical(result, businessData), isTrue);
+    final String output = messages.join('\n');
+    expect(output, contains('code: 10000'));
+    expect(output.length, lessThan(2000));
+  });
+
+  test('diagnostic fields apply only to the selected request', () async {
+    final Dio dio = Dio()
+      ..httpClientAdapter = _FailingAdapter(
+        500,
+        jsonEncode(<String, dynamic>{
+          'code': 50001,
+          'message': 'houseId invalid; token=echoed-secret',
+        }),
+      );
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+    final Map<String, dynamic> requestData = <String, dynamic>{
+      'houseId': 'H102',
+      'revision': 3,
+      'mobile': '13800138000',
+      'token': 'request-secret',
+    };
+
+    await expectLater(
+      client.post('repair', data: requestData,
+          options: RequestDio.logDetails(
+            requestLogFields: <String>['houseId', 'revision', 'mobile', 'token'],
+            responseLogFields: <String>['message'],
+          )),
+      throwsA(isA<NetworkException>()),
+    );
+    final String output = messages.join('\n');
+    expect(output, contains('request.houseId: H102'));
+    expect(output, contains('request.revision: 3'));
+    expect(output, contains('response.message: houseId invalid'));
+    expect(output, isNot(contains('echoed-secret')));
+    expect(output, isNot(contains('request-secret')));
+    expect(output, isNot(contains('13800138000')));
+    expect(requestData['token'], 'request-secret');
+
+    messages.clear();
+    await expectLater(client.post('repair', data: requestData),
+        throwsA(isA<NetworkException>()));
+    expect(messages.join('\n'), isNot(contains('request.houseId')));
+    expect(messages.join('\n'), isNot(contains('response.message')));
+
+    messages.clear();
+    await expectLater(
+      client.get('repair', params: <String, dynamic>{'page': 2},
+          options: RequestDio.logDetails(requestLogFields: <String>['page'])),
+      throwsA(isA<NetworkException>()),
+    );
+    expect(messages.join('\n'), contains('request.page: 2'));
+  });
+
+  test('diagnostics bound field count and text without traversing nested values',
+      () async {
+    final Iterable<int> unreadableItems = Iterable<int>.generate(1000000000,
+        (int index) => throw StateError('诊断日志不应遍历嵌套值'));
+    final Map<String, dynamic> resultData = <String, dynamic>{'saved': true};
+    final Dio dio = Dio()..httpClientAdapter = _LoggingAdapter();
+    dio.interceptors.add(InterceptorsWrapper(
+      onResponse: (
+        Response<dynamic> response,
+        ResponseInterceptorHandler handler,
+      ) {
+        response.data = <String, dynamic>{
+          'code': 10000,
+          'data': resultData,
+          'first': 'safe-value',
+          'items': unreadableItems,
+          'longText': List<String>.filled(10000, 'x').join(),
+          'token': 'response-secret',
+          'mobile': '13800138000',
+          'sixth': 'must-not-be-logged',
+        };
+        handler.next(response);
+      },
+    ));
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+
+    final dynamic result = await client.get('repair',
+        options: RequestDio.logDetails(responseLogFields: <String>[
+          'first', 'items', 'longText', 'token', 'mobile', 'sixth',
+        ]));
+
+    final String output = messages.join('\n');
+    expect(output, contains('response.first: safe-value'));
+    expect(output, contains('response.longText: <omitted: long value>'));
+    expect(output, isNot(contains('response.items')));
+    expect(output, isNot(contains('response-secret')));
+    expect(output, isNot(contains('13800138000')));
+    expect(output, isNot(contains('must-not-be-logged')));
+    expect(output.length, lessThan(3000));
+    expect(identical(result, resultData), isTrue);
+  });
+
+  test('private requests suppress explicitly selected diagnostic fields', () async {
+    final Dio dio = Dio()
+      ..httpClientAdapter = _FailingAdapter(500,
+          jsonEncode(<String, dynamic>{'code': 50001, 'message': 'private detail'}));
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+    final Options options = RequestDio.logDetails(
+        requestLogFields: <String>['houseId'], responseLogFields: <String>['message']);
+    options.extra!['privateResponse'] = true;
+
+    await expectLater(
+      client.post('repair', data: <String, dynamic>{'houseId': 'H102'},
+          options: options),
+      throwsA(isA<NetworkException>()),
+    );
+    expect(messages, isEmpty);
+  });
+
+  test('long request paths are omitted without expanding their contents', () async {
+    final Dio dio = Dio()..httpClientAdapter = _LoggingAdapter();
+    addTearDown(dio.close);
+    final RequestDio client = RequestDio(client: dio);
+    final String longPath =
+        'repair?value=${List<String>.filled(10000, 'x').join()}';
+
+    await client.get(longPath);
+
+    final String output = messages.join('\n');
+    expect(output, contains('<omitted: long path>'));
+    expect(output.length, lessThan(2000));
   });
 }
 

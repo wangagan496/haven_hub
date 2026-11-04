@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
+import 'harmony_token_storage.dart';
 import 'token_storage.dart';
 
 class TokenManager {
@@ -9,7 +11,10 @@ class TokenManager {
   /// 并在同步阶段先标记"正在解绑"，让新账号的推送登记排在解绑之后。
   Future<void> Function()? beforeSessionEnd;
   TokenManager({TokenStorage? storage})
-      : _storage = storage ?? SharedPreferencesTokenStorage();
+      : _storage = storage ??
+            (!kIsWeb && defaultTargetPlatform == TargetPlatform.ohos
+                ? HarmonyTokenStorage()
+                : SharedPreferencesTokenStorage());
 
   void _notifySessionEnd() {
     final Future<void> Function()? hook = beforeSessionEnd;
@@ -30,7 +35,11 @@ class TokenManager {
   /// 与 [sessionVersion] 分开是必要的：版本号回答「凭证换到第几代了」，这个
   /// 回答「现在是谁的会话」。两者混用会让「同一会话内刷新两次」和「换了账号
   /// 又刷新」变得无法区分。两者都停止旧请求，但只有后者换了账号身份。
-  int _sessionId = 0;
+  final ValueNotifier<int> _identity = ValueNotifier<int>(0);
+  int get _sessionId => _identity.value;
+
+  /// 登录、退出和换号的同步通知；刷新凭证不会触发。
+  ValueListenable<int> get sessionChanges => _identity;
 
   int get sessionVersion => _sessionVersion;
 
@@ -43,7 +52,8 @@ class TokenManager {
   /// an earlier account can never be mistaken for a refresh replay.
   int? get refreshSessionVersion => _refreshSessionVersion;
 
-  Future<void> init() {
+  /// 读取本地保存的登录凭证；已经读取完成时直接返回。
+  Future<void> loadTokens() {
     // 已完成时返回调用方 zone 里的新 future，不复用缓存的旧 future：
     // 旧 future 绑定在创建它的 zone 上，那个 zone 失效后（如上一个 widget
     // 测试结束）再 await 它将永远等不到回调。
@@ -107,7 +117,7 @@ class TokenManager {
 
   // 串行落盘，避免旧刷新/清理与新登录的两组凭证交错写入。
   Future<bool> _serializeMutation(Future<bool> Function() action) {
-    // 空闲时从当前 zone 起链，理由同 [init]：不挂到可能已失效 zone 的旧 future 上。
+    // 空闲时从当前 zone 起链，理由同 [loadTokens]：不挂到可能已失效 zone 的旧 future 上。
     final Future<void> previous =
         _runningMutations == 0 ? Future<void>.value() : _pendingMutation;
     _runningMutations++;
@@ -137,7 +147,7 @@ class TokenManager {
       _refreshSessionVersion = fromRefresh ? _sessionVersion : null;
       // 只有登录换会话；刷新沿用当前会话，否则飞行中的请求会被误判成换了人。
       if (!fromRefresh) {
-        _sessionId++;
+        _identity.value++;
       }
     }
     return saved;
@@ -156,7 +166,7 @@ class TokenManager {
         return false;
       }
       _storage.invalidate();
-      _sessionId++;
+      _identity.value++;
       _refreshSessionVersion = null;
       _notifySessionEnd();
       final bool cleared = await _storage.clear();
@@ -175,7 +185,7 @@ class TokenManager {
     _storage.invalidate();
     _refreshSessionVersion = null;
     // 内存凭证作废等于本会话已经结束：飞行中的请求不能再按它重放。
-    _sessionId++;
+    _identity.value++;
   }
 }
 

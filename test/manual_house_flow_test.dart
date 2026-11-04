@@ -4,14 +4,19 @@ import 'package:get/get.dart';
 import 'package:haven_hub/api/location.dart';
 import 'package:haven_hub/controller/build_controller.dart';
 import 'package:haven_hub/models/house.dart';
+import 'package:haven_hub/models/user_info.dart';
 import 'package:haven_hub/pages/building/building_list.dart';
 import 'package:haven_hub/pages/house/house_form.dart';
 import 'package:haven_hub/pages/location/location_list.dart';
 import 'package:haven_hub/pages/room/room_list.dart';
 import 'package:haven_hub/router/app_routes.dart';
+import 'package:haven_hub/utils/house_submission_store.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers/widget_harness.dart';
+
+Future<UserInfo> _identity() async => const UserInfo(id: 'manual-owner', avatarUrl: '', nickName: '测试');
 
 final Finder roomField = find.descendant(
     of: find.byKey(const Key('room-number-input')),
@@ -22,13 +27,16 @@ Future<void> advanceRoute(WidgetTester tester) async {
 }
 
 void main() {
-  setUp(Get.reset);
+  setUp(() {
+    Get.reset();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+  });
   tearDown(Get.reset);
 
   testWidgets('manual address reaches house form without generated inventory',
       (WidgetTester tester) async {
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{
+      ..selectCommunity(<String, dynamic>{
         'name': '榴苑三街小区',
         'address': '腾讯返回的地址',
       });
@@ -84,7 +92,7 @@ void main() {
       (WidgetTester tester) async {
     await pumpPage(
       tester,
-      const HouseForm(),
+      HouseForm(userInfoLoader: _identity, submissionStore: HouseSubmissionStore()),
       routes: <String, WidgetBuilder>{
         LocationList.routeName: (_) => LocationList(
               permissionRequester: () async => PermissionStatus.denied,
@@ -98,10 +106,11 @@ void main() {
             ),
         BuildingList.routeName: (_) => const BuildingList(),
         RoomList.routeName: (_) => const RoomList(),
-        HouseForm.routeName: (_) => const HouseForm(),
+        HouseForm.routeName: (_) => HouseForm(userInfoLoader: _identity, submissionStore: HouseSubmissionStore()),
       },
     );
 
+    await tester.pumpAndSettle();
     expect(find.text('未选择房屋'), findsOneWidget);
     expect(find.textContaining('还没有完成小区'), findsNothing);
     await tester.tap(find.text('未选择房屋'));
@@ -133,9 +142,9 @@ void main() {
   testWidgets('back preserves room for same building and clears it on change',
       (WidgetTester tester) async {
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{'name': '社区3号院'})
-      ..updateBuild('A座')
-      ..updateRoom('1602', floor: '16');
+      ..selectCommunity(<String, dynamic>{'name': '社区3号院'})
+      ..selectBuilding('A座')
+      ..selectRoom('1602', floor: '16');
     await pumpPage(tester, const BuildingList(),
         routes: <String, WidgetBuilder>{
           RoomList.routeName: (_) => const RoomList(),

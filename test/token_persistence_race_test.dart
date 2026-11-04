@@ -60,7 +60,7 @@ class _PartialClearPreferences implements SharedPreferences {
 
 Future<TokenManager> _reload() async {
   final manager = TokenManager(storage: SharedPreferencesTokenStorage());
-  await manager.init();
+  await manager.loadTokens();
   return manager;
 }
 

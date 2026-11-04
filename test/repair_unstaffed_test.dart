@@ -15,13 +15,13 @@ const offered = RepairRecord(id: 'unstaffed', status: 1, revision: 4, slot: '203
   agreedTime: '2030-10-20T14:00:00+08:00', repairItemName: '水暖维修',
   rescheduleOffer: RepairRescheduleOffer(id: 'offer-1', deadline: '2030-10-20T10:00:00+08:00'));
 const updated = RepairRecord(id: 'unstaffed', status: 1, revision: 5, slot: '2030-10-20#10', repairItemName: '水暖维修');
-Future<void> detail(WidgetTester tester, UnstaffedChoiceLoader submit, {RepairSlotsLoader? slots}) async {
-  await pumpPage(tester, RepairDetailPage(loader: (_) async => offered, unstaffedChoiceLoader: submit,
-    unstaffedSlotsLoader: slots ?? ({date, excludeId, repairItemId}) async => slotsFixture()), arguments: 'unstaffed');
+Future<void> detail(WidgetTester tester, ReplacementScheduleSubmitter submit, {RepairSlotsLoader? slots}) async {
+  await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => offered, submitReplacementChoice: submit,
+    loadReplacementSlots: slots ?? ({date, excludeId, repairItemId}) async => slotsFixture()), arguments: 'unstaffed');
 }
 
 void main() {
-  setUpAll(() async { SharedPreferences.setMockInitialValues(<String, Object>{}); await tokenManager.init(); });
+  setUpAll(() async { SharedPreferences.setMockInitialValues(<String, Object>{}); await tokenManager.loadTokens(); });
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
   testWidgets('unstaffed options without quota numbers render and submit selected slot', (tester) async {
@@ -110,7 +110,9 @@ void main() {
     await detail(tester, (record, {slot, keep = false}) => pending.future);
     await tester.tap(find.text('保持原时间，继续等')); await tester.pump();
     await tokenManager.setToken('other-user-token'); pending.complete(updated); await tester.pumpAndSettle();
-    expect(find.text('请选择新的上门时间'), findsOneWidget);
+    expect(find.text('请选择新的上门时间'), findsNothing);
+    expect(find.text('登录账号已变化，请返回报修列表重新进入'), findsOneWidget);
+    expect(find.text('已保持原时间，物业会联系您'), findsNothing);
     expect(find.text('上门时间已更新'), findsNothing);
     await finishPage(tester);
     final options = Completer<RepairSlots>();

@@ -42,7 +42,7 @@ void main() {
   testWidgets('status filters show matching records without reloading',
       (WidgetTester tester) async {
     int calls = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       calls++;
       return records;
     }));
@@ -77,7 +77,7 @@ void main() {
   testWidgets('refresh updates cached results while preserving chosen filter',
       (WidgetTester tester) async {
     List<RepairRecord> response = records;
-    await pumpPage(tester, RepairListPage(loader: () async => response));
+    await pumpPage(tester, RepairListPage(loadRepairs: () async => response));
     await tester.tap(filter(RepairStatusFilter.pending));
     await tester.pumpAndSettle();
     response = const <RepairRecord>[
@@ -105,7 +105,7 @@ void main() {
     expect(legacy.statusText, '已取消');
     expect(legacy.canCancel, isFalse);
     await pumpPage(
-        tester, RepairListPage(loader: () async => <RepairRecord>[legacy]));
+        tester, RepairListPage(loadRepairs: () async => <RepairRecord>[legacy]));
     expect(find.text(legacy.repairItemName), findsOneWidget);
     await tester.tap(filter(RepairStatusFilter.pending));
     await tester.pumpAndSettle();
@@ -135,7 +135,7 @@ void main() {
       'repairItemName': 'Unknown repair',
     });
     await pumpPage(
-        tester, RepairListPage(loader: () async => <RepairRecord>[unknown]));
+        tester, RepairListPage(loadRepairs: () async => <RepairRecord>[unknown]));
     // 「全部」应当展示它，且显示未知而不是已取消。
     expect(find.text(unknown.repairItemName), findsOneWidget);
     expect(find.text('状态未知'), findsOneWidget);
@@ -158,7 +158,7 @@ void main() {
     await pumpPage(
         tester,
         RepairDetailPage(
-          loader: (_) async => const RepairRecord(id: 'cancelled', status: 0),
+          loadRepairDetail: (_) async => const RepairRecord(id: 'cancelled', status: 0),
         ),
         arguments: 'cancelled');
     expect(find.text('已取消'), findsOneWidget);
@@ -173,7 +173,7 @@ void main() {
       tester.view.physicalSize = Size(width, 800);
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await pumpPage(tester, RepairListPage(loader: () async => records));
+      await pumpPage(tester, RepairListPage(loadRepairs: () async => records));
       expect(tester.takeException(), isNull);
       await finishPage(tester);
     });
@@ -182,7 +182,7 @@ void main() {
   testWidgets('localized network timeout retries and recovers',
       (WidgetTester tester) async {
     int calls = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       calls++;
       if (calls == 1) {
         throw const NetworkException('连接服务器超时，请检查网络', isTimeout: true);
@@ -197,7 +197,7 @@ void main() {
   testWidgets('gateway failures exhaust auto and manual retry budgets',
       (WidgetTester tester) async {
     int calls = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       calls++;
       throw const NetworkException('Gateway failure', statusCode: 503);
     }));
@@ -211,7 +211,7 @@ void main() {
 
   testWidgets('business failures fail fast', (WidgetTester tester) async {
     int calls = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       calls++;
       throw const BusinessException('Permission denied', code: 403);
     }));
@@ -226,7 +226,7 @@ void main() {
         Completer<List<RepairRecord>>();
     int calls = 0;
     await tester.pumpWidget(MaterialApp(
-      home: RepairListPage(loader: () {
+      home: RepairListPage(loadRepairs: () {
         calls++;
         return firstResponse.future;
       }),

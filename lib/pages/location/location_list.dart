@@ -13,6 +13,7 @@ import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/location.dart';
 import '../../utils/toast.dart';
+import '../../widgets/house_draft_actions.dart';
 import '../../widgets/section_title.dart';
 import '../building/building_list.dart';
 import 'community_search.dart';
@@ -61,9 +62,11 @@ class LocationList extends StatefulWidget {
     this.locationLookup = getTencentLocationInfo,
     this.ipLocationLookup = getTencentIpLocationInfo,
     super.key,
+    this.draftId,
   });
 
-  static const String routeName = AppRoutes.locationList;
+  static const String routeName = locationList;
+  final String? draftId;
 
   final LocationPermissionRequester permissionRequester;
   final Duration permissionRequestTimeout;
@@ -81,6 +84,7 @@ class LocationList extends StatefulWidget {
 class _LocationListState extends State<LocationList>
     with WidgetsBindingObserver {
   late final BuildController _buildController;
+  late final String _draftId;
   bool _isLoading = false;
   int _requestId = 0;
   String? _errorMessage;
@@ -107,6 +111,8 @@ class _LocationListState extends State<LocationList>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _buildController = BuildController.instance();
+    _draftId = widget.draftId ?? _buildController.currentDraftId;
+    _buildController.resumeAt(_draftId, HouseSelectionStep.community);
     unawaited(_getAccess());
   }
 
@@ -147,7 +153,7 @@ class _LocationListState extends State<LocationList>
       if (!mounted) return;
       if (!opened) {
         _waitingForSettings = false;
-        await PromptAction.showWarning(kIsWeb
+        await AppPrompt.showWarning(kIsWeb
             ? '请在浏览器的网站设置中允许定位，然后刷新页面'
             : systemLocation
                 ? '无法打开设置，请在系统设置中开启定位服务'
@@ -156,7 +162,7 @@ class _LocationListState extends State<LocationList>
     } on Object {
       if (!mounted) return;
       _waitingForSettings = false;
-      await PromptAction.showError(
+      await AppPrompt.showError(
           systemLocation ? '无法打开设置，请在系统设置中开启定位服务' : '无法打开设置，请在系统设置中为本应用开启定位权限');
     } finally {
       if (mounted) setState(() => _openingSettings = false);
@@ -290,7 +296,7 @@ class _LocationListState extends State<LocationList>
         },
       );
       _showFailure(msg);
-      await PromptAction.showError(msg);
+      await AppPrompt.showError(msg);
     } finally {
       if (_isCurrent(requestId)) setState(() => _isLoading = false);
     }
@@ -409,22 +415,28 @@ class _LocationListState extends State<LocationList>
   }
 
   Future<void> _selectCommunity(NearbyCommunity community) async {
-    _buildController.updateBuildingInfo(<String, dynamic>{
+    if (!mounted || _buildController.draftFor(_draftId) == null) return;
+    _buildController.selectCommunity(<String, dynamic>{
       'name': community.name,
       'address': community.address,
       'communityId': community.id,
       'latitude': community.latitude,
       'longitude': community.longitude,
-    });
+    }, draftId: _draftId);
     await Navigator.pushNamed<void>(
       context,
       BuildingList.routeName,
-      arguments: _deviceLocation,
+      arguments: HouseSelectionArguments(_draftId, deviceLocation: _deviceLocation),
     );
+    if (mounted && (ModalRoute.of(context)?.isCurrent ?? false)) {
+      _buildController.resumeAt(_draftId, HouseSelectionStep.community);
+    }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => HouseDraftGuard(draftId: _draftId, child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     final List<NearbyCommunity> locations = _locations;
 
     return Scaffold(
@@ -432,6 +444,7 @@ class _LocationListState extends State<LocationList>
       appBar: AppBar(
         title: const Text('选择社区'),
         actions: <Widget>[
+          const HouseDraftActions(),
           TextButton(
             key: const Key('community-search-button'),
             onPressed: _openCommunitySearch,

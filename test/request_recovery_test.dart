@@ -90,4 +90,18 @@ void main() {
       expect(adapter.calls, 1);
     }
   });
+  test('skill preview conflicts preserve latest data and never retry the old confirmation', () async {
+    final latest = <String, dynamic>{'previewToken': 'latest-token', 'returned': <dynamic>[],
+      'property': <dynamic>[], 'changed': <dynamic>[<String, dynamic>{'status': 5}]};
+    final adapter = Adapter((options, _) {
+      expect((options.data as Map)['previewToken'], 'old-token');
+      return response(code: 40901, data: latest);
+    });
+    final client = RequestDio(client: Dio()..httpClientAdapter = adapter,
+      tokens: TokenManager(storage: Storage()));
+    await expectLater(client.put('worker/skills', data: <String, dynamic>{'previewToken': 'old-token'}),
+      throwsA(isA<BusinessException>().having((error) => error.code, 'code', 40901)
+        .having((error) => error.data, 'latest impact', latest)));
+    expect(adapter.calls, 1);
+  });
 }

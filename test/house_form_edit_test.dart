@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
@@ -6,7 +8,10 @@ import 'package:haven_hub/models/house.dart';
 import 'package:haven_hub/pages/house/house_form.dart';
 import 'package:haven_hub/router/app_routes.dart';
 import 'package:haven_hub/utils/app_exception.dart';
+import 'package:haven_hub/utils/token_manager.dart';
 import 'package:haven_hub/widgets/image_preview.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers/widget_harness.dart';
 
@@ -21,6 +26,7 @@ const House _detail = House(
   idcardFrontUrl: 'https://example.com/front.png',
   idcardBackUrl: 'https://example.com/back.png',
   status: 2,
+  revision: 7,
 );
 
 /// 表单要挂在别的路由上，才能正常 pop 回去。
@@ -56,15 +62,17 @@ Future<void> _settleFrames(WidgetTester tester) async {
 }
 
 void main() {
-  setUp(() {
+  setUp(() async {
     Get.reset();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await tokenManager.loadTokens();
     BuildController.instance()
-      ..updateBuildingInfo(<String, dynamic>{
+      ..selectCommunity(<String, dynamic>{
         'name': '测试小区',
         'address': '测试地址',
       })
-      ..updateBuild('1栋')
-      ..updateRoom('101');
+      ..selectBuilding('1栋')
+      ..selectRoom('101');
   });
 
   testWidgets('editing an existing house keeps the building selection',
@@ -106,6 +114,7 @@ void main() {
     expect(submitted!.id, 'house-1', reason: '编辑模式应带上原有 id');
     expect(submitted!.name, 'John Smith', reason: '英文姓名必须通过整表提交校验');
     expect(submitted!.floor, '63', reason: '编辑业主信息应保留已登记的楼层');
+    expect(submitted!.revision, 7, reason: '编辑必须携带读取资料时的版本');
 
     // 用户可能是从「添加房屋」流程点进来的，这份选楼上下文之后还要用，
     // 编辑完不能顺手清掉。
@@ -151,4 +160,241 @@ void main() {
     expect(tester.state<FormFieldState<String>>(nameField).errorText, isNull);
     await finishPage(tester);
   });
+
+  for (final Object conflict in <Object>[
+    const NetworkException('房屋已更新', statusCode: 409),
+    const BusinessException('房屋已更新', code: 40900),
+  ]) {
+    testWidgets(
+        'edit conflict preserves input and reloads only with consent: ${conflict.runtimeType}',
+        (WidgetTester tester) async {
+      var reads = 0;
+      final submitted = <House>[];
+      await _openEdit(
+          tester,
+          HouseForm(
+            houseDetailLoader: (_) async => ++reads == 1
+                ? _detail
+                : _detail.copyWith(
+                    name: '王五', mobile: '13800138002', revision: 8, status: 1),
+            submitHouseLoader: (house) async {
+              submitted.add(house);
+              if (submitted.length == 1) throw conflict;
+            },
+          ));
+      await tester.enterText(find.byType(TextFormField).first, '李四');
+      await tester.enterText(find.byType(TextFormField).at(1), '13800138001');
+      await tester.tap(find.text('提交审核'));
+      await _settleFrames(tester);
+      expect(submitted.single.revision, 7);
+      expect(_fieldText(tester, 0), '李四');
+      expect(_fieldText(tester, 1), '13800138001');
+      expect(find.bySemanticsLabel('点击查看大图'), findsNWidgets(2));
+      expect(_submitButton(tester).onPressed, isNull);
+      expect(reads, 1, reason: '冲突不能自动重读或自动套用新版本');
+      await tester.tap(find.text('重新加载最新资料'));
+      await _settleFrames(tester);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await tester.tap(find.text('保留当前填写'));
+      await _settleFrames(tester);
+      expect(reads, 1);
+      expect(_fieldText(tester, 0), '李四');
+      expect(_submitButton(tester).onPressed, isNull);
+      await _confirmReload(tester);
+      expect(reads, 2);
+      expect(submitted, hasLength(1), reason: '加载成功也不能自动重放旧提交');
+      expect(_fieldText(tester, 0), '王五');
+      expect(_fieldText(tester, 1), '13800138002');
+      expect(find.text('审核状态：待审核'), findsOneWidget);
+      expect(_submitButton(tester).onPressed, isNotNull);
+      await tester.enterText(find.byType(TextFormField).first, '赵六');
+      await tester.tap(find.text('提交审核'));
+      await _settleFrames(tester);
+      expect(submitted, hasLength(2));
+      expect(submitted.last.revision, 8);
+      expect(submitted.last.name, '赵六');
+      expect(submitted.last.idcardFrontUrl, _detail.idcardFrontUrl);
+      expect(find.text('打开表单'), findsOneWidget);
+      await finishPage(tester);
+    });
+  }
+
+  testWidgets(
+      'failed conflict reload keeps local input and remains blocked until a successful reload',
+      (tester) async {
+    var reads = 0;
+    var writes = 0;
+    await _openEdit(
+        tester,
+        HouseForm(
+          houseDetailLoader: (_) async {
+            reads++;
+            if (reads == 2) throw const NetworkException('暂时无法读取');
+            return reads == 1
+                ? _detail
+                : House.fromJson(<String, dynamic>{
+                    ..._detail.toJson(),
+                    'name': '王五',
+                    'revision': 9,
+                    'status': 3,
+                    'reviewReason': '照片不清晰',
+                  });
+          },
+          submitHouseLoader: (_) async {
+            writes++;
+            throw const NetworkException('资料已更新', statusCode: 409);
+          },
+        ));
+    await tester.enterText(find.byType(TextFormField).first, '李四');
+    await tester.tap(find.text('提交审核'));
+    await _settleFrames(tester);
+    await _confirmReload(tester);
+    expect(_fieldText(tester, 0), '李四');
+    expect(find.text('暂时无法读取'), findsWidgets);
+    expect(_submitButton(tester).onPressed, isNull);
+    expect(writes, 1);
+    await _confirmReload(tester);
+    expect(_fieldText(tester, 0), '王五');
+    expect(find.text('打回原因：照片不清晰'), findsOneWidget);
+    expect(_submitButton(tester).onPressed, isNotNull);
+    expect(writes, 1);
+    await finishPage(tester);
+  });
+
+  testWidgets(
+      'pending conflict reload blocks editing, photos, duplicate reloads and submission',
+      (tester) async {
+    var reads = 0;
+    var writes = 0;
+    final pending = Completer<House>();
+    await _openEdit(
+        tester,
+        HouseForm(
+          houseDetailLoader: (_) =>
+              ++reads == 1 ? Future.value(_detail) : pending.future,
+          submitHouseLoader: (_) async {
+            writes++;
+            throw const NetworkException('资料已更新', statusCode: 409);
+          },
+        ));
+    await tester.tap(find.text('提交审核'));
+    await _settleFrames(tester);
+    await _confirmReload(tester);
+    expect(reads, 2);
+    expect(
+        tester.widget<TextFormField>(find.byType(TextFormField).first).enabled,
+        isFalse);
+    expect(
+        tester
+            .widget<IconButton>(
+                find.widgetWithIcon(IconButton, Icons.delete).first)
+            .onPressed,
+        isNull);
+    expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, '重新加载最新资料'))
+            .onPressed,
+        isNull);
+    expect(_submitButton(tester).onPressed, isNull);
+    pending.complete(_detail.copyWith(name: '王五', revision: 8));
+    await _settleFrames(tester);
+    expect(_fieldText(tester, 0), '王五');
+    expect(writes, 1);
+    expect(tester.takeException(), isNull);
+    await finishPage(tester);
+  });
+
+  for (final bool switchAccount in <bool>[false, true]) {
+    testWidgets(
+        'late reload is ignored after ${switchAccount ? 'account change' : 'disposal'}',
+        (tester) async {
+      var reads = 0;
+      final pending = Completer<House>();
+      await _openEdit(
+          tester,
+          HouseForm(
+            houseDetailLoader: (_) =>
+                ++reads == 1 ? Future.value(_detail) : pending.future,
+            submitHouseLoader: (_) async =>
+                throw const NetworkException('资料已更新', statusCode: 409),
+          ));
+      await tester.tap(find.text('提交审核'));
+      await _settleFrames(tester);
+      await _confirmReload(tester);
+      if (switchAccount) {
+        await tokenManager.setToken('house-other-account');
+      } else {
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+      pending.complete(_detail.copyWith(name: '迟到资料', revision: 8));
+      await _settleFrames(tester);
+      expect(find.text('迟到资料'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await finishPage(tester);
+    });
+  }
+
+  testWidgets('photo selection prevents a concurrent conflict reload',
+      (tester) async {
+    final picking = Completer<XFile?>();
+    var reads = 0;
+    await _openEdit(
+        tester,
+        HouseForm(
+          houseDetailLoader: (_) async {
+            reads++;
+            return _detail;
+          },
+          photoPicker: (_) => picking.future,
+          submitHouseLoader: (_) async =>
+              throw const NetworkException('资料已更新', statusCode: 409),
+        ));
+    await tester.tap(find.text('提交审核'));
+    await _settleFrames(tester);
+    await tester.tap(find.byTooltip('删除照片').first);
+    await tester.pump();
+    await tester.tap(find.text('上传人像面照片'));
+    await _settleFrames(tester);
+    await tester.tap(find.text('相册'));
+    await _settleFrames(tester);
+    expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, '重新加载最新资料'))
+            .onPressed,
+        isNull);
+    expect(reads, 1);
+    picking.complete(null);
+    await _settleFrames(tester);
+    expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, '重新加载最新资料'))
+            .onPressed,
+        isNotNull);
+    await finishPage(tester);
+  });
+}
+
+Future<void> _openEdit(WidgetTester tester, HouseForm form) async {
+  tester.view.physicalSize = const Size(1200, 4000);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await pumpPage(tester, const _Host(),
+      routes: <String, WidgetBuilder>{HouseForm.routeName: (_) => form});
+  await tester.tap(find.text('打开表单'));
+  await _settleFrames(tester);
+}
+
+String _fieldText(WidgetTester tester, int index) => tester
+    .widget<TextFormField>(find.byType(TextFormField).at(index))
+    .controller!
+    .text;
+
+ElevatedButton _submitButton(WidgetTester tester) =>
+    tester.widget<ElevatedButton>(find.widgetWithText(ElevatedButton, '提交审核'));
+
+Future<void> _confirmReload(WidgetTester tester) async {
+  await tester.tap(find.text('重新加载最新资料'));
+  await _settleFrames(tester);
+  await tester.tap(find.text('替换为最新资料'));
+  await _settleFrames(tester);
 }

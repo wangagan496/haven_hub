@@ -187,6 +187,16 @@ $toolPaths = @(
 ) | Where-Object { Test-Path -LiteralPath $_ }
 $env:PATH = ($toolPaths + $env:PATH) -join ';'
 
+if ($FlutterArguments.Count -gt 0 -and $FlutterArguments[0] -in @('run', 'build', 'test')) {
+  . (Join-Path $PSScriptRoot 'client_version.ps1')
+  $clientVersion = Get-HavenClientVersion -PubspecPath (Join-Path $projectRoot 'pubspec.yaml') -Arguments $FlutterArguments
+  $providedVersion = Get-DartDefineValue -Name 'HAVEN_CLIENT_VERSION' -DefinesFile $dartDefinesPath -Arguments $FlutterArguments
+  if ($null -ne $providedVersion -and $providedVersion -cne $clientVersion) {
+    throw 'HAVEN_CLIENT_VERSION must match pubspec.yaml or --build-name'
+  }
+  $FlutterArguments += "--dart-define=HAVEN_CLIENT_VERSION=$clientVersion"
+}
+
 Write-Host "Using Flutter OH SDK: $flutterOhosRoot"
 if (-not [string]::IsNullOrWhiteSpace($DeviceId)) {
   $FlutterArguments += @('-d', $DeviceId)

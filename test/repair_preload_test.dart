@@ -316,7 +316,7 @@ void main() {
           return calls == 1 ? _records : <RepairRecord>[];
         });
     await preloader.preload();
-    await pumpPage(tester, RepairListPage(loader: preloader.load));
+    await pumpPage(tester, RepairListPage(loadRepairs: preloader.load));
     expect(find.text('预加载的水管维修'), findsOneWidget);
     expect(calls, 1);
     await tester

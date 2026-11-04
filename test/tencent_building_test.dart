@@ -36,21 +36,21 @@ void main() {
       ]),
     ).single;
     final BuildController controller = BuildController()
-      ..updateBuildingInfo(<String, dynamic>{
+      ..selectCommunity(<String, dynamic>{
         'name': selected.name,
         'address': selected.address,
         'communityId': selected.id,
         'latitude': selected.latitude,
         'longitude': selected.longitude,
       })
-      ..updateBuild('12座2单元')
-      ..updateRoom('1602');
+      ..selectBuilding('12座2单元')
+      ..selectRoom('1602');
     expect(controller.buildingInfo.latitude, community.latitude);
     expect(controller.buildingInfo.longitude, community.longitude);
     expect(controller.buildingInfo.communityId, 'community');
     expect(BuildingInfo.fromJson(controller.buildingInfo.toJson()),
         controller.buildingInfo);
-    controller.updateBuildingInfo(<String, dynamic>{'name': '另一小区'});
+    controller.selectCommunity(<String, dynamic>{'name': '另一小区'});
     expect(controller.buildingInfo.latitude, isNull);
     expect(controller.build, isEmpty);
     expect(controller.room, isEmpty);

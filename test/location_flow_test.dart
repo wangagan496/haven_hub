@@ -104,7 +104,7 @@ void main() {
       expect(info.longitude, 120);
       expect(tester.takeException(), isNull);
       await finishPage(tester);
-      BuildController.instance().clearBuildingInfo();
+      BuildController.instance().clearSelection();
     });
   }
 

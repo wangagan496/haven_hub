@@ -78,7 +78,7 @@ mixin LoadingStateMixin<T extends StatefulWidget> on State<T> {
       });
 
       if (showErrorToast) {
-        await PromptAction.showError(message);
+        await AppPrompt.showError(message);
       }
       return false;
     } finally {

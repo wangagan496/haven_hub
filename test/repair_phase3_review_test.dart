@@ -50,7 +50,7 @@ RequestDio _client(_ResponseAdapter adapter) {
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues({});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -84,8 +84,8 @@ void main() {
     int loads = 0;
     final adapter = _ResponseAdapter(409, {'code': 40900, 'message': _reason});
     final client = _client(adapter);
-    await pumpPage(tester, RepairDetailPage(loader: (_) async { loads++; return _pending; },
-      actionLoader: (record, action) => respondRescheduleApi(record, accept: true, client: client)), arguments: 'review');
+    await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async { loads++; return _pending; },
+      submitAction: (record, action) => respondRescheduleApi(record, accept: true, client: client)), arguments: 'review');
     await tapText(tester, '同意');
     expect(find.text(_warning), findsOneWidget);
     expect(loads, 2); expect(adapter.calls, 1);
@@ -123,7 +123,7 @@ void main() {
         tallPage(tester);
         final record = RepairRecord(id: 'review', status: status, agreedTime: _time, slot: _slot);
         await pumpPage(tester, worker ? WorkerDetailPage(id: 'review', recordLoader: (_) async => record)
-          : RepairDetailPage(loader: (_) async => record), arguments: 'review');
+          : RepairDetailPage(loadRepairDetail: (_) async => record), arguments: 'review');
         expect(find.text('已约定'), findsOneWidget);
         await finishPage(tester);
       });
@@ -133,7 +133,7 @@ void main() {
         tallPage(tester);
         final record = RepairRecord(id: 'review', status: status, agreedTime: _time, slot: _slot);
         await pumpPage(tester, worker ? WorkerDetailPage(id: 'review', recordLoader: (_) async => record)
-          : RepairDetailPage(loader: (_) async => record), arguments: 'review');
+          : RepairDetailPage(loadRepairDetail: (_) async => record), arguments: 'review');
         expect(find.text('已约定'), findsNothing);
         expect(find.textContaining('10月20日'), findsWidgets);
         await finishPage(tester);
@@ -143,7 +143,7 @@ void main() {
       tallPage(tester);
       const record = RepairRecord(id: 'review', status: 2, agreedTime: _time, slot: _slot, autoAccepted: true);
       await pumpPage(tester, worker ? WorkerDetailPage(id: 'review', recordLoader: (_) async => record)
-        : RepairDetailPage(loader: (_) async => record), arguments: 'review');
+        : RepairDetailPage(loadRepairDetail: (_) async => record), arguments: 'review');
       expect(find.textContaining(worker ? '住户未主动确认，请先电话确认' : '确认期限已过，该时段已自动生效；如不方便可点下方按钮反馈'), findsOneWidget);
       if (!worker) expect(find.textContaining('住户未主动确认'), findsNothing);
       await finishPage(tester);
@@ -151,7 +151,7 @@ void main() {
     testWidgets('review ${worker ? 'worker' : 'resident'} empty proposal reason stays hidden', (tester) async {
       tallPage(tester);
       await pumpPage(tester, worker ? WorkerDetailPage(id: 'review', recordLoader: (_) async => _pending)
-        : RepairDetailPage(loader: (_) async => _pending), arguments: 'review');
+        : RepairDetailPage(loadRepairDetail: (_) async => _pending), arguments: 'review');
       expect(find.textContaining('原因：'), findsNothing);
       await finishPage(tester);
     });
@@ -161,7 +161,7 @@ void main() {
       tallPage(tester);
       final record = RepairRecord.fromJson({'id': 'review', 'status': 2, 'agreedTime': _time, 'slot': _slot,
         'timeline': [{'action': 'urgent_dispatched', 'label': '物业调度急单', 'detail': '任意描述，不解析此文案', 'firstSchedule': first}]});
-      await pumpPage(tester, RepairDetailPage(loader: (_) async => record), arguments: 'review');
+      await pumpPage(tester, RepairDetailPage(loadRepairDetail: (_) async => record), arguments: 'review');
       expect(find.text(first == false ? '物业已调整时间' : '物业已安排上门时间'), findsOneWidget);
       await finishPage(tester);
     });

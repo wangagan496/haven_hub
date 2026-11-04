@@ -64,6 +64,7 @@ RepairFormPage form(
       itemLoader: () async =>
           const <RepairItem>[RepairItem(id: 'item-test', name: '水管维修')],
       submitter: submitter,
+      submissionLoader: (_) async => null,
       slotsLoader: loadSlotsFixture,
     );
 
@@ -71,7 +72,7 @@ void main() {
   setUpAll(() async {
     // 全局凭证队列在真实异步区域初始化，避免绑定到前一用例的 FakeAsync。
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
 
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
@@ -80,7 +81,7 @@ void main() {
       (WidgetTester tester) async {
     bool submitted = false;
     int loads = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       loads++;
       return <RepairRecord>[if (submitted) pendingRepair];
     }), routes: <String, WidgetBuilder>{
@@ -137,8 +138,8 @@ void main() {
     await pumpPage(
         tester,
         RepairDetailPage(
-          loader: (_) async => pendingRepair,
-          cancelLoader: (_) async {
+          loadRepairDetail: (_) async => pendingRepair,
+          cancelRepair: (_, {required revision}) async {
             calls++;
           },
         ),
@@ -165,7 +166,7 @@ void main() {
       (WidgetTester tester) async {
     bool cancelled = false;
     int loads = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       loads++;
       return <RepairRecord>[
         if (cancelled)
@@ -176,8 +177,8 @@ void main() {
       ];
     }), routes: <String, WidgetBuilder>{
       RepairDetailPage.routeName: (_) => RepairDetailPage(
-            loader: (_) async => pendingRepair,
-            cancelLoader: (_) async {
+            loadRepairDetail: (_) async => pendingRepair,
+            cancelRepair: (_, {required revision}) async {
               cancelled = true;
             },
           ),
@@ -199,7 +200,7 @@ void main() {
   testWidgets('list error can retry and refresh failure preserves records',
       (WidgetTester tester) async {
     int loads = 0;
-    await pumpPage(tester, RepairListPage(loader: () async {
+    await pumpPage(tester, RepairListPage(loadRepairs: () async {
       loads++;
       if (loads != 2) throw const NetworkException('测试网络失败');
       return const <RepairRecord>[pendingRepair];
@@ -270,8 +271,8 @@ void main() {
     await pumpPage(tester, const Scaffold(body: Text('其他页面')),
         routes: <String, WidgetBuilder>{
           RepairDetailPage.routeName: (_) => RepairDetailPage(
-                loader: (_) async => pendingRepair,
-                cancelLoader: (_) => response.future,
+                loadRepairDetail: (_) async => pendingRepair,
+                cancelRepair: (_, {required revision}) => response.future,
               ),
         });
     unawaited(GlobalVariable.navigatorKey.currentState!.pushNamed<void>(
@@ -292,14 +293,18 @@ void main() {
     await finishPage(tester);
   });
 
-  testWidgets('cancel failure allows retry and completed repair cannot cancel',
+  testWidgets('cancel failure requires refresh and completed repair cannot cancel',
       (WidgetTester tester) async {
     int calls = 0;
+    int reads = 0;
     await pumpPage(
         tester,
         RepairDetailPage(
-          loader: (_) async => pendingRepair,
-          cancelLoader: (_) async {
+          loadRepairDetail: (_) async {
+            reads++;
+            return pendingRepair;
+          },
+          cancelRepair: (_, {required revision}) async {
             calls++;
             throw const NetworkException('取消失败');
           },
@@ -311,13 +316,18 @@ void main() {
       await tester.tap(find.text('确认取消'));
       await tester.pumpAndSettle();
       expect(find.text('报修详情'), findsOneWidget);
+      expect(find.text('取消报修'), findsNothing);
+      expect(calls, attempt + 1);
+      expect(reads, attempt + 1);
+      await tester.tap(find.text('刷新工单状态'));
+      await tester.pumpAndSettle();
     }
     expect(calls, 2);
     await finishPage(tester);
     await pumpPage(
         tester,
         RepairDetailPage(
-          loader: (_) async => const RepairRecord(id: 'done', status: 3),
+          loadRepairDetail: (_) async => const RepairRecord(id: 'done', status: 3),
         ),
         arguments: 'done');
     expect(find.text('取消报修'), findsNothing);
@@ -338,18 +348,19 @@ void main() {
     expect(calls, 1);
     expect(find.text('水管漏水'), findsOneWidget);
     expect(find.text('13800138000'), findsOneWidget);
-    expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+    expect(find.text('提交结果未确认：已保留上次内容与回执，可查询结果或按原内容重试。'), findsOneWidget);
     await tester.ensureVisible(find.text('提交报修'));
     await tester.tap(find.text('提交报修'));
     await tester.pumpAndSettle();
-    expect(find.text('上次提交结果未确认'), findsOneWidget);
+    expect(find.text('按原内容重试'), findsOneWidget);
     expect(calls, 1);
     await tester.tap(find.text('先不提交'));
     await tester.pumpAndSettle();
     expect(calls, 1);
+    await tester.ensureVisible(find.text('提交报修'));
     await tester.tap(find.text('提交报修'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('仍然提交'));
+    await tester.tap(find.text('确认重试'));
     await tester.pumpAndSettle();
     expect(calls, 2);
     await finishPage(tester);
@@ -367,11 +378,11 @@ void main() {
       await tester.tap(find.text('提交报修'));
       await tester.pumpAndSettle();
       expect(calls, 1);
-      expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+      expect(find.text('提交结果未确认：已保留上次内容与回执，可查询结果或按原内容重试。'), findsOneWidget);
       await tester.ensureVisible(find.text('提交报修'));
       await tester.tap(find.text('提交报修'));
       await tester.pumpAndSettle();
-      expect(find.text('上次提交结果未确认'), findsOneWidget);
+      expect(find.text('按原内容重试'), findsOneWidget);
       expect(calls, 1);
       await tester.tap(find.text('先不提交'));
       await tester.pumpAndSettle();
@@ -425,7 +436,7 @@ void main() {
     await tester.pumpAndSettle();
     await pumpPage(tester,
         form((_) async {}, draftStore: store, draftUserKey: () => 'user-a'));
-    expect(find.text('提交结果未确认：请先查看“我的报修”。再次提交可能产生重复记录。'), findsOneWidget);
+    expect(find.text('提交结果未确认：已保留上次内容与回执，可查询结果或按原内容重试。'), findsOneWidget);
     await finishPage(tester);
   });
 
@@ -474,7 +485,7 @@ void main() {
     await tester.runAsync(
         () => tokenManager.setToken('account-a', refreshToken: 'refresh-a'));
     Get.put(UserInfoController())
-        .updateUser(const UserInfo(id: 'user-a', avatarUrl: '', nickName: 'A'));
+        .updateLocalUserInfo(const UserInfo(id: 'user-a', avatarUrl: '', nickName: 'A'));
     await store.save(
         'user-a',
         const RepairDraft(

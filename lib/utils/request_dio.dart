@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:dio/dio.dart' as dio;
 
 import '../constant/index.dart';
 import 'app_exception.dart';
+import 'client_identity.dart';
 import 'emitter.dart';
 import 'logger.dart';
-import 'network_failure_stub.dart' if (dart.library.io) 'network_failure_io.dart';
+import 'network_failure_stub.dart'
+    if (dart.library.io) 'network_failure_io.dart';
 import 'token_manager.dart';
 
 typedef RefreshDioFactory = dio.Dio Function();
@@ -13,6 +16,15 @@ typedef RefreshDioFactory = dio.Dio Function();
 class _ReadCredentialsRefreshed extends SessionChangedException {
   const _ReadCredentialsRefreshed();
 }
+
+class _SessionExpired extends NetworkException {
+  const _SessionExpired(this.clearedSessionId)
+      : super('登录已失效，请重新登录', statusCode: 401);
+
+  final int clearedSessionId;
+}
+
+const Set<int> _refreshCredentialRejectedStatuses = <int>{401, 403};
 
 class RequestDio {
   /// 键名命中即整体脱敏的固定列表（比较前会去掉 `-`、`_` 并转小写）。
@@ -45,13 +57,27 @@ class RequestDio {
       RegExp(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b');
   static final RegExp _mobileText = RegExp(r'\b1[3-9]\d{9}\b');
 
+  /// 仅为使用这份 Options 的请求开启诊断字段，不改变全局日志模式。
+  /// 每侧最多 5 个字段，只读取第一层；敏感字段、嵌套值和长文字不输出。
+  static dio.Options logDetails({
+    List<String> requestLogFields = const <String>[],
+    List<String> responseLogFields = const <String>[],
+  }) {
+    return dio.Options(extra: <String, dynamic>{
+      'requestLogFields': List<String>.unmodifiable(requestLogFields.take(5)),
+      'responseLogFields': List<String>.unmodifiable(responseLogFields.take(5)),
+    });
+  }
+
   RequestDio({
     dio.Dio? client,
     RefreshDioFactory? refreshDioFactory,
     TokenManager? tokens,
+    ClientIdentity? identity,
   })  : _dio = client ?? dio.Dio(),
         _refreshDioFactory = refreshDioFactory ?? dio.Dio.new,
-        _tokens = tokens ?? tokenManager {
+        _tokens = tokens ?? tokenManager,
+        _identity = identity ?? ClientIdentity.current {
     // 配置请求基地址和超时时间，使用级联（链式）调用。
     _configureDio(_dio);
 
@@ -72,6 +98,7 @@ class RequestDio {
           final String token = _tokens.getToken();
           final bool skipAuthorization =
               options.extra['skipAuthorization'] == true;
+          if (!skipAuthorization) options.headers.addAll(_identity.headers);
           if (token.isNotEmpty && !skipAuthorization) {
             options.headers['Authorization'] = 'Bearer $token';
           }
@@ -118,30 +145,60 @@ class RequestDio {
 
             if (sessionChanged()) {
               stoppedError = const SessionChangedException();
-            } else if (error.response?.statusCode == 401 && error.requestOptions.extra['authRecoveryUsed'] != true && ! (error.requestOptions.cancelToken?.isCancelled ?? false)) {
+            } else if (error.response?.statusCode == 401 &&
+                error.requestOptions.extra['authRecoveryUsed'] != true &&
+                !(error.requestOptions.cancelToken?.isCancelled ?? false)) {
               final String refreshToken = _tokens.getRefreshToken();
-              final bool refreshSuccess = refreshToken.isNotEmpty &&
-                  await _tryRefreshToken(
+              var refreshSuccess = false;
+              int? clearedSessionId;
+              try {
+                if (refreshToken.isEmpty) {
+                  // 访问凭证已经被服务端明确拒绝，而本地没有可用于确认会话的
+                  // 刷新凭证；此时继续保留访问凭证只会让后续请求反复 401。
+                  clearedSessionId = await _clearSessionAndNotify();
+                  stoppedError = clearedSessionId == null
+                      ? const SessionChangedException()
+                      : _SessionExpired(clearedSessionId);
+                } else {
+                  refreshSuccess = await _tryRefreshToken(
                     refreshToken,
                     sessionId: requestSessionId,
                     sessionVersion: requestSessionVersion,
                   );
-              if (sessionChanged()) {
+                }
+              } on NetworkException catch (upgrade) {
+                stoppedError = sessionChanged()
+                    ? const SessionChangedException()
+                    : upgrade;
+              }
+              // 本次主动清理产生的会话变更保留失效提示，其他登录仍停止旧请求。
+              if (sessionChanged() && _tokens.sessionId != clearedSessionId) {
                 // Reads may recover once in get(); writes still stop here.
                 stoppedError = const SessionChangedException();
-              } else if (!refreshSuccess) {
+              } else if (!refreshSuccess && stoppedError == null) {
                 await _clearSessionAndNotify();
               }
             }
           }
 
-          if (stoppedError is SessionChangedException && error.response?.statusCode == 401 &&
+          if (stoppedError is SessionChangedException &&
+              error.response?.statusCode == 401 &&
               error.requestOptions.extra['sessionId'] == _tokens.sessionId &&
               _tokens.refreshSessionVersion == _tokens.sessionVersion &&
               _tokens.getToken().isNotEmpty) {
             stoppedError = const _ReadCredentialsRefreshed();
           }
-          final NetworkException appError = stoppedError ?? _mapDioError(error);
+          final NetworkException mapped = stoppedError ?? _mapDioError(error);
+          final NetworkException appError = stoppedError != null
+              ? mapped
+              : NetworkException(
+                  mapped.message,
+                  statusCode: mapped.statusCode,
+                  isTimeout: mapped.isTimeout,
+                  isTemporary: mapped.isTemporary,
+                  retryHandled: mapped.retryHandled,
+                  requestId: _serverRequestId(error.response),
+                );
           handler.reject(
             dio.DioException(
               requestOptions: error.requestOptions,
@@ -159,6 +216,7 @@ class RequestDio {
 
   final dio.Dio _dio;
   final RefreshDioFactory _refreshDioFactory;
+  final ClientIdentity _identity;
 
   /// 凭证来源。构造时可替换，测试据此驱动「401 → 刷新 → 停止」这条链路，
   /// 不必去改全局单例。
@@ -176,19 +234,19 @@ class RequestDio {
       ..responseType = dio.ResponseType.json;
   }
 
-  /// 创建日志拦截器，记录请求和响应详情。
+  /// 只记录固定摘要，不遍历请求体或响应中的业务数据。
   static dio.InterceptorsWrapper _createLoggingInterceptor() {
     return dio.InterceptorsWrapper(
       onRequest: (
         dio.RequestOptions options,
         dio.RequestInterceptorHandler handler,
       ) {
-        if (options.extra['privateResponse'] == true) {
+        if (!Logger.enabled || options.extra['privateResponse'] == true) {
           handler.next(options);
           return;
         }
         Logger.network(
-          '→ ${options.method} ${_redactUri(options.uri)}',
+          '→ ${options.method} ${_getLogPath(options.path)}',
           _buildRequestLog(options),
         );
         handler.next(options);
@@ -197,19 +255,20 @@ class RequestDio {
         dio.Response<dynamic> response,
         dio.ResponseInterceptorHandler handler,
       ) {
-        if (response.requestOptions.extra['privateResponse'] == true) {
+        if (!Logger.enabled ||
+            response.requestOptions.extra['privateResponse'] == true) {
           handler.next(response);
           return;
         }
-        final int duration = DateTime.now()
-            .difference(
-              response.requestOptions.extra['request_time'] as DateTime? ??
-                  DateTime.now(),
-            )
-            .inMilliseconds;
+        final DateTime responseTime = DateTime.now();
+        final DateTime requestTime =
+            response.requestOptions.extra['request_time'] as DateTime? ??
+                DateTime.now();
+        final Duration requestDuration = responseTime.difference(requestTime);
+        final int elapsedMilliseconds = requestDuration.inMilliseconds;
         Logger.network(
           '← ${response.statusCode} '
-          '${_redactUri(response.requestOptions.uri)} (${duration}ms)',
+          '${_getLogPath(response.requestOptions.path)} (${elapsedMilliseconds}ms)',
           _buildResponseLog(response),
         );
         handler.next(response);
@@ -218,19 +277,19 @@ class RequestDio {
         dio.DioException error,
         dio.ErrorInterceptorHandler handler,
       ) {
-        if (error.requestOptions.extra['privateResponse'] == true) {
+        if (!Logger.enabled ||
+            error.requestOptions.extra['privateResponse'] == true) {
           handler.next(error);
           return;
         }
         final dio.Response<dynamic>? response = error.response;
         Logger.error(
           '✖ ${error.requestOptions.method} '
-          '${_redactUri(error.requestOptions.uri)}',
+          '${_getLogPath(error.requestOptions.path)}',
           <String, dynamic>{
             // 区分「服务端返回了错误状态」与「压根没连上」：后者没有响应。
             'type': error.type.name,
-            'message': _redactLogValue(error.message, requestSide: true),
-            // 失败响应体只在错误分支可见；onResponse 拦截器不会经过这里。
+            // 默认只记错误类型和状态；单次诊断只读取明确选定的字段。
             if (response != null) ..._buildResponseLog(response),
           },
         );
@@ -246,96 +305,66 @@ class RequestDio {
 
     final Map<String, dynamic> log = <String, dynamic>{
       'method': options.method,
-      'url': _redactUri(options.uri).toString(),
+      'path': _getLogPath(options.path),
     };
-
-    if (options.queryParameters.isNotEmpty) {
-      log['params'] = _redactLogValue(
-        options.queryParameters,
-        requestSide: true,
-      );
+    // 有键值形式的请求正文就从正文取值，否则从查询参数取值。
+    Map<dynamic, dynamic> requestDataForLog = options.queryParameters;
+    if (options.data is Map<dynamic, dynamic>) {
+      requestDataForLog = options.data;
     }
-
-    if (options.headers.isNotEmpty) {
-      log['headers'] = _redactLogValue(options.headers, requestSide: true);
-    }
-
-    if (options.data != null && options.data is! dio.FormData) {
-      log['body'] = _redactLogValue(options.data, requestSide: true);
-    }
-
+    _addLogFields(
+      log,
+      requestDataForLog,
+      options.extra['requestLogFields'],
+      'request',
+    );
     return log;
   }
 
-  /// 把 URL 里敏感查询参数的值换成 `***`。
-  ///
-  /// 只在该 URL 确实含敏感参数时才重建，其余情况原样返回：`Uri.replace` 会
-  /// 对全部参数重新编码，把 `%2F`、`+`、重复键这些原样交出去更省事，也避免
-  /// 日志里出现与真实请求不一致的编码。
-  static Uri _redactUri(Uri uri) {
-    if (uri.queryParameters.isEmpty) return uri;
-    final bool hasSensitive = uri.queryParameters.keys.any(
-      (String key) => _isSensitiveLogKey(key, requestSide: true),
-    );
-    if (!hasSensitive) return uri;
-
-    // 逐段处理原始 query，而不是走 queryParameters 映射：映射会把重复键合并，
-    // 也会让所有值经过一次 encode，`***` 就变成 `%2A%2A%2A` 了。
-    final String query = uri.query.split('&').map((String segment) {
-      final int separator = segment.indexOf('=');
-      if (separator < 0) return segment;
-      final String rawKey = segment.substring(0, separator);
-      final String decodedKey = Uri.decodeQueryComponent(rawKey);
-      return _isSensitiveLogKey(decodedKey, requestSide: true)
-          ? '$rawKey=***'
-          : segment;
-    }).join('&');
-    return uri.replace(query: query);
+  /// 按指定名字直接取值，不扫描对象、不展开列表、不改变业务数据。
+  static void _addLogFields(
+    Map<String, dynamic> log,
+    dynamic businessData,
+    dynamic selectedLogFields,
+    String logSide,
+  ) {
+    if (businessData is! Map<dynamic, dynamic> ||
+        selectedLogFields is! List<dynamic>) {
+      return;
+    }
+    for (final dynamic fieldName in selectedLogFields.take(5)) {
+      if (fieldName is! String ||
+          fieldName.length > 40 ||
+          _isSensitiveLogKey(fieldName)) {
+        continue;
+      }
+      if (!businessData.containsKey(fieldName)) continue;
+      final String logKey = '$logSide.$fieldName';
+      final dynamic fieldValue = businessData[fieldName];
+      if (fieldValue is String) {
+        // 整段省略过长文字，避免扫描大字符串或截断后露出半截凭证。
+        if (fieldValue.length > 200) {
+          log[logKey] = '<omitted: long value>';
+        } else {
+          log[logKey] = _redactLogText(fieldValue);
+        }
+      } else if (fieldValue == null ||
+          fieldValue is num ||
+          fieldValue is bool) {
+        log[logKey] = fieldValue;
+      }
+    }
   }
 
-  /// 递归遍历要写进日志的值，把敏感键换成 `***`。
-  ///
-  /// [depth] 是从根值开始的嵌套层数。响应体最外层那一层是接口信封
-  /// （`{"code": 10000, "data": {...}}`），它的 `code` 是业务状态码；嵌进
-  /// `data` 之后的 `code` 才是验证码之类的秘密。所以只按 `requestSide` 分是
-  /// 不够的，还得看层级——否则要么把业务码一起遮掉（排查失败码时无从下手），
-  /// 要么把验证码原样打进日志。
-  static dynamic _redactLogValue(
-    dynamic value, {
-    required bool requestSide,
-    int depth = 0,
-    String? key,
-  }) {
-    if (key != null &&
-        _isSensitiveLogKey(key, requestSide: requestSide, depth: depth)) {
-      return '***';
-    }
-    if (value is Map<dynamic, dynamic>) {
-      return <String, dynamic>{
-        for (final MapEntry<dynamic, dynamic> entry in value.entries)
-          entry.key.toString(): _redactLogValue(
-            entry.value,
-            requestSide: requestSide,
-            depth: depth + 1,
-            key: entry.key.toString(),
-          ),
-      };
-    }
-    if (value is Iterable<dynamic>) {
-      return <dynamic>[
-        for (final dynamic item in value)
-          _redactLogValue(
-            item,
-            requestSide: requestSide,
-            depth: depth + 1,
-          ),
-      ];
-    }
-    return value is String ? _redactLogText(value) : value;
+  /// 路径最多检查 512 个字符，省略查询参数、片段和 URL 中的账号信息。
+  static String _getLogPath(String requestPath) {
+    if (requestPath.length > 512) return '<omitted: long path>';
+    final Uri? uri = Uri.tryParse(requestPath);
+    if (uri == null) return '<omitted: invalid path>';
+    return _redactLogText(uri.path);
   }
 
-  /// 处理服务端在说明文字中回显的明确凭证模式，不改变实际请求或响应。
-  /// 无标签的任意秘密无法可靠识别；非结构化响应体另行默认省略。
+  /// 隐藏短路径中能识别出的凭证和手机号，不改变实际请求。
   static String _redactLogText(String value) {
     final String safeAuthorization = value.replaceAllMapped(
       _authorizationText,
@@ -344,7 +373,7 @@ class RequestDio {
     final String safeAssignments = safeAuthorization.replaceAllMapped(
       _credentialAssignmentText,
       (Match match) {
-        if (!_isSensitiveLogKey(match.group(2)!, requestSide: true)) {
+        if (!_isSensitiveLogKey(match.group(2)!)) {
           return match.group(0)!;
         }
         return '${match.group(1)}${match.group(2)}${match.group(3)}***';
@@ -355,16 +384,8 @@ class RequestDio {
         .replaceAll(_mobileText, '***');
   }
 
-  /// 判断键名是否敏感。
-  ///
-  /// [requestSide] 与 [depth] 共同决定 `code` 系列是否计入：请求体里的 `code`
-  /// 是验证码，响应信封顶层的 `code` 是业务状态码（保留），而响应体里嵌进
-  /// `data` 的 `code` 又是验证码（脱敏）。
-  static bool _isSensitiveLogKey(
-    String key, {
-    required bool requestSide,
-    int depth = 0,
-  }) {
+  /// 判断路径文字里出现的字段名是否敏感。
+  static bool _isSensitiveLogKey(String key) {
     final String normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
     if (_sensitiveLogKeys.contains(normalized)) return true;
     for (final String fragment in _sensitiveLogKeyFragments) {
@@ -373,47 +394,44 @@ class RequestDio {
     // 地图 Key：`key`、`appKey`、`apiKey`、`accessKey`。用后缀而非子串，
     // 位置页的 `keyword` 是搜索词，不该被脱敏。
     if (normalized.endsWith('key')) return true;
-    // 验证码：请求侧一律脱敏；响应侧只脱敏嵌在信封里面的那一层。
-    //
-    // 根值本身以 depth 0 进入，它的直接子键因此是 depth 1——那正是响应信封
-    // （`{"code":..., "data":...}`）那一层，`code` 在那里是业务状态码，要留。
-    // 再往里（`data.code`、`data.verificationCode`）才是验证码，depth ≥ 2。
-    final bool isCodeLike = normalized == 'code' || normalized.endsWith('code');
-    if (isCodeLike && (requestSide || depth > 1)) return true;
-    return false;
+    return normalized == 'code' || normalized.endsWith('code');
   }
 
-  /// 构建响应日志内容。
+  /// 默认只取外层数字业务码；单次诊断可额外取指定字段，不展开 data。
   static Map<String, dynamic> _buildResponseLog(
       dio.Response<dynamic> response) {
     final Map<String, dynamic> log = <String, dynamic>{
       'status': response.statusCode,
+      if (_serverRequestId(response) case final String id) 'requestId': id,
     };
 
-    if (response.data != null) {
-      final dynamic body = response.data;
-      if (body is String) {
-        // 纯文本、HTML 和 JSON 字符串没有可递归判断的字段边界，默认不输出原文。
-        log['body'] = '<omitted: unstructured text>';
-        log['bodyLength'] = body.length;
-        return log;
-      }
-      // 限制响应体日志长度，避免过大的数据污染日志
-      final dynamic safeData = _redactLogValue(
-        body,
-        requestSide: false,
-      );
-      final String dataStr = safeData.toString();
-      // ignore: require_trailing_commas
-      log['body'] = dataStr.length > 500
-          ? '${dataStr.substring(0, 500)}... (truncated)'
-          : safeData;
+    final dynamic body = response.data;
+    if (body is Map<dynamic, dynamic>) {
+      final dynamic businessCode = body['code'];
+      if (businessCode is int) log['code'] = businessCode;
     }
+    _addLogFields(
+      log,
+      body,
+      response.requestOptions.extra['responseLogFields'],
+      'response',
+    );
 
     return log;
   }
 
-  Future<void> _clearSessionAndNotify() async {
+  static String? _serverRequestId(dio.Response<dynamic>? response) {
+    if (response == null ||
+        response.requestOptions.extra['skipAuthorization'] == true) {
+      return null;
+    }
+    final values = response.headers['x-request-id'];
+    return values != null && values.length == 1
+        ? validRequestId(values.single)
+        : null;
+  }
+
+  Future<int?> _clearSessionAndNotify() async {
     // 被动登出（凭证已失效）不因为磁盘没删干净就把用户留在原地：先把内存
     // 凭证作废，界面必须退出登录态，磁盘残留留待下次登录覆盖。
     _tokens.invalidateLocalSession();
@@ -426,7 +444,9 @@ class RequestDio {
     if (_tokens.sessionId == logoutSessionId + 1 &&
         _tokens.getToken().isEmpty) {
       eventBus.fire(const LogoutEvent());
+      return logoutSessionId + 1;
     }
+    return null;
   }
 
   Future<bool> _tryRefreshToken(
@@ -452,6 +472,7 @@ class RequestDio {
           HttpPath.refreshToken,
           options: dio.Options(
             headers: <String, dynamic>{
+              ..._identity.headers,
               'Authorization': 'Bearer $refreshToken',
             },
           ),
@@ -466,9 +487,10 @@ class RequestDio {
               final String newToken = data['token']?.toString() ?? '';
               final String newRefreshToken =
                   data['refreshToken']?.toString() ?? '';
-              if (newToken.isEmpty ||
-                  newRefreshToken.isEmpty ||
-                  _tokens.sessionId != sessionId ||
+              if (newToken.isEmpty || newRefreshToken.isEmpty) {
+                throw const NetworkException('刷新凭证响应不完整，请稍后重试');
+              }
+              if (_tokens.sessionId != sessionId ||
                   _tokens.sessionVersion != sessionVersion ||
                   _tokens.getRefreshToken() != refreshToken) {
                 return false;
@@ -486,13 +508,26 @@ class RequestDio {
                 eventBus.fire(const RefreshEvent());
                 return true;
               }
-              return false;
+              throw const NetworkException('刷新凭证未能保存，请稍后重试');
             }
           }
         }
-        return false;
-      } on Object catch (_) {
-        return false;
+        throw const NetworkException('刷新凭证状态无法确认，请稍后重试');
+      } on dio.DioException catch (error) {
+        final int? statusCode = error.response?.statusCode;
+        if (_refreshCredentialRejectedStatuses.contains(statusCode)) {
+          return false;
+        }
+        final mapped = _mapDioError(error);
+        throw NetworkException(mapped.message,
+            statusCode: statusCode,
+            isTimeout: mapped.isTimeout,
+            isTemporary: mapped.isTemporary,
+            requestId: _serverRequestId(error.response));
+      } on NetworkException {
+        rethrow;
+      } on Object {
+        throw const NetworkException('刷新失败，请检查网络后重试');
       } finally {
         tokenDio?.close(force: true);
         // 换会话后可以有新刷新；迟到的 finally 只清理自己的 Future。
@@ -519,14 +554,31 @@ class RequestDio {
       case dio.DioExceptionType.transformTimeout:
         return const NetworkException('响应数据解析超时，请稍后重试', isTimeout: true);
       case dio.DioExceptionType.connectionError:
-        return NetworkException('网络连接失败，请检查网络设置', isTemporary: isTemporarySocketFailure(error.error));
+        return NetworkException('网络连接失败，请检查网络设置',
+            isTemporary: isTemporarySocketFailure(error.error));
       case dio.DioExceptionType.badCertificate:
         return const NetworkException('SSL 证书验证失败，连接不安全');
       case dio.DioExceptionType.cancel:
         return const NetworkException('请求已取消');
       case dio.DioExceptionType.badResponse:
         final Object? body = error.response?.data;
-        if (error.response?.statusCode == 409 && body is Map && body.containsKey('code')) {
+        if (error.response?.statusCode == 426 &&
+            error.requestOptions.extra['skipAuthorization'] != true &&
+            body is Map &&
+            body['code'] == 42600) {
+          final data = body['data'];
+          final minimum = data is Map ? data['minimumVersion'] : null;
+          if (minimum is String &&
+              RegExp(r'^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$')
+                  .hasMatch(minimum)) {
+            return NetworkException(
+                '当前客户端版本不受支持，请升级至 $minimum 或更高版本；请联系物业获取更新，本次操作未受理',
+                statusCode: 426);
+          }
+        }
+        if (error.response?.statusCode == 409 &&
+            body is Map &&
+            body.containsKey('code')) {
           final Object? message = body['message'];
           if (message is String && message.trim().isNotEmpty) {
             return NetworkException(message.trim(), statusCode: 409);
@@ -534,7 +586,7 @@ class RequestDio {
         }
         return _mapHttpStatus(error.response?.statusCode);
       case dio.DioExceptionType.unknown:
-        return NetworkException('未知网络错误：${error.message ?? ''}');
+        return const NetworkException('网络请求失败，请稍后重试');
     }
   }
 
@@ -549,6 +601,7 @@ class RequestDio {
       408 => '请求超时，请稍后重试',
       409 => '数据冲突，请刷新后重试',
       422 => '请求数据格式有误',
+      426 => '当前客户端版本不受支持，请升级应用后重试；请联系物业获取更新',
       429 => '操作过于频繁，请稍后再试',
       500 => '服务器内部错误，请稍后重试',
       502 => '网关错误，服务暂时不可用',
@@ -568,37 +621,70 @@ class RequestDio {
     // Only audited read routes. GET /code sends an SMS and is deliberately absent.
     final path = Uri.tryParse(url)?.path.replaceFirst(RegExp(r'^/'), '') ?? '';
     final safe = options?.extra?['safeRead'] != false &&
-        RegExp(r'^(announcement(?:/[^/]+)?|userInfo|room(?:/[^/]+)?|repair(?:/.*)?|repairItem|visitor(?:/[^/]+)?|worker/(?:repairs(?:/[^/]+)?|repair-pool|skills)|notifications(?:/config)?)$').hasMatch(path);
+        RegExp(r'^(announcement(?:/[^/]+)?|userInfo|room(?:/[^/]+)?|repair(?:/.*)?|repairItem|visitor(?:/[^/]+)?|worker/(?:repairs(?:/[^/]+)?|repair-pool|skills)|notifications(?:/config)?)$')
+            .hasMatch(path);
     final sessionId = _tokens.sessionId;
     var authRecoveryUsed = false;
-    for (var attempt = 0; ; attempt++) {
-      if (_tokens.sessionId != sessionId) throw const SessionChangedException();
-      if (cancelToken?.isCancelled ?? false) throw const NetworkException('请求已取消', retryHandled: true);
+    for (var attempt = 0;; attempt++) {
+      if (_tokens.sessionId != sessionId) {
+        throw const SessionChangedException();
+      }
+      if (cancelToken?.isCancelled ?? false) {
+        throw const NetworkException('请求已取消', retryHandled: true);
+      }
       final version = _tokens.sessionVersion;
       try {
-        return await _handleResponse(_dio.get<dynamic>(url, queryParameters: params,
-          options: (options ?? dio.Options()).copyWith(extra: <String, dynamic>{
-            ...?options?.extra, 'authRecoveryUsed': authRecoveryUsed,
-          }), cancelToken: cancelToken));
+        return await _handleResponse(_dio.get<dynamic>(url,
+            queryParameters: params,
+            options:
+                (options ?? dio.Options()).copyWith(extra: <String, dynamic>{
+              ...?options?.extra,
+              'authRecoveryUsed': authRecoveryUsed,
+            }),
+            cancelToken: cancelToken));
       } on NetworkException catch (error) {
-        if (_tokens.sessionId != sessionId) throw const SessionChangedException();
-        if (cancelToken?.isCancelled ?? false) throw const NetworkException('请求已取消', retryHandled: true);
+        if (error is _SessionExpired &&
+            error.clearedSessionId == _tokens.sessionId) {
+          rethrow;
+        }
+        if (_tokens.sessionId != sessionId) {
+          throw const SessionChangedException();
+        }
+        if (cancelToken?.isCancelled ?? false) {
+          throw const NetworkException('请求已取消', retryHandled: true);
+        }
         final refreshed = _tokens.sessionVersion > version &&
-            _tokens.refreshSessionVersion == _tokens.sessionVersion && _tokens.getToken().isNotEmpty;
-        if (safe && attempt < 2 && !authRecoveryUsed && refreshed && error is _ReadCredentialsRefreshed) {
+            _tokens.refreshSessionVersion == _tokens.sessionVersion &&
+            _tokens.getToken().isNotEmpty;
+        if (safe &&
+            attempt < 2 &&
+            !authRecoveryUsed &&
+            refreshed &&
+            error is _ReadCredentialsRefreshed) {
           authRecoveryUsed = true;
           continue;
         }
-        final transient = error.isTimeout || error.isTemporary || const <int>{502, 503, 504}.contains(error.statusCode);
+        final transient = error.isTimeout ||
+            error.isTemporary ||
+            const <int>{502, 503, 504}.contains(error.statusCode);
         if (!safe || attempt >= 2 || !transient) {
           if (!safe || error is SessionChangedException) rethrow;
-          throw NetworkException(error.message, statusCode: error.statusCode,
-              isTimeout: error.isTimeout, retryHandled: true);
+          throw NetworkException(error.message,
+              statusCode: error.statusCode,
+              isTimeout: error.isTimeout,
+              isTemporary: error.isTemporary,
+              requestId: error.requestId,
+              retryHandled: true);
         }
         // Two extra attempts total, shared with auth recovery: 500ms then 1000ms.
-        final delay = Future<void>.delayed(Duration(milliseconds: 500 * (attempt + 1)));
-        if (cancelToken == null) { await delay; }
-        else { await Future.any<dynamic>(<Future<dynamic>>[delay, cancelToken.whenCancel]); }
+        final delay =
+            Future<void>.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+        if (cancelToken == null) {
+          await delay;
+        } else {
+          await Future.any<dynamic>(
+              <Future<dynamic>>[delay, cancelToken.whenCancel]);
+        }
       }
     }
   }
@@ -624,6 +710,90 @@ class RequestDio {
         cancelToken: cancelToken,
       ),
     );
+  }
+
+  /// Only this server's media endpoint may receive the application's token.
+  static bool isServiceMedia(String value) {
+    final base = Uri.tryParse(GlobalVariable.baseUrl);
+    final uri = Uri.tryParse(value);
+    return base != null &&
+        uri != null &&
+        uri.hasAuthority &&
+        const <String>{'https', 'http'}.contains(uri.scheme) &&
+        uri.scheme == base.scheme &&
+        uri.host == base.host &&
+        uri.port == base.port &&
+        uri.userInfo.isEmpty &&
+        !uri.hasQuery &&
+        !uri.hasFragment &&
+        RegExp(r'^/media/[a-f0-9]{64}$').hasMatch(uri.path);
+  }
+
+  /// Stream private images without disk caching, redirects or cross-account reuse.
+  Future<Uint8List> getMedia(String url,
+      {int maxBytes = 20 * 1024 * 1024, dio.CancelToken? cancelToken}) async {
+    if (!isServiceMedia(url)) throw const FormatException('图片地址不属于当前服务');
+    if (_tokens.getToken().isEmpty) {
+      throw const NetworkException('请先登录', statusCode: 401);
+    }
+    final session = _tokens.sessionId;
+    final bool ownsCancelToken = cancelToken == null;
+    final cancel = cancelToken ?? dio.CancelToken();
+    var authRecoveryUsed = false;
+    void sessionChanged() {
+      if (_tokens.sessionId != session && ownsCancelToken) {
+        cancel.cancel('session changed');
+      }
+    }
+
+    _tokens.sessionChanges.addListener(sessionChanged);
+    try {
+      dynamic body;
+      while (true) {
+        try {
+          body = await _handleRawResponse(_dio.get<dynamic>(url,
+              options: dio.Options(
+                  responseType: dio.ResponseType.stream,
+                  followRedirects: false,
+                  extra: <String, dynamic>{
+                    'privateResponse': true,
+                    'authRecoveryUsed': authRecoveryUsed,
+                  }),
+              cancelToken: cancel));
+          break;
+        } on NetworkException catch (error) {
+          final bool refreshed =
+              _tokens.refreshSessionVersion == _tokens.sessionVersion &&
+                  _tokens.getToken().isNotEmpty;
+          if (!authRecoveryUsed &&
+              _tokens.sessionId == session &&
+              refreshed &&
+              error is _ReadCredentialsRefreshed) {
+            authRecoveryUsed = true;
+            continue;
+          }
+          rethrow;
+        }
+      }
+      if (body is! dio.ResponseBody) throw const FormatException('图片响应无效');
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk
+          in body.stream.timeout(GlobalVariable.networkTimeout)) {
+        if (_tokens.sessionId != session) throw const SessionChangedException();
+        if (builder.length + chunk.length > maxBytes) {
+          throw const FormatException('图片超过允许的大小');
+        }
+        builder.add(chunk);
+      }
+      if (_tokens.sessionId != session) throw const SessionChangedException();
+      if (builder.isEmpty) throw const FormatException('图片为空');
+      return builder.takeBytes();
+    } on TimeoutException {
+      throw const NetworkException('图片接收超时，请稍后重试', isTimeout: true);
+    } finally {
+      _tokens.sessionChanges.removeListener(sessionChanged);
+      if (ownsCancelToken) cancel.cancel();
+    }
   }
 
   Future<dynamic> post(
@@ -740,7 +910,8 @@ class RequestDio {
     final dynamic body = response.data;
 
     if (body is! Map<dynamic, dynamic>) {
-      throw const BusinessException('服务器响应格式不正确');
+      throw BusinessException('服务器响应格式不正确',
+          requestId: _serverRequestId(response));
     }
 
     final int? businessCode = _parseBusinessCode(body['code']);
@@ -750,7 +921,10 @@ class RequestDio {
 
     final String message = body['message']?.toString() ?? '业务请求失败';
 
-    throw BusinessException(message, code: businessCode);
+    throw BusinessException(message,
+        code: businessCode,
+        data: body['data'],
+        requestId: _serverRequestId(response));
   }
 
   Future<dynamic> _handleRawResponse(

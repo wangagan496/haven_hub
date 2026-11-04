@@ -136,7 +136,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final BuildController controller = BuildController.instance()
-      ..updateBuildingInfo(fixtures.community.toJson());
+      ..selectCommunity(fixtures.community.toJson());
     final TencentBuilding nearest = building('3', 23.007933, 113.090276);
     await pumpPage(
         tester,
@@ -162,7 +162,7 @@ void main() {
   testWidgets(
       'late recommendation does not overwrite manual input; disposal cancels timer',
       (tester) async {
-    BuildController.instance().updateBuildingInfo(fixtures.community.toJson());
+    BuildController.instance().selectCommunity(fixtures.community.toJson());
     final Completer<TencentBuildingPage> pending =
         Completer<TencentBuildingPage>();
     await tester.pumpWidget(MaterialApp(
@@ -184,7 +184,7 @@ void main() {
   testWidgets(
       'coarse location leaves manual entry available without recommendations',
       (tester) async {
-    BuildController.instance().updateBuildingInfo(fixtures.community.toJson());
+    BuildController.instance().selectCommunity(fixtures.community.toJson());
     await pumpPage(
         tester,
         BuildingList(

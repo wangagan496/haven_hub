@@ -78,8 +78,13 @@ Future<void> clearVisitorPassShareCache() async {
 bool get supportsVisitorPassShare =>
     !kIsWeb && defaultTargetPlatform.name == 'ohos';
 
-/// Only public image requests: never attach the application's authentication.
+/// Own-server images require authorization; external images never receive it.
 Future<Uint8List> loadVisitorPassImage(String url, {RequestDio? client}) async {
+  if (RequestDio.isServiceMedia(url)) {
+    final bytes = await (client ?? requestDio).getMedia(url, maxBytes: maxVisitorPassBytes);
+    validateVisitorPassImage(bytes);
+    return bytes;
+  }
   final Uri? uri = Uri.tryParse(url.trim());
   if (uri == null ||
       !<String>{'https', 'http'}.contains(uri.scheme) ||

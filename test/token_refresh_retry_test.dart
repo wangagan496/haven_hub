@@ -57,11 +57,14 @@ class _FakeTokenStorage implements TokenStorage {
   @override
   String refreshToken;
 
+  bool failWrites = false;
+
   @override
   Future<void> load() async {}
 
   @override
   Future<bool> write(String token, String refreshToken) async {
+    if (failWrites) return false;
     this.token = token;
     this.refreshToken = refreshToken;
     return true;
@@ -78,6 +81,19 @@ class _FakeTokenStorage implements TokenStorage {
   void invalidate() {
     token = '';
     refreshToken = '';
+  }
+}
+
+class _LoginReplacingTokenManager extends TokenManager {
+  _LoginReplacingTokenManager({required super.storage});
+
+  @override
+  Future<bool> deleteToken({int? expectedSessionId}) async {
+    final bool cleared =
+        await super.deleteToken(expectedSessionId: expectedSessionId);
+    // 保证新登录在清理调用返回前完成，避免依赖事件监听器的调度时序。
+    await setToken('replacement-token', refreshToken: 'replacement-refresh');
+    return cleared;
   }
 }
 
@@ -144,7 +160,8 @@ void main() {
     dio.close();
   });
 
-  test('failed refresh logs out without replaying under the old request',
+  test(
+      'explicitly rejected refresh logs out without replaying under the old request',
       () async {
     final _RecordingAdapter business =
         _RecordingAdapter(<ResponseBody Function()>[
@@ -152,7 +169,7 @@ void main() {
     ]);
     final _RecordingAdapter refresh =
         _RecordingAdapter(<ResponseBody Function()>[
-      () => _json(<String, dynamic>{'code': 500}, status: 500),
+      () => _json(<String, dynamic>{'code': 401}, status: 401),
     ]);
 
     final Dio dio = Dio()..httpClientAdapter = business;
@@ -173,7 +190,167 @@ void main() {
     dio.close();
   });
 
-  test('a request whose token was already refreshed recovers without another refresh',
+  test(
+      'missing refresh credential logs out after a 401 without calling refresh',
+      () async {
+    storage = _FakeTokenStorage(token: 'access-only');
+    tokens = TokenManager(storage: storage);
+    final business = _RecordingAdapter(<ResponseBody Function()>[
+      () => _json(<String, dynamic>{'code': 401}, status: 401),
+    ]);
+    final refresh = _RecordingAdapter(<ResponseBody Function()>[
+      () => _json(<String, dynamic>{
+            'code': 10000,
+            'data': <String, dynamic>{
+              'token': 'should-not-be-used',
+              'refreshToken': 'should-not-be-used',
+            }
+          }),
+    ]);
+    final Dio dio = Dio()..httpClientAdapter = business;
+    final RequestDio client = RequestDio(
+      client: dio,
+      refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+      tokens: tokens,
+    );
+    final Future<LogoutEvent> logout = eventBus.on<LogoutEvent>().first;
+
+    await expectLater(
+      client.get('userInfo'),
+      throwsA(isA<NetworkException>()
+          .having((error) => error.message, 'message', '登录已失效，请重新登录')
+          .having((error) => error.statusCode, 'statusCode', 401)),
+    );
+    await expectLater(
+      logout.timeout(const Duration(seconds: 1)),
+      completes,
+    );
+    expect(tokens.getToken(), isEmpty);
+    expect(tokens.getRefreshToken(), isEmpty);
+    expect(refresh.paths, isEmpty);
+    expect(business.paths, hasLength(1));
+    dio.close();
+  });
+
+  test('missing refresh credential preserves a replacement login during logout',
+      () async {
+    storage = _FakeTokenStorage(token: 'access-only');
+    tokens = _LoginReplacingTokenManager(storage: storage);
+    final business = _RecordingAdapter(<ResponseBody Function()>[
+      () => _json(<String, dynamic>{'code': 401}, status: 401),
+    ]);
+    final Dio dio = Dio()..httpClientAdapter = business;
+    addTearDown(() => dio.close(force: true));
+    var refreshCalls = 0;
+    final RequestDio client = RequestDio(
+      client: dio,
+      tokens: tokens,
+      refreshDioFactory: () {
+        refreshCalls++;
+        return Dio();
+      },
+    );
+    var logouts = 0;
+    final subscription = eventBus.on<LogoutEvent>().listen((_) => logouts++);
+    addTearDown(subscription.cancel);
+
+    await expectLater(
+        client.get('userInfo'), throwsA(isA<SessionChangedException>()));
+    await Future<void>.delayed(Duration.zero);
+    expect(tokens.getToken(), 'replacement-token');
+    expect(tokens.getRefreshToken(), 'replacement-refresh');
+    expect(business.paths, hasLength(1));
+    expect(refreshCalls, 0);
+    expect(logouts, 0);
+  });
+
+  for (final int status in <int>[429, 503]) {
+    test('refresh HTTP $status preserves the current login', () async {
+      final _RecordingAdapter business =
+          _RecordingAdapter(<ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+      ]);
+      final _RecordingAdapter refresh =
+          _RecordingAdapter(<ResponseBody Function()>[
+        () => _json(<String, dynamic>{'code': status}, status: status),
+      ]);
+      final Dio dio = Dio()..httpClientAdapter = business;
+      final RequestDio client = RequestDio(
+        client: dio,
+        refreshDioFactory: () => Dio()..httpClientAdapter = refresh,
+        tokens: tokens,
+      );
+      var loggedOut = false;
+      final subscription =
+          eventBus.on<LogoutEvent>().listen((_) => loggedOut = true);
+      try {
+        await expectLater(
+            client.get('userInfo'), throwsA(isA<NetworkException>()));
+        final int requestCount = status == 503 ? 3 : 1;
+        expect(business.paths, hasLength(requestCount));
+        expect(refresh.paths, hasLength(requestCount));
+        expect(tokens.getToken(), 'old-token');
+        expect(tokens.getRefreshToken(), 'old-refresh');
+        expect(loggedOut, isFalse);
+      } finally {
+        await subscription.cancel();
+        dio.close();
+      }
+    });
+  }
+
+  for (final String failure in [
+    'malformed',
+    'persistence',
+    'timeout',
+    'offline'
+  ]) {
+    test('refresh $failure failure preserves the current login', () async {
+      final business = _RecordingAdapter([
+        () => _json(<String, dynamic>{'code': 401}, status: 401),
+      ]);
+      final refresh = _RecordingAdapter([
+        () {
+          if (failure == 'timeout' || failure == 'offline') {
+            throw DioException(
+                requestOptions: RequestOptions(path: 'refreshToken'),
+                type: failure == 'timeout'
+                    ? DioExceptionType.receiveTimeout
+                    : DioExceptionType.connectionError);
+          }
+          return _json(<String, dynamic>{
+            'code': 10000,
+            'data': <String, dynamic>{
+              'token': 'new-token',
+              if (failure != 'malformed') 'refreshToken': 'new-refresh',
+            }
+          });
+        },
+      ]);
+      storage.failWrites = failure == 'persistence';
+      final dio = Dio()..httpClientAdapter = business;
+      final client = RequestDio(
+          client: dio,
+          tokens: tokens,
+          refreshDioFactory: () => Dio()..httpClientAdapter = refresh);
+      var loggedOut = false;
+      final subscription =
+          eventBus.on<LogoutEvent>().listen((_) => loggedOut = true);
+      try {
+        await expectLater(
+            client.get('userInfo'), throwsA(isA<NetworkException>()));
+        expect(tokens.getToken(), 'old-token');
+        expect(tokens.getRefreshToken(), 'old-refresh');
+        expect(loggedOut, isFalse);
+      } finally {
+        await subscription.cancel();
+        dio.close();
+      }
+    });
+  }
+
+  test(
+      'a request whose token was already refreshed recovers without another refresh',
       () async {
     final _RecordingAdapter business = _RecordingAdapter(
       <ResponseBody Function()>[
@@ -434,7 +611,8 @@ void main() {
     });
   }
 
-  test('concurrent 401 shares one refresh, only GET recovers and a second 401 stops',
+  test(
+      'concurrent 401 shares one refresh, only GET recovers and a second 401 stops',
       () async {
     final Completer<void> refreshing = Completer<void>();
     final Completer<void> releaseRefresh = Completer<void>();

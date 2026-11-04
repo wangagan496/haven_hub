@@ -50,15 +50,18 @@ class HomeList extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: list.length,
       itemBuilder: (BuildContext context, int index) {
-        final NoticeData item = list[index];
+        final NoticeData notice = list[index];
+        // 点开这条公告时，用这个编号找到对应的详情。
+        final String noticeIdToOpen = notice.id;
         return GestureDetector(
-          onTap: item.id.isEmpty
+          onTap: noticeIdToOpen.isEmpty
               ? null
               : () => AppRoutes.toNoticeDetail<void>(
                     context,
-                    noticeId: item.id,
+                    // noticeId 是方法规定的参数名，右边是要传入的公告编号。
+                    noticeId: noticeIdToOpen,
                   ),
-          child: NotifyItem(item: item),
+          child: NotifyItem(item: notice),
         );
       },
       separatorBuilder: (BuildContext context, int index) {

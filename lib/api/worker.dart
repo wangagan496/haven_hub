@@ -29,9 +29,11 @@ class WorkerSkills {
 Future<WorkerSkills> getWorkerSkillsApi() async =>
     WorkerSkills.fromJson(asMap(await requestDio.get(HttpPath.workerSkills), '我的技能'));
 
-Future<Map<String, dynamic>> saveWorkerSkillsApi(WorkerSkills profile, List<String> skills, {bool preview = false}) async =>
+Future<Map<String, dynamic>> saveWorkerSkillsApi(WorkerSkills profile, List<String> skills,
+    {bool preview = false, String? previewToken}) async =>
     asMap(await requestDio.put(HttpPath.workerSkills, data: <String, dynamic>{
       'workforceRevision': profile.revision, 'skills': skills, 'preview': preview,
+      if (previewToken != null) 'previewToken': previewToken,
     }), '技能保存');
 
 Future<List<RepairRecord>> getWorkerRepairsApi() async {

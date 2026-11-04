@@ -33,7 +33,8 @@ class BuildingInfo {
   final double? latitude;
   final double? longitude;
 
-  /// 返回一个新的 [BuildingInfo]，仅更新指定字段。
+  /// 复制成一份新数据，指定字段用新值，其余保留原值。
+  /// 原对象不变；调用方需要接住返回值，页面刷新由控制器负责。
   BuildingInfo copyWith({
     String? name,
     String? address,

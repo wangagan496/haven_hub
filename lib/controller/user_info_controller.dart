@@ -18,17 +18,18 @@ class UserInfoController extends GetxController {
         'nickName': currentUser.nickName,
       };
 
-  void updateUser(UserInfo user) {
+  /// 更新应用内的当前用户资料，并通知相关界面刷新。
+  void updateLocalUserInfo(UserInfo user) {
     currentUser = user;
     _currentUserSessionId = user.id.isEmpty ? null : tokenManager.sessionId;
     update();
   }
 
   void updateUserInfo(Map<String, dynamic> info) {
-    updateUser(UserInfo.fromJson(info));
+    updateLocalUserInfo(UserInfo.fromJson(info));
   }
 
   void clearUserInfo() {
-    updateUser(const UserInfo.empty());
+    updateLocalUserInfo(const UserInfo.empty());
   }
 }

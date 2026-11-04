@@ -3,8 +3,8 @@ import 'app_exception.dart';
 import 'token_manager.dart';
 
 /// 首页提前加载一次，报修页首次打开时取走结果；后续刷新仍请求接口。
-class RepairListPreloader {
-  RepairListPreloader({
+class RepairPreloader<T> {
+  RepairPreloader({
     required this.loader,
     TokenManager? tokens,
     DateTime Function()? now,
@@ -12,11 +12,11 @@ class RepairListPreloader {
   })  : _tokens = tokens ?? tokenManager,
         _now = now ?? DateTime.now;
 
-  final Future<List<RepairRecord>> Function() loader;
+  final Future<T> Function() loader;
   final TokenManager _tokens;
   final DateTime Function() _now;
   final Duration maxAge;
-  Future<List<RepairRecord>>? _preloaded;
+  Future<T>? _preloaded;
   DateTime? _completedAt;
   int? _sessionId;
 
@@ -38,13 +38,13 @@ class RepairListPreloader {
 
     final int sessionId = _tokens.sessionId;
     _sessionId = sessionId;
-    late final Future<List<RepairRecord>> request;
-    request = Future<List<RepairRecord>>.sync(loader).then((records) {
+    late final Future<T> request;
+    request = Future<T>.sync(loader).then((records) {
       if (_tokens.sessionId != sessionId || _tokens.getToken().isEmpty) {
         throw const SessionChangedException();
       }
       if (identical(_preloaded, request)) _completedAt = _now();
-      return List<RepairRecord>.unmodifiable(records);
+      return records;
     });
     _preloaded = request;
     try {
@@ -55,9 +55,9 @@ class RepairListPreloader {
     }
   }
 
-  Future<List<RepairRecord>> load() {
+  Future<T> load() {
     _checkSession();
-    final Future<List<RepairRecord>>? preloaded = _preloaded;
+    final Future<T>? preloaded = _preloaded;
     final DateTime? completedAt = _completedAt;
     final bool fresh =
         completedAt == null || _now().difference(completedAt) < maxAge;
@@ -65,4 +65,14 @@ class RepairListPreloader {
     invalidate();
     return preloaded != null && fresh ? preloaded : loader();
   }
+}
+
+/// 保留完整列表预加载的既有调用约定；分页入口使用同一套过期/会话逻辑。
+class RepairListPreloader extends RepairPreloader<List<RepairRecord>> {
+  RepairListPreloader({
+    required Future<List<RepairRecord>> Function() loader,
+    super.tokens,
+    super.now,
+    super.maxAge,
+  }) : super(loader: () async => List<RepairRecord>.unmodifiable(await loader()));
 }

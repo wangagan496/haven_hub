@@ -53,7 +53,7 @@ void main() {
 
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
 
   setUp(() {
@@ -157,10 +157,38 @@ void main() {
       () async {
     final _RepairAdapter adapter = _RepairAdapter((_) => page(<String>[]));
     await cancelRepairApi('test/id',
+        revision: 7,
         client: RequestDio(client: Dio()..httpClientAdapter = adapter));
     expect(adapter.requests.single.method, 'PUT');
     expect(adapter.requests.single.path, 'cancel/repair/test%2Fid');
-    expect(adapter.requests.single.data, isNull);
+    expect(adapter.requests.single.data, <String, dynamic>{'revision': 7});
+  });
+
+  test('cancellation rejects invalid versions before sending a request', () async {
+    final adapter = _RepairAdapter((_) => page(<String>[]));
+    final client = RequestDio(client: Dio()..httpClientAdapter = adapter);
+    for (final revision in <int>[-1, 9007199254740992]) {
+      await expectLater(cancelRepairApi('repair', revision: revision, client: client),
+          throwsA(isA<FormatException>()));
+    }
+    expect(adapter.requests, isEmpty);
+  });
+
+  test('cancellation sends explicit zero for a historical record', () async {
+    final adapter = _RepairAdapter((_) => page(<String>[]));
+    await cancelRepairApi('legacy', revision: 0,
+        client: RequestDio(client: Dio()..httpClientAdapter = adapter));
+    expect(adapter.requests.single.data, <String, dynamic>{'revision': 0});
+  });
+
+  test('cancellation does not replay conflicts or uncertain server failures', () async {
+    for (final status in <int>[409, 503]) {
+      final adapter = _RepairAdapter((_) => page(<String>[], status: status));
+      await expectLater(cancelRepairApi('repair', revision: 7,
+          client: RequestDio(client: Dio()..httpClientAdapter = adapter)),
+          throwsA(isA<NetworkException>().having((e) => e.statusCode, 'status', status)));
+      expect(adapter.requests, hasLength(1));
+    }
   });
 
   test('P3 slot lookup forwards optional date and excludeId and rejects malformed data', () async {

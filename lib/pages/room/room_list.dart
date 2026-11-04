@@ -3,18 +3,21 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../../controller/build_controller.dart';
+import '../../models/building_info.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/floor.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
+import '../../widgets/house_draft_actions.dart';
 import '../../widgets/section_title.dart';
 import '../house/house_form.dart';
 
 class RoomList extends StatefulWidget {
-  const RoomList({super.key});
+  const RoomList({super.key, this.draftId});
+  final String? draftId;
 
-  static const String routeName = AppRoutes.roomList;
+  static const String routeName = roomList;
 
   @override
   State<RoomList> createState() => _RoomListState();
@@ -22,6 +25,8 @@ class RoomList extends StatefulWidget {
 
 class _RoomListState extends State<RoomList> {
   late final BuildController _controller;
+  late final String _draftId;
+  BuildingInfo get _selection => _controller.selectionFor(_draftId);
   late final TextEditingController _roomInput;
   late final TextEditingController _floorInput;
   final FocusNode _floorFocus = FocusNode();
@@ -38,11 +43,28 @@ class _RoomListState extends State<RoomList> {
   void initState() {
     super.initState();
     _controller = BuildController.instance();
-    _roomInput = TextEditingController(text: _controller.room);
-    _floorInput = TextEditingController(text: _controller.buildingInfo.floor);
+    _draftId = widget.draftId ?? _controller.currentDraftId;
+    _controller.resumeAt(_draftId, HouseSelectionStep.room);
+    final draft = _controller.draftFor(_draftId);
+    _roomInput = TextEditingController(text: draft?.roomInput ?? '');
+    _floorInput = TextEditingController(text: draft?.floorInput ?? '');
+    _prefixInput.text = draft?.roomPrefix ?? '';
+    _lastPrefix = _prefixInput.text;
     _floorInput.addListener(_validateFloorInput);
     _floorFocus.addListener(_validateFloorInput);
     _prefixInput.addListener(_updatePrefix);
+    _roomInput.addListener(_saveInputs);
+    _floorInput.addListener(_saveInputs);
+    _prefixInput.addListener(_saveInputs);
+  }
+
+  void _saveInputs() {
+    final draft = _controller.draftFor(_draftId);
+    if (draft == null) return;
+    draft
+      ..roomInput = _roomInput.text
+      ..floorInput = _floorInput.text
+      ..roomPrefix = _prefixInput.text;
   }
 
   String _completeRoom(String value) {
@@ -143,9 +165,9 @@ class _RoomListState extends State<RoomList> {
 
   Future<void> _continue() async {
     if (_isSelecting) return;
-    if (!_controller.buildingInfo.hasCommunity ||
-        !_controller.buildingInfo.hasBuilding) {
-      await PromptAction.showWarning('请先返回选择小区并填写楼栋');
+    if (!_selection.hasCommunity ||
+        !_selection.hasBuilding) {
+      await AppPrompt.showWarning('请先返回选择小区并填写楼栋');
       return;
     }
     final String room = _completeRoom(_roomInput.text);
@@ -155,43 +177,52 @@ class _RoomListState extends State<RoomList> {
       return;
     }
     if (room.isEmpty || room.length > 100) {
-      await PromptAction.showWarning('请填写房号，最多100个字符');
+      await AppPrompt.showWarning('请填写房号，最多100个字符');
       return;
     }
 
     FocusScope.of(context).unfocus();
     setState(() => _isSelecting = true);
-    _controller.updateRoom(room, floor: normalizeFloor(_floorInput.text));
+    _controller.selectRoom(room, floor: normalizeFloor(_floorInput.text), draftId: _draftId);
     try {
       await Navigator.pushNamed<void>(
         context,
         HouseForm.routeName,
-        arguments: const HouseFormArguments(mode: HouseFormMode.create),
+        arguments: HouseFormArguments(mode: HouseFormMode.create, draftId: _draftId),
       );
     } finally {
-      if (mounted) setState(() => _isSelecting = false);
+      if (mounted) {
+        if (ModalRoute.of(context)?.isCurrent ?? false) {
+          _controller.resumeAt(_draftId, HouseSelectionStep.room);
+        }
+        setState(() => _isSelecting = false);
+      }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => HouseDraftGuard(draftId: _draftId, child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('填写房号'),
+        actions: <Widget>[HouseDraftActions(enabled: !_isSelecting)],
       ),
       body: GetBuilder<BuildController>(
         init: _controller,
+        autoRemove: false,
         builder: (BuildController controller) {
-          final String communityName = controller.buildingInfo.name;
-          final String address = controller.buildingInfo.address;
+          final String communityName = _selection.name;
+          final String address = _selection.address;
 
           return ListView(
             children: <Widget>[
               CommunityHeader(
                 communityName: communityName,
                 address: address,
-                selectedBuilding: controller.build,
+                selectedBuilding: _selection.building,
               ),
               const SectionTitle('房间信息'),
               ManualHouseInput(

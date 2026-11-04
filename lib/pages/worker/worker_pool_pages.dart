@@ -56,13 +56,13 @@ class _WorkerPoolPageState extends State<WorkerPoolPage> {
       }
       final accepted = await widget.claim(record, slot: slot);
       if (!_active) return;
-      await PromptAction.showSuccess('接单成功');
+      await AppPrompt.showSuccess('接单成功');
       if (!mounted || !_active) return;
       await Navigator.push<void>(context, MaterialPageRoute(builder: (_) => WorkerDetailPage(id: accepted.id)));
       if (!_active) return;
     } on Object catch (error) {
       if (!_active) return;
-      await PromptAction.showError(describeError(error, fallback: '接单失败，请重试'));
+      await AppPrompt.showException(error, fallback: '接单失败，请重试');
       if (!_active) return;
     } finally {
       if (_active) { setState(() => _isLoading = false); unawaited(_load()); }
@@ -94,7 +94,7 @@ class _WorkerPoolPageState extends State<WorkerPoolPage> {
 class WorkerSkillsPage extends StatefulWidget {
   const WorkerSkillsPage({super.key, this.loader = getWorkerSkillsApi, this.saver = saveWorkerSkillsApi});
   final Future<WorkerSkills> Function() loader;
-  final Future<Map<String, dynamic>> Function(WorkerSkills, List<String>, {bool preview}) saver;
+  final Future<Map<String, dynamic>> Function(WorkerSkills, List<String>, {bool preview, String? previewToken}) saver;
   @override
   State<WorkerSkillsPage> createState() => _WorkerSkillsPageState();
 }
@@ -122,39 +122,76 @@ class _WorkerSkillsPageState extends State<WorkerSkillsPage> {
   Future<void> _save() async {
     final profile = _profile;
     if (_isLoading || !_active || profile == null) return;
-    setState(() => _isLoading = true);
+    setState(() { _isLoading = true; _error = null; });
     try {
       final skills = _selected.toList();
+      Map<String, dynamic>? impact;
       if (profile.skills.any((skill) => !_selected.contains(skill))) {
-        final impact = await widget.saver(profile, skills, preview: true);
-        if (!mounted || !_active) return;
-        String summary(String key) {
-          final rows = (impact[key] as List<dynamic>).cast<Map<String, dynamic>>();
-          return rows.isEmpty ? '无' : rows.map(workforceOrderText).join('\n');
+        impact = await widget.saver(profile, skills, preview: true);
+        if (!_active) return;
+      }
+      while (_active) {
+        if (impact != null && !await _confirmImpact(impact)) return;
+        if (!_active) return;
+        try {
+          final result = await widget.saver(profile, skills,
+              preview: false, previewToken: impact?['previewToken'] as String?);
+          if (!_active) return;
+          setState(() => _profile = WorkerSkills.fromJson(result));
+          await AppPrompt.showSuccess('技能已保存，立即生效');
+          if (!mounted || !_active) return;
+          Navigator.pop(context, true);
+          return;
+        } on BusinessException catch (error) {
+          if (!_active) return;
+          if (error.code != 40901 || error.data is! Map<String, dynamic>) rethrow;
+          impact = error.data! as Map<String, dynamic>;
+          setState(() => _error = error.message);
+          // 每次冲突都用服务端新预览重新弹窗，绝不自动重试保存。
+        }
+      }
+    } on Object catch (error) {
+      if (!_active) return;
+      setState(() => _error = describeError(error, fallback: '保存失败，请刷新后重试'));
+      await AppPrompt.showError(_error!);
+    } finally { if (_active) setState(() => _isLoading = false); }
+  }
+
+  Future<bool> _confirmImpact(Map<String, dynamic> impact) async {
+        String affectedOrdersText(String groupName) {
+          final affectedOrders =
+              (impact[groupName] as List<dynamic>).cast<Map<String, dynamic>>();
+          if (affectedOrders.isEmpty) return '无';
+          final orderDescriptions = affectedOrders.map(workforceOrderText);
+          return orderDescriptions.join('\n');
         }
         final shortages = (impact['shortages'] as List<dynamic>? ?? <dynamic>[]).cast<Map<String, dynamic>>();
-        final shortageText = shortages.isEmpty ? '无' : shortages.map((item) =>
-          '${item['message']}\n${(item['orders'] as List<dynamic>).cast<Map<String, dynamic>>().map(workforceOrderText).join('\n')}').join('\n\n');
+        final shortageDescriptions = <String>[];
+        for (final shortage in shortages) {
+          final affectedOrders =
+              (shortage['orders'] as List<dynamic>).cast<Map<String, dynamic>>();
+          final ordersText = affectedOrders.map(workforceOrderText).join('\n');
+          shortageDescriptions.add('${shortage['message']}\n$ordersText');
+        }
+        String shortageText = '无';
+        if (shortageDescriptions.isNotEmpty) {
+          shortageText = shortageDescriptions.join('\n\n');
+        }
+        final changed = (impact['changed'] as List<dynamic>? ?? <dynamic>[])
+            .cast<Map<String, dynamic>>();
+        final changesText = changed.map((row) {
+          final status = RepairRecord(status: (row['status'] as num?)?.toInt() ?? -1).statusText;
+          return '${workforceOrderText(row)} · $status${(row['assignmentChanged'] as bool? ?? false) ? ' · 接单人员已变化' : ''}';
+        }).join('\n');
+        final updated = impact.containsKey('changed');
         final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-          title: const Text('删除技能的影响'),
-          content: SingleChildScrollView(child: Text('会放回可接单列表：\n${summary('returned')}\n\n需要物业处理：\n${summary('property')}\n\n时段缺人提示：\n$shortageText')),
+          title: Text(updated ? '工单已变化，请重新确认' : '删除技能的影响'),
+          content: SingleChildScrollView(child: Text('${updated ? '本次尚未保存技能。\n最新工单状态：\n${changesText.isEmpty ? '影响范围或确认有效期已变化，请重新查看。' : changesText}\n\n' : ''}会放回可接单列表：\n${affectedOrdersText('returned')}\n\n需要物业处理：\n${affectedOrdersText('property')}\n\n时段缺人提示：\n$shortageText')),
           actions: <Widget>[
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
             FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确认保存')),
           ]));
-        if (!_active || confirmed != true) return;
-      }
-      final result = await widget.saver(profile, skills, preview: false);
-      if (!_active) return;
-      setState(() => _profile = WorkerSkills.fromJson(result));
-      await PromptAction.showSuccess('技能已保存，立即生效');
-      if (!mounted || !_active) return;
-      Navigator.pop(context, true);
-    } on Object catch (error) {
-      if (!_active) return;
-      setState(() => _error = describeError(error, fallback: '保存失败，请刷新后重试'));
-      await PromptAction.showError(_error!);
-    } finally { if (_active) setState(() => _isLoading = false); }
+        return _active && (confirmed ?? false);
   }
   @override
   Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('我的技能')),

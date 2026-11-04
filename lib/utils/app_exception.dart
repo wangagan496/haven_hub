@@ -9,7 +9,9 @@
 /// ```
 class NetworkException implements Exception {
   const NetworkException(this.message,
-      {this.statusCode, this.isTimeout = false, this.retryHandled = false, this.isTemporary = false});
+      {this.statusCode, this.isTimeout = false, this.retryHandled = false, this.isTemporary = false, this.requestId});
+  /// 服务端返回的排查编号；没有收到响应时为空，不能伪造服务端记录。
+  final String? requestId;
   final bool isTemporary;
   /// The shared request layer has already spent the operation's retry budget.
   final bool retryHandled;
@@ -32,6 +34,14 @@ class SessionChangedException extends NetworkException {
   const SessionChangedException() : super('登录状态或凭证已更新，本次请求已停止，请手动重试');
 }
 
+/// Request failures that definitively rejected the operation before it could be applied.
+bool isDefiniteRequestRejection(Object error) {
+  if (error is BusinessException) return true;
+  if (error is! NetworkException || error is SessionChangedException || error.isTimeout) return false;
+  final int? status = error.statusCode;
+  return status != null && status >= 400 && status < 500 && status != 408;
+}
+
 /// 业务层错误：HTTP 200 但服务端 code != 10000。
 ///
 /// 由 [RequestDio] 的公开请求方法统一抛出，上层只需读取 [message]。
@@ -41,7 +51,12 @@ class SessionChangedException extends NetworkException {
 /// throw const BusinessException('用户不存在', code: 40001);
 /// ```
 class BusinessException implements Exception {
-  const BusinessException(this.message, {this.code});
+  const BusinessException(this.message, {this.code, this.data, this.requestId});
+
+  final String? requestId;
+
+  /// 业务冲突返回的最新数据；由对应业务页面决定如何展示。
+  final Object? data;
 
   /// 服务端返回的错误描述。
   final String message;
@@ -52,6 +67,23 @@ class BusinessException implements Exception {
   @override
   String toString() => 'BusinessException($code): $message';
 }
+
+/// 只接受服务端生成的 UUID，防止把任意响应头当作可复制的错误说明。
+String? validRequestId(Object? value) {
+  if (value is! String ||
+      !RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+              caseSensitive: false)
+          .hasMatch(value)) {
+    return null;
+  }
+  return value;
+}
+
+String? errorRequestId(Object error) => validRequestId(switch (error) {
+      NetworkException() => error.requestId,
+      BusinessException() => error.requestId,
+      _ => null,
+    });
 
 /// 把任意异常转换成可直接展示给用户的中文文案。
 ///

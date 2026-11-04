@@ -6,13 +6,14 @@ import '../../api/user.dart';
 import '../../controller/user_info_controller.dart';
 import '../../models/user_info.dart';
 import '../../platform/avatar_picker.dart';
-import '../../utils/app_exception.dart';
+import '../../router/app_routes.dart';
 import '../../utils/toast.dart';
 import '../../widgets/cached_image.dart';
 import '../../widgets/camera_dialog.dart';
 
-class _PendingAvatar {
-  const _PendingAvatar({
+// 用户新选中、准备随个人资料一起保存的头像。
+class _AvatarToSave {
+  const _AvatarToSave({
     required this.bytes,
     required this.fileName,
     this.uploadedUrl,
@@ -22,8 +23,8 @@ class _PendingAvatar {
   final String fileName;
   final String? uploadedUrl;
 
-  _PendingAvatar withUploadedUrl(String url) {
-    return _PendingAvatar(
+  _AvatarToSave withUploadedUrl(String url) {
+    return _AvatarToSave(
       bytes: bytes,
       fileName: fileName,
       uploadedUrl: url,
@@ -33,17 +34,17 @@ class _PendingAvatar {
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
-    this.updateUserInfoLoader = updateUserInfoApi,
-    this.uploadAvatarLoader = uploadAvatarApi,
+    this.submitUserInfo = updateUserInfoApi,
+    this.uploadAvatar = uploadAvatarApi,
     this.avatarPicker = pickAvatar,
     this.cameraSupported,
     super.key,
   });
 
-  static const String routeName = '/profile';
+  static const String routeName = profile;
 
-  final UpdateUserInfoLoader updateUserInfoLoader;
-  final UploadAvatarLoader uploadAvatarLoader;
+  final SubmitUserInfoAction submitUserInfo;
+  final UploadAvatarAction uploadAvatar;
   final AvatarPicker avatarPicker;
   final bool? cameraSupported;
 
@@ -52,35 +53,44 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
-  static final RegExp _nicknamePattern = RegExp(r'^.{2,10}$', unicode: true);
+  // 昵称规则：2～10个字符。
+  static final RegExp _nicknameRule = RegExp(r'^.{2,10}$', unicode: true);
 
-  final TextEditingController _nicknameController = TextEditingController();
+  // 负责读写昵称输入框里的文字。
+  final TextEditingController _nicknameInput = TextEditingController();
 
-  late final UserInfoController _userInfoController;
-  _PendingAvatar? _pendingAvatar;
+  // 负责读取和更新当前用户的资料。
+  late final UserInfoController _userInfoManager;
+  _AvatarToSave? _newAvatarToSave;
   bool _isSaving = false;
   bool _isPickingAvatar = false;
 
   @override
   void initState() {
     super.initState();
-    _userInfoController = Get.find<UserInfoController>();
-    _nicknameController.text = _getUserNickname();
+    _userInfoManager = Get.find<UserInfoController>();
+    // 把当前用户的昵称填进昵称输入框。
+    _nicknameInput.text = _getCurrentUserNickname();
   }
 
   bool get _isBusy => _isSaving || _isPickingAvatar;
 
   bool get _supportsCamera => widget.cameraSupported ?? supportsAvatarCamera;
 
-  String _getUserNickname() {
-    return _userInfoController.currentUser.nickName;
+  String _getCurrentUserNickname() {
+    return _userInfoManager.currentUser.nickName;
+  }
+
+  // 去掉文字两头的空格等空白字符，保留中间内容。
+  String _removeOuterSpaces(String text) {
+    return text.trim();
   }
 
   Widget _buildUserAvatar(UserInfoController controller) {
-    final _PendingAvatar? pendingAvatar = _pendingAvatar;
-    if (pendingAvatar != null) {
+    final _AvatarToSave? avatarToPreview = _newAvatarToSave;
+    if (avatarToPreview != null) {
       return Image.memory(
-        pendingAvatar.bytes,
+        avatarToPreview.bytes,
         width: 40,
         height: 40,
         fit: BoxFit.cover,
@@ -153,15 +163,13 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       setState(() {
-        _pendingAvatar = _PendingAvatar(
+        _newAvatarToSave = _AvatarToSave(
           bytes: avatar.bytes,
           fileName: avatar.fileName,
         );
       });
     } on Object catch (error) {
-      await PromptAction.showError(
-        describeError(error, fallback: '选择头像失败，请重试'),
-      );
+      await AppPrompt.showException(error, fallback: '选择头像失败，请重试');
     } finally {
       if (mounted) {
         setState(() {
@@ -176,14 +184,14 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     }
 
-    final String nickName = _nicknameController.text.trim();
+    final String nickName = _removeOuterSpaces(_nicknameInput.text);
     if (nickName.isEmpty) {
-      await PromptAction.showWarning('请填写昵称');
+      await AppPrompt.showWarning('请填写昵称');
       return;
     }
 
-    if (!_nicknamePattern.hasMatch(nickName)) {
-      await PromptAction.showWarning('昵称须为2-10位字符');
+    if (!_nicknameRule.hasMatch(nickName)) {
+      await AppPrompt.showWarning('昵称须为2-10位字符');
       return;
     }
 
@@ -191,47 +199,63 @@ class _ProfilePageState extends State<ProfilePage> {
       _isSaving = true;
     });
     try {
-      String avatar = _userInfoController.currentUser.avatarUrl;
-      final _PendingAvatar? pendingAvatar = _pendingAvatar;
-      if (pendingAvatar != null) {
-        avatar = pendingAvatar.uploadedUrl ??
-            await widget.uploadAvatarLoader(
-              fileBytes: pendingAvatar.bytes,
-              fileName: pendingAvatar.fileName,
-            );
+      String avatarUrl = _userInfoManager.currentUser.avatarUrl;
+      final _AvatarToSave? avatarToSave = _newAvatarToSave;
+      if (avatarToSave != null) {
+        final String? uploadedAvatarUrl = avatarToSave.uploadedUrl;
+        if (uploadedAvatarUrl != null) {
+          // 已经上传过，直接使用保存下来的地址。
+          avatarUrl = uploadedAvatarUrl;
+        } else {
+          // 还没有上传地址，先上传这张图片。
+          avatarUrl = await widget.uploadAvatar(
+            fileBytes: avatarToSave.bytes,
+            fileName: avatarToSave.fileName,
+          );
+        }
         if (!mounted) {
           return;
         }
-        _pendingAvatar = pendingAvatar.withUploadedUrl(avatar);
+        // 记住上传地址，保存资料失败后重试时不用重复上传。
+        _newAvatarToSave = avatarToSave.withUploadedUrl(avatarUrl);
       }
 
-      final Map<String, dynamic> result = await widget.updateUserInfoLoader(
+      // 把昵称和头像地址提交给服务器，等待保存结果。
+      final Map<String, dynamic> userInfoSaveResult = await widget.submitUserInfo(
         nickName: nickName,
-        avatar: avatar,
+        avatar: avatarUrl,
       );
       if (!mounted) {
         return;
       }
 
-      final String id = result['id']?.toString().trim() ?? '';
-      _userInfoController.updateUser(
-        UserInfo(
-          id: id.isNotEmpty ? id : _userInfoController.currentUser.id,
-          avatarUrl: avatar,
-          nickName: nickName,
-        ),
-      );
-      _pendingAvatar = null;
+      // 取出服务器返回的用户编号，再转成文字并去掉两头空白。
+      final Object? returnedUserId = userInfoSaveResult['id'];
+      String userId = '';
+      if (returnedUserId != null) {
+        final String userIdText = returnedUserId.toString();
+        userId = _removeOuterSpaces(userIdText);
+      }
+      if (userId.isEmpty) {
+        userId = _userInfoManager.currentUser.id;
+      }
 
-      await PromptAction.showSuccess('修改成功');
+      // 服务器保存成功后，先整理资料，再更新应用里使用的用户信息。
+      final UserInfo savedUserInfo = UserInfo(
+        id: userId,
+        avatarUrl: avatarUrl,
+        nickName: nickName,
+      );
+      _userInfoManager.updateLocalUserInfo(savedUserInfo);
+      _newAvatarToSave = null;
+
+      await AppPrompt.showSuccess('修改成功');
       if (!mounted) {
         return;
       }
       await Navigator.maybePop(context);
     } on Object catch (error) {
-      await PromptAction.showError(
-        describeError(error, fallback: '修改失败，请重试'),
-      );
+      await AppPrompt.showException(error, fallback: '修改失败，请重试');
     } finally {
       if (mounted) {
         setState(() {
@@ -243,7 +267,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void dispose() {
-    _nicknameController.dispose();
+    _nicknameInput.dispose();
     super.dispose();
   }
 
@@ -293,7 +317,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: TextField(
-                        controller: _nicknameController,
+                        controller: _nicknameInput,
                         enabled: !_isBusy,
                         decoration: const InputDecoration(
                           hintText: '请输入昵称',

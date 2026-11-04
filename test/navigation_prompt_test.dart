@@ -84,8 +84,8 @@ void main() {
       'back-to-back prompts before a frame replace the previous entry safely',
       (WidgetTester tester) async {
     await pumpPage(tester, const Scaffold());
-    await PromptAction.showError('第一条测试提示');
-    await PromptAction.showError('第二条测试提示');
+    await AppPrompt.showError('第一条测试提示');
+    await AppPrompt.showError('第二条测试提示');
     await tester.pump();
     expect(find.text('第一条测试提示'), findsNothing);
     expect(find.text('第二条测试提示'), findsOneWidget);

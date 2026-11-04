@@ -65,7 +65,7 @@ void main() {
 
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
 
   Future<void> prepare(WidgetTester tester) async {
@@ -221,7 +221,7 @@ void main() {
         }));
     await fillRepair(tester);
     await tester.runAsync(() => tokenManager.setToken('account-b'));
-    users.updateUser(_userB);
+    users.updateLocalUserInfo(_userB);
     response.complete(_userA);
     await tester.pumpAndSettle();
     expect(users.currentUser.id, 'user-b');
@@ -272,7 +272,7 @@ void main() {
 
   testWidgets('ready identity avoids redundant fetch', (tester) async {
     await prepare(tester);
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     int loads = 0;
     await pumpPage(
         tester,
@@ -300,7 +300,7 @@ void main() {
         }, submitter: (record) async {
           requests.add(record);
         }));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pump();
     expect(delayedDrafts.started.isCompleted, isTrue);
     expect(loads, 1);
@@ -337,7 +337,7 @@ void main() {
     final options = Completer<List<House>>();
     await tester.pumpWidget(
         MaterialApp(home: _form(store, houseLoader: () => options.future)));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     options.complete(_houses);
     await tester.pumpAndSettle();
     expect(find.text('saved A draft'), findsOneWidget);
@@ -380,7 +380,7 @@ void main() {
                 mobile: '13800138000',
                 description: 'saved A draft')));
     await pumpPage(tester, _form(store));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     expect(find.text(_unsaved), findsNothing);
     expect(find.text('saved A draft'), findsOneWidget);
@@ -406,7 +406,7 @@ void main() {
           throw const NetworkException('timeout', isTimeout: true);
         }));
     await fillRepair(tester);
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('提交报修'));
     await tester.tap(find.text('提交报修'));
@@ -426,7 +426,7 @@ void main() {
     expect(find.text(_unsaved), findsOneWidget);
     await tester.enterText(
         find.byType(TextFormField).last, 'typed before profile');
-    users = Get.find<UserInfoController>()..updateUser(_userA);
+    users = Get.find<UserInfoController>()..updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     expect((await store.load('user-a'))!.record.description,
         'typed before profile');
@@ -449,7 +449,7 @@ void main() {
           calls++;
         }));
     await fillRepair(tester);
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('提交报修'));
     await tester.tap(find.text('提交报修'));
@@ -489,7 +489,7 @@ void main() {
           calls++;
         }));
     await fillRepair(tester);
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     expect(find.text('水管漏水'), findsOneWidget);
     expect(find.text('old unconfirmed draft'), findsNothing);
@@ -522,7 +522,7 @@ void main() {
         }));
     await fillRepair(tester);
     await tester.runAsync(() => tokenManager.setToken('account-b'));
-    users.updateUser(_userB);
+    users.updateLocalUserInfo(_userB);
     await tester.pumpAndSettle();
     expect(find.text('private B draft'), findsNothing);
     await tester.ensureVisible(find.text('提交报修'));
@@ -539,7 +539,7 @@ void main() {
     await prepare(tester);
     final delayed = _DelayedDraftStore();
     await pumpPage(tester, _form(delayed));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pump();
     expect(delayed.started.isCompleted, isTrue);
     await tester.enterText(find.byType(TextFormField).last, 'new typing');
@@ -558,11 +558,11 @@ void main() {
     await prepare(tester);
     final delayed = _DelayedDraftStore();
     await pumpPage(tester, _form(delayed));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pump();
     expect(delayed.started.isCompleted, isTrue);
     await tester.runAsync(() => tokenManager.setToken('account-b'));
-    users.updateUser(_userB);
+    users.updateLocalUserInfo(_userB);
     delayed.response.complete(const RepairDraft(
         record: RepairRecord(description: 'private A draft')));
     await tester.pumpAndSettle();
@@ -577,13 +577,13 @@ void main() {
     await prepare(tester);
     final delayed = _DelayedDraftStore();
     await pumpPage(tester, _form(delayed));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pump();
     expect(delayed.started.isCompleted, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
     delayed.response.complete(
         const RepairDraft(record: RepairRecord(description: 'late draft')));
-    users.updateUser(_userA);
+    users.updateLocalUserInfo(_userA);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(users.listeners, 0);

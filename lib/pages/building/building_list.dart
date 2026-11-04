@@ -14,6 +14,7 @@ import '../../utils/app_exception.dart';
 import '../../utils/building_recommendations.dart';
 import '../../utils/toast.dart';
 import '../../widgets/community_picker.dart';
+import '../../widgets/house_draft_actions.dart';
 import '../../widgets/section_title.dart';
 import '../room/room_list.dart';
 
@@ -22,12 +23,14 @@ class BuildingList extends StatefulWidget {
     super.key,
     this.buildingLookup = searchCommunityBuildings,
     this.deviceLocation,
+    this.draftId,
   });
 
   final CommunityBuildingLookup buildingLookup;
   final DeviceMapLocation? deviceLocation;
+  final String? draftId;
 
-  static const String routeName = AppRoutes.buildingList;
+  static const String routeName = buildingList;
 
   @override
   State<BuildingList> createState() => _BuildingListState();
@@ -35,6 +38,8 @@ class BuildingList extends StatefulWidget {
 
 class _BuildingListState extends State<BuildingList> {
   late final BuildController _controller;
+  late final String _draftId;
+  BuildingInfo get _selection => _controller.selectionFor(_draftId);
   late final TextEditingController _buildingInput;
   late final BuildingInfo _community;
   final List<TencentBuilding> _buildings = <TencentBuilding>[];
@@ -51,8 +56,11 @@ class _BuildingListState extends State<BuildingList> {
   void initState() {
     super.initState();
     _controller = BuildController.instance();
-    _buildingInput = TextEditingController(text: _controller.build);
-    _community = _controller.buildingInfo;
+    _draftId = widget.draftId ?? _controller.currentDraftId;
+    _controller.resumeAt(_draftId, HouseSelectionStep.building);
+    _buildingInput = TextEditingController(text: _controller.draftFor(_draftId)?.buildingInput ?? '');
+    _buildingInput.addListener(_saveInput);
+    _community = _selection;
     final DeviceMapLocation? position = widget.deviceLocation;
     if (position != null &&
         position.unavailableReason(DateTime.now()) == null) {
@@ -75,12 +83,17 @@ class _BuildingListState extends State<BuildingList> {
       _community.longitude != null;
 
   bool get _sameCommunity {
-    final BuildingInfo current = _controller.buildingInfo;
+    final BuildingInfo current = _selection;
     return current.name == _community.name &&
         current.address == _community.address &&
         current.communityId == _community.communityId &&
         current.latitude == _community.latitude &&
         current.longitude == _community.longitude;
+  }
+
+  void _saveInput() {
+    final draft = _controller.draftFor(_draftId);
+    if (draft != null && _sameCommunity) draft.buildingInput = _buildingInput.text;
   }
 
   Future<void> _loadBuildings() async {
@@ -288,7 +301,7 @@ class _BuildingListState extends State<BuildingList> {
         .any((NearbyBuilding item) => item.building.id == building.id);
     if (!stillAvailable) {
       setState(() {});
-      await PromptAction.showWarning('定位推荐已失效，请重新核对楼栋');
+      await AppPrompt.showWarning('定位推荐已失效，请重新核对楼栋');
       return;
     }
     _buildingInput.text = building.label;
@@ -298,42 +311,52 @@ class _BuildingListState extends State<BuildingList> {
   Future<void> _continue() async {
     if (_isSelecting) return;
     if (!_sameCommunity) return;
-    if (!_controller.buildingInfo.hasCommunity) {
-      await PromptAction.showWarning('请先返回选择小区');
+    if (!_selection.hasCommunity) {
+      await AppPrompt.showWarning('请先返回选择小区');
       return;
     }
     final String building = _buildingInput.text.trim();
     if (building.isEmpty || building.length > 100) {
-      await PromptAction.showWarning('请填写楼栋信息，最多100个字符');
+      await AppPrompt.showWarning('请填写楼栋信息，最多100个字符');
       return;
     }
 
     FocusScope.of(context).unfocus();
     setState(() => _isSelecting = true);
     // 返回重填时，只有楼栋变更才清空之前的房号。
-    if (building != _controller.build) _controller.updateBuild(building);
+    if (building != _selection.building) _controller.selectBuilding(building, draftId: _draftId);
     try {
       await Navigator.pushNamed<void>(
         context,
         RoomList.routeName,
+        arguments: HouseSelectionArguments(_draftId),
       );
     } finally {
-      if (mounted) setState(() => _isSelecting = false);
+      if (mounted) {
+        if (ModalRoute.of(context)?.isCurrent ?? false) {
+          _controller.resumeAt(_draftId, HouseSelectionStep.building);
+        }
+        setState(() => _isSelecting = false);
+      }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => HouseDraftGuard(draftId: _draftId, child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('选择或填写楼栋'),
+        actions: <Widget>[HouseDraftActions(enabled: !_isSelecting)],
       ),
       body: GetBuilder<BuildController>(
         init: _controller,
+        autoRemove: false,
         builder: (BuildController controller) {
-          final String communityName = controller.buildingInfo.name;
-          final String address = controller.buildingInfo.address;
+          final String communityName = _selection.name;
+          final String address = _selection.address;
 
           return ListView(
             children: <Widget>[

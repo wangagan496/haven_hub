@@ -10,6 +10,7 @@ import 'package:haven_hub/api/repair.dart';
 import 'package:haven_hub/api/visitor.dart';
 import 'package:haven_hub/models/house.dart';
 import 'package:haven_hub/models/repair.dart';
+import 'package:haven_hub/models/user_info.dart';
 import 'package:haven_hub/models/visitor.dart';
 import 'package:haven_hub/pages/house/house_detail.dart';
 import 'package:haven_hub/pages/house/house_list.dart';
@@ -51,7 +52,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tokenManager.init();
+    await tokenManager.loadTokens();
     Logger.enabled = false;
   });
   setUp(() async {
@@ -166,13 +167,13 @@ void main() {
     final client = RequestDio(client: Dio()..httpClientAdapter = adapter);
     await submitHouseAPI(const House(), client: client);
     expect((await getHouseListApi(client: client)).single.id, 'room');
-    await deleteHouseApi('room', client: client);
+    await deleteHouseApi('room', revision: 1, client: client);
     await getHouseListApi(client: client);
     await submitVisitorApi(const VisitorRecord(), client: client);
     expect((await getVisitorListApi(client: client)).single.id, 'visitor');
     await submitRepairApi(const RepairRecord(), client: client);
     expect((await getRepairListApi(client: client)).single.id, 'repair');
-    await cancelRepairApi('repair', client: client);
+    await cancelRepairApi('repair', revision: 1, client: client);
     await getRepairListApi(client: client);
     expect(adapter.requests.where((r) => r.method == 'GET'), isEmpty);
     await getRepairListApi(client: client);
@@ -206,13 +207,13 @@ void main() {
       ]);
     });
     final client = RequestDio(client: Dio()..httpClientAdapter = adapter);
-    await pumpPage(
-        tester, RepairListPage(loader: () => getRepairListApi(client: client)),
+    await pumpPage(tester,
+        RepairListPage(loadRepairs: () => getRepairListApi(client: client)),
         routes: {
           RepairFormPage.routeName: (context) => actionPage(context,
               () => submitRepairApi(const RepairRecord(), client: client)),
           RepairDetailPage.routeName: (context) => actionPage(
-              context, () => cancelRepairApi('repair', client: client)),
+              context, () => cancelRepairApi('repair', revision: 1, client: client)),
         });
     await tester.tap(find.text('新增报修'));
     await tester.pumpAndSettle();
@@ -237,10 +238,11 @@ void main() {
         : complete(<Map<String, dynamic>>[]));
     final client = RequestDio(client: Dio()..httpClientAdapter = adapter);
     await pumpPage(tester,
-        HouseList(houseListLoader: () => getHouseListApi(client: client)),
+        HouseList(houseListLoader: () => getHouseListApi(client: client),
+            userInfoLoader: () async => const UserInfo(id: 'test-user', nickName: '', avatarUrl: '')),
         routes: {
-          HouseDetail.routeName: (context) => actionPage(
-              context, () => deleteHouseApi('house', client: client)),
+          HouseDetail.routeName: (context) => actionPage(context,
+              () => deleteHouseApi('house', revision: 1, client: client)),
         });
     await tester.tap(find.text('学习小区').first);
     await tester.pumpAndSettle();

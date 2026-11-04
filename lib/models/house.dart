@@ -19,6 +19,7 @@ import '../utils/floor.dart';
 class House {
   const House({
     this.id = '',
+    this.submissionId = '',
     this.point = '',
     this.building = '',
     this.room = '',
@@ -29,12 +30,14 @@ class House {
     this.idcardFrontUrl = '',
     this.idcardBackUrl = '',
     this.status = 0,
+    this.revision = 0,
     this.reviewReason = '',
   });
 
   factory House.fromJson(Map<String, dynamic> json) {
     return House(
       id: _readText(json['id']),
+      submissionId: _readText(json['submissionId']),
       point: _readText(json['point']),
       building: _readText(json['building']),
       room: _readText(json['room']),
@@ -45,6 +48,8 @@ class House {
       idcardFrontUrl: _readFirstText(json, _idcardFrontKeys),
       idcardBackUrl: _readFirstText(json, _idcardBackKeys),
       status: _readStatus(json['status']),
+      revision:
+          json.containsKey('revision') ? _readRevision(json['revision']) : 0,
       reviewReason: _readText(json['reviewReason']),
     );
   }
@@ -74,6 +79,7 @@ class House {
   ];
 
   final String id;
+  final String submissionId;
 
   /// 小区名称。
   final String point;
@@ -93,6 +99,9 @@ class House {
 
   /// 审核状态：1 审核中、2 审核成功、3 审核失败，0 表示未知。
   final int status;
+
+  /// 资料和审核共用的版本；历史记录未返回该字段时使用 0。
+  final int revision;
   final String reviewReason;
 
   /// 「小区 楼栋 房间」，缺失的部分自动跳过。
@@ -126,6 +135,7 @@ class House {
 
   House copyWith({
     String? id,
+    String? submissionId,
     String? point,
     String? building,
     String? room,
@@ -136,9 +146,11 @@ class House {
     String? idcardFrontUrl,
     String? idcardBackUrl,
     int? status,
+    int? revision,
   }) {
     return House(
       id: id ?? this.id,
+      submissionId: submissionId ?? this.submissionId,
       point: point ?? this.point,
       building: building ?? this.building,
       room: room ?? this.room,
@@ -149,6 +161,7 @@ class House {
       idcardFrontUrl: idcardFrontUrl ?? this.idcardFrontUrl,
       idcardBackUrl: idcardBackUrl ?? this.idcardBackUrl,
       status: status ?? this.status,
+      revision: revision ?? this.revision,
       reviewReason: reviewReason,
     );
   }
@@ -157,6 +170,8 @@ class House {
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       if (id.isNotEmpty) 'id': id,
+      if (id.isNotEmpty) 'revision': revision,
+      if (id.isEmpty && submissionId.isNotEmpty) 'submissionId': submissionId,
       'point': point,
       'building': building,
       'room': room,
@@ -170,6 +185,22 @@ class House {
   }
 
   static String _readText(Object? value) => value?.toString().trim() ?? '';
+
+  static int _readRevision(Object? value) {
+    final num? parsed = switch (value) {
+      num() => value,
+      String() => int.tryParse(value.trim()),
+      _ => null,
+    };
+    if (parsed == null ||
+        !parsed.isFinite ||
+        parsed < 0 ||
+        parsed > 9007199254740991 ||
+        parsed != parsed.truncateToDouble()) {
+      throw const FormatException('房屋版本无效，请重新加载后再提交');
+    }
+    return parsed.toInt();
+  }
 
   /// 按 [keys] 的顺序返回第一个非空值，都没有时返回空串。
   static String _readFirstText(Map<String, dynamic> json, List<String> keys) {
@@ -191,5 +222,30 @@ class House {
   static int _readGender(Object? value) {
     if (value is num) return value.toInt() == 0 ? 0 : 1;
     return int.tryParse(_readText(value)) == 0 ? 0 : 1;
+  }
+}
+
+enum HouseSubmissionState { unknown, created, closed, deleted }
+
+class HouseSubmissionResult {
+  const HouseSubmissionResult(this.state, {this.createdId = ''});
+  final HouseSubmissionState state;
+  final String createdId;
+
+  factory HouseSubmissionResult.fromJson(Map<String, dynamic> json) {
+    final state = switch (json['state']) {
+      'unknown' => HouseSubmissionState.unknown,
+      'created' => HouseSubmissionState.created,
+      'closed' => HouseSubmissionState.closed,
+      'deleted' => HouseSubmissionState.deleted,
+      _ => throw const FormatException('房屋提交结果格式不正确'),
+    };
+    final id = json['createdId'];
+    final hasId = state == HouseSubmissionState.created ||
+        state == HouseSubmissionState.deleted;
+    if (id is! String || (hasId ? id.trim().isEmpty : id.isNotEmpty)) {
+      throw const FormatException('房屋提交结果格式不正确');
+    }
+    return HouseSubmissionResult(state, createdId: id.trim());
   }
 }

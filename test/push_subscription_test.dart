@@ -10,7 +10,7 @@ void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     preferences = await SharedPreferences.getInstance();
-    await tokenManager.init();
+    await tokenManager.loadTokens();
   });
   setUp(() async { await preferences.clear(); await tokenManager.setToken('account-a'); });
 
