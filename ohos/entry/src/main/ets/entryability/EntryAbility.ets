@@ -4,6 +4,7 @@ import { FlutterAbility, FlutterEngine, Log } from '@ohos/flutter_ohos';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
 import VisitorPassSharePlugin from '../VisitorPassSharePlugin';
 import PushPlugin from '../PushPlugin';
+import SecureTokenStoragePlugin from '../SecureTokenStoragePlugin';
 import { AbilityConstant, Want } from '@kit.AbilityKit';
 
 const TAG = 'EntryAbility';
@@ -33,6 +34,7 @@ export default class EntryAbility extends FlutterAbility {
     GeneratedPluginRegistrant.registerWith(flutterEngine)
     flutterEngine.getPlugins()?.add(new VisitorPassSharePlugin());
     flutterEngine.getPlugins()?.add(this.pushPlugin);
+    flutterEngine.getPlugins()?.add(new SecureTokenStoragePlugin());
   }
 
   onBackground() {
