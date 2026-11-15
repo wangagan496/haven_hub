@@ -5,6 +5,7 @@ import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant'
 import VisitorPassSharePlugin from '../VisitorPassSharePlugin';
 import PushPlugin from '../PushPlugin';
 import SecureTokenStoragePlugin from '../SecureTokenStoragePlugin';
+import NativeCameraPlugin, { NativeCameraRequest } from '../NativeCameraPlugin';
 import { AbilityConstant, Want } from '@kit.AbilityKit';
 
 const TAG = 'EntryAbility';
@@ -35,9 +36,11 @@ export default class EntryAbility extends FlutterAbility {
     flutterEngine.getPlugins()?.add(new VisitorPassSharePlugin());
     flutterEngine.getPlugins()?.add(this.pushPlugin);
     flutterEngine.getPlugins()?.add(new SecureTokenStoragePlugin());
+    flutterEngine.getPlugins()?.add(new NativeCameraPlugin());
   }
 
   onBackground() {
+    NativeCameraRequest.cancel();
     super.onBackground();
     this.setKeepGpuResources(true);
   }
