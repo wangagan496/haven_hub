@@ -48,8 +48,9 @@ try {
       if (-not $flutterSdk) { throw 'FLUTTER_OHOS_HOME or FLUTTER_HOME must be set' }
       $dartExe = Join-Path $flutterSdk 'bin/cache/dart-sdk/bin/dart'
       if ($IsWindows) { $dartExe += '.exe' }
-      # dart needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine
-      $env:FLUTTER_ROOT = $flutterSdk
+      # dart needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine.
+      # Use existing FLUTTER_ROOT if set, otherwise set it from FLUTTER_OHOS_HOME.
+      if (-not $env:FLUTTER_ROOT) { $env:FLUTTER_ROOT = $flutterSdk }
       Invoke-Check 'flutter-install' { & $dartExe pub get --enforce-lockfile }
     }
     Invoke-Check 'flutter-analyze' { & pwsh -File $wrapper analyze --no-pub lib test }
