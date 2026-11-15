@@ -28,21 +28,12 @@ jobs:
       - name: Install pinned Flutter OH SDK
         shell: pwsh
         run: ./tool/setup_ci_flutter.ps1 -Destination "$env:RUNNER_TEMP/flutter-ohos"
-      - name: Debug Flutter SDK structure
-        shell: pwsh
-        run: |
-          Write-Output "Checking Flutter SDK at: $env:RUNNER_TEMP/flutter-ohos"
-          Test-Path "$env:RUNNER_TEMP/flutter-ohos/packages/sky_engine"
-          Test-Path "$env:RUNNER_TEMP/flutter-ohos/bin/cache/dart-sdk"
-          Get-ChildItem "$env:RUNNER_TEMP/flutter-ohos/packages" -Name | Select-Object -First 10
       - name: Audit dependencies, build, analyze and test
         shell: pwsh
         env:
           FLUTTER_OHOS_HOME: ${{ runner.temp }}/flutter-ohos
           # pubspec.lock records this hosted source; `pub get --enforce-lockfile` rejects any other.
           PUB_HOSTED_URL: https://pub.flutter-io.cn
-          # dart pub get needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine
-          FLUTTER_ROOT: ${{ runner.temp }}/flutter-ohos
         run: ./tool/check_project.ps1 -LogDirectory "$env:RUNNER_TEMP/haven-project-checks"
       - name: Preserve check evidence
         if: always()

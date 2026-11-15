@@ -42,20 +42,14 @@ try {
     $versionLog = Get-Content -LiteralPath (Join-Path $LogDirectory 'flutter-version.log') -Raw
     if ($versionLog -notmatch [regex]::Escape($toolchain.flutterRevision)) { throw 'Flutter revision does not match tool/toolchain.json' }
     if (-not $SkipRestore) {
-      # Use dart pub get instead of flutter pub get to avoid triggering HOS_SDK_HOME check in
-      # flutter's platform-specific tooling generation (hvigor.updateLocalProperties).
+      # Populate sky_engine and host test artifacts without regenerating platform tooling
+      # (flutter pub get requires a HarmonyOS SDK when the project contains ohos/).
+      Invoke-Check 'flutter-precache' { & pwsh -File $wrapper precache --universal }
       $flutterSdk = if ($env:FLUTTER_OHOS_HOME) { $env:FLUTTER_OHOS_HOME } else { $env:FLUTTER_HOME }
       if (-not $flutterSdk) { throw 'FLUTTER_OHOS_HOME or FLUTTER_HOME must be set' }
-      $dartExe = Join-Path $flutterSdk 'bin/cache/dart-sdk/bin/dart'
-      if ($IsWindows) { $dartExe += '.exe' }
-      # dart needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine.
-      # Use existing FLUTTER_ROOT if set, otherwise set it from FLUTTER_OHOS_HOME.
-      if (-not $env:FLUTTER_ROOT) {
-        Write-Output "Setting FLUTTER_ROOT=$flutterSdk"
-        $env:FLUTTER_ROOT = $flutterSdk
-      } else {
-        Write-Output "Using existing FLUTTER_ROOT=$env:FLUTTER_ROOT"
-      }
+      # The SDK launcher supplies its own FLUTTER_ROOT to pub.
+      $dartExe = Join-Path $flutterSdk 'bin/dart'
+      if ($IsWindows) { $dartExe += '.bat' }
       Invoke-Check 'flutter-install' { & $dartExe pub get --enforce-lockfile }
     }
     Invoke-Check 'flutter-analyze' { & pwsh -File $wrapper analyze --no-pub lib test }
