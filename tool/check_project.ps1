@@ -50,7 +50,12 @@ try {
       if ($IsWindows) { $dartExe += '.exe' }
       # dart needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine.
       # Use existing FLUTTER_ROOT if set, otherwise set it from FLUTTER_OHOS_HOME.
-      if (-not $env:FLUTTER_ROOT) { $env:FLUTTER_ROOT = $flutterSdk }
+      if (-not $env:FLUTTER_ROOT) {
+        Write-Output "Setting FLUTTER_ROOT=$flutterSdk"
+        $env:FLUTTER_ROOT = $flutterSdk
+      } else {
+        Write-Output "Using existing FLUTTER_ROOT=$env:FLUTTER_ROOT"
+      }
       Invoke-Check 'flutter-install' { & $dartExe pub get --enforce-lockfile }
     }
     Invoke-Check 'flutter-analyze' { & pwsh -File $wrapper analyze --no-pub lib test }
