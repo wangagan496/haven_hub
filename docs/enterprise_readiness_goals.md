@@ -301,6 +301,15 @@
 - 最终统一入口 `pwsh -File tool/check_project.ps1 -SkipRestore -LogDirectory C:/Users/23203/AppData/Local/Temp/haven-enterprise-shutdown-20261029/final-checks` 通过后端654项、Flutter618项和显式真实Dart/HTTP/SQLite联调1项，共1273项零失败；TypeScript构建、Flutter静态检查、物业网页语法及npm依赖审计通过，漏洞0项。新增15项本机实跑未跳过，原Flutter条件跳过的联调由最后一步实际执行；未使用Windows任务停止或实际外部推送代替本地模拟边界。
 - 证据目录：`C:\Users\23203\AppData\Local\Temp\haven-enterprise-shutdown-20261029`；本批前快照、失败/定向日志及统一检查分别保存，脚本 `haven-shutdown-check-20261029.ps1`、`haven-shutdown-review-20261029.ps1`、`haven-shutdown-evidence-20261029.ps1` 在本机临时目录。未修改日常数据库、`.env`、密钥或系统任务，未提交、推送、运行远程CI或部署；执行负责人为本轮Codex。
 
+## 2026-11-15 第三十批：Windows私有目录权限收紧
+
+- 本地实际复现 `createPrivateDirectory` 只删除继承规则、保留额外显式授权的问题：父目录没有可继承规则时，新目录会带入进程默认权限；另以实际目录注入Everyone及Administrators授权，确认原实现和后续凭证文件可能保留它们。错误 `USERDOMAIN` 会阻止当前账号授权，空目录清理失败还会覆盖原固定错误。
+- 共用封装改用系统Windows PowerShell的.NET接口，取得实际进程身份SID、重建访问规则并回读检查，只保留执行账号与SYSTEM的完全控制及文件/目录继承。路径按环境值字面传入，未新增依赖、提权或修改全局执行策略；PowerShell不可用、权限设置/回读失败或缺少确认回执时均停止，不写入数据。
+- 新增8项回归覆盖额外显式授权、真实无继承父目录、凭证文件实际ACL、特殊路径与域变量、已有目录不变、工具失败、清理失败、缺少确认回执及异常内容保留；保留非递归清理，只处理本次创建的空目录。初次7项回归加备份/加密/监控/日志等共77项定向通过，随后增加异常内容保留回归并纳入统一检查。
+- 最终执行 `pwsh -File tool/check_project.ps1 -SkipRestore -LogDirectory C:/Users/23203/AppData/Local/Temp/haven-private-acl-20261115/full-checks`，通过后端676项、Flutter690项及显式Dart/HTTP/SQLite联调1项，共1367项零失败；8项新测试在Windows实际运行，无跳过。TypeScript构建、Flutter静态检查、物业网页语法及npm依赖审计通过，漏洞0项；Flutter默认条件跳过的联调已在最后一步独立执行。
+- 代码基准为 `88aef91cf0bed5618447c744308420ad22a7d5ee` 加本次工作区修改；原 `third_party/image_picker_ohos/ohos/BuildProfile.ets` 改动保留。证据目录 `C:\Users\23203\AppData\Local\Temp\haven-private-acl-20261115` 保存修改前源码、失败回归、定向及完整检查日志，执行入口为其中的 `run-check.ps1`，执行负责人为本轮Codex。
+- 本轮仅覆盖本机Windows新建目录；既有目录、其他服务账号、受限执行策略、非Windows权限语义和目标服务器仍须另行验收，G1/G4/G5保持部分完成。日常数据库、`.env`、密钥和系统任务未改动，未提交、推送、部署或发送外部消息。
+
 ## 总目标
 
 因：项目已有住户、维修师傅和物业的业务闭环，但目前服务定位为本地学习与演示，缺少真实上线后的安全、运行和恢复保障。

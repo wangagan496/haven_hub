@@ -2,7 +2,6 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { copyFileSync, constants, createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync, rmdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -51,14 +50,53 @@ function inventory(path: string) {
   } finally { db.close(); }
 }
 
+// Replace the DACL, not just inherited ACEs: Windows can create explicit default-token entries.
+// Fixed code plus a literal environment value keeps paths out of PowerShell source parsing.
+const windowsPrivateDirectoryScript = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  try { $current = $identity.User.Value } finally { $identity.Dispose() }
+  $sids = @($current)
+  if ($current -ne 'S-1-5-18') { $sids += 'S-1-5-18' }
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($sid in $sids) {
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+      [System.Security.Principal.SecurityIdentifier]::new($sid), 'FullControl',
+      'ContainerInherit, ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+  }
+  [System.IO.Directory]::SetAccessControl($env:HAVEN_PRIVATE_DIRECTORY, $acl)
+  $actual = [System.IO.Directory]::GetAccessControl($env:HAVEN_PRIVATE_DIRECTORY)
+  $rules = $actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+  if (-not $actual.AreAccessRulesProtected -or $rules.Count -ne $sids.Count) { exit 1 }
+  foreach ($sid in $sids) {
+    $matched = 0
+    foreach ($rule in $rules) {
+      if ($rule.IdentityReference.Value -eq $sid -and -not $rule.IsInherited -and
+          $rule.AccessControlType -eq 'Allow' -and $rule.FileSystemRights -eq 'FullControl' -and
+          $rule.InheritanceFlags -eq 'ContainerInherit, ObjectInherit' -and $rule.PropagationFlags -eq 'None') { $matched++ }
+    }
+    if ($matched -ne 1) { exit 1 }
+  }
+  [Console]::Write('private-directory-ready')
+} catch { exit 1 }
+`;
+
 export function createPrivateDirectory(path: string) {
   mkdirSync(path, { mode: 0o700 }); // Existing destinations are never overwritten or reused.
   if (process.platform === 'win32') {
-    const account = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${userInfo().username}` : userInfo().username;
     try {
-      execFileSync('icacls.exe', [path, '/inheritance:r', '/grant:r', `${account}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F'], { stdio: 'pipe', windowsHide: true });
+      // Use Windows PowerShell's .NET ACL API without profile, module auto-loading or localized names.
+      const receipt = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+        Buffer.from(windowsPrivateDirectoryScript, 'utf16le').toString('base64')], {
+        encoding: 'utf8', stdio: 'pipe', windowsHide: true, timeout: 15000,
+        env: { ...process.env, HAVEN_PRIVATE_DIRECTORY: resolve(path) },
+      });
+      if (receipt !== 'private-directory-ready') throw new Error();
     } catch {
-      rmdirSync(path);
+      try { rmdirSync(path); } catch { /* Never recurse or expose native errors; an empty directory may remain. */ }
       throw new Error('无法限制备份目录权限，尚未写入任何数据');
     }
   }
