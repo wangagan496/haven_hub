@@ -5,6 +5,7 @@ import 'package:haven_hub/api/repair.dart';
 import 'package:haven_hub/models/repair.dart';
 import 'package:haven_hub/pages/repair/repair_pages.dart';
 import 'package:haven_hub/utils/app_exception.dart';
+import 'package:haven_hub/utils/date_utils.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:haven_hub/widgets/repair_slot_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -56,8 +57,8 @@ void main() {
   testWidgets('unstaffed banner displays response deadline and offers both choices', (tester) async {
     await detail(tester, (record, {slot, keep = false}) async => updated);
     expect(find.text('请选择新的上门时间'), findsOneWidget);
-    expect(find.textContaining('10月20日'), findsWidgets);
-    expect(find.textContaining('10:00'), findsWidgets);
+    final deadline = formatVisitTime(offered.rescheduleOffer!.deadline);
+    expect(find.textContaining('请在 $deadline 前选择新时间'), findsOneWidget);
     expect(find.text('选择新时间'), findsOneWidget);
     expect(find.text('保持原时间，继续等'), findsOneWidget);
     await finishPage(tester);

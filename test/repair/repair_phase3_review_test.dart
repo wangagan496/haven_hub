@@ -9,6 +9,7 @@ import 'package:haven_hub/models/repair.dart';
 import 'package:haven_hub/pages/repair/repair_pages.dart';
 import 'package:haven_hub/pages/worker/worker_pages.dart';
 import 'package:haven_hub/utils/app_exception.dart';
+import 'package:haven_hub/utils/date_utils.dart';
 import 'package:haven_hub/utils/logger.dart';
 import 'package:haven_hub/utils/request_dio.dart';
 import 'package:haven_hub/utils/token_manager.dart';
@@ -207,7 +208,8 @@ void main() {
                 : RepairDetailPage(loadRepairDetail: (_) async => record),
             arguments: 'review');
         expect(find.text('已约定'), findsNothing);
-        expect(find.textContaining('10月20日'), findsWidgets);
+        expect(find.textContaining(formatVisitTime(record.agreedTime)),
+            findsWidgets);
         await finishPage(tester);
       });
     }

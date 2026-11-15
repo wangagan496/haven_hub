@@ -6,6 +6,7 @@ import 'package:haven_hub/models/repair.dart';
 import 'package:haven_hub/models/user_info.dart';
 import 'package:haven_hub/pages/repair/repair_pages.dart';
 import 'package:haven_hub/platform/avatar_picker.dart';
+import 'package:haven_hub/utils/date_utils.dart';
 import 'package:haven_hub/utils/repair_draft_store.dart';
 import 'package:haven_hub/utils/token_manager.dart';
 import 'package:haven_hub/widgets/repair_photos.dart';
@@ -79,7 +80,8 @@ void main() {
     expect(find.text('物业派单'), findsOneWidget);
     final time = DateTime.parse('2026-10-13T09:00:00Z').toLocal();
     final hours = time.hour.toString().padLeft(2, '0');
-    expect(find.text('2026-10-13 $hours:00'), findsOneWidget);
+    final minutes = time.minute.toString().padLeft(2, '0');
+    expect(find.text('${formatDate(time)} $hours:$minutes'), findsOneWidget);
     await finishPage(tester);
   });
   test('uploaded photos survive draft serialization', () async {
