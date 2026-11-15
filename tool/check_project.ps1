@@ -41,7 +41,15 @@ try {
     Invoke-Check 'flutter-version' { & pwsh -File $wrapper --version --machine }
     $versionLog = Get-Content -LiteralPath (Join-Path $LogDirectory 'flutter-version.log') -Raw
     if ($versionLog -notmatch [regex]::Escape($toolchain.flutterRevision)) { throw 'Flutter revision does not match tool/toolchain.json' }
-    if (-not $SkipRestore) { Invoke-Check 'flutter-install' { & pwsh -File $wrapper pub get --enforce-lockfile } }
+    if (-not $SkipRestore) {
+      # Use dart pub get instead of flutter pub get to avoid triggering HOS_SDK_HOME check in
+      # flutter's platform-specific tooling generation (hvigor.updateLocalProperties).
+      $flutterSdk = if ($env:FLUTTER_OHOS_HOME) { $env:FLUTTER_OHOS_HOME } else { $env:FLUTTER_HOME }
+      if (-not $flutterSdk) { throw 'FLUTTER_OHOS_HOME or FLUTTER_HOME must be set' }
+      $dartExe = Join-Path $flutterSdk 'bin/cache/dart-sdk/bin/dart'
+      if ($IsWindows) { $dartExe += '.exe' }
+      Invoke-Check 'flutter-install' { & $dartExe pub get --enforce-lockfile }
+    }
     Invoke-Check 'flutter-analyze' { & pwsh -File $wrapper analyze --no-pub lib test }
     Invoke-Check 'flutter-test' { & pwsh -File $wrapper test --no-pub --reporter expanded }
   }
