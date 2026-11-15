@@ -9,6 +9,8 @@ import '../../api/user.dart';
 import '../../controller/build_controller.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/house.dart';
+import '../../platform/camera_fallback.dart';
+import '../../platform/image_picker_errors.dart';
 import '../../platform/local_image.dart'
     if (dart.library.io) '../../platform/local_image_io.dart';
 import '../../router/app_routes.dart';
@@ -38,8 +40,14 @@ typedef HousePhotoPicker = Future<XFile?> Function(ImageSource source);
 /// 身份证的两面，替代原来用字段名字符串当 tag 的写法。
 enum _IdcardSide { front, back }
 
-Future<XFile?> pickHousePhoto(ImageSource source) {
-  return ImagePicker().pickImage(source: source);
+Future<XFile?> pickHousePhoto(ImageSource source) async {
+  try {
+    return await pickImageWithCameraFallback(source: source);
+  } on PlatformException catch (error) {
+    final FormatException? cameraError = imagePickerCameraError(error);
+    if (cameraError != null) throw cameraError;
+    rethrow;
+  }
 }
 
 /// 用选楼流程里已选中的小区、楼栋、房间初始化一份空白房屋表单。
