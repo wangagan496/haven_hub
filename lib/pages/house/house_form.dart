@@ -5,18 +5,24 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../api/house.dart';
+import '../../api/user.dart';
 import '../../controller/build_controller.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/house.dart';
+import '../../platform/camera_fallback.dart';
+import '../../platform/image_picker_errors.dart';
 import '../../platform/local_image.dart'
     if (dart.library.io) '../../platform/local_image_io.dart';
 import '../../router/app_routes.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/app_exception.dart';
+import '../../utils/house_submission_store.dart';
 import '../../utils/toast.dart';
+import '../../utils/token_manager.dart';
 import '../../utils/validators.dart';
 import '../../widgets/cached_image.dart';
 import '../../widgets/camera_dialog.dart';
+import '../../widgets/house_draft_actions.dart';
 import '../../widgets/image_preview.dart';
 import '../../widgets/section_title.dart';
 import 'house_list.dart';
@@ -34,8 +40,14 @@ typedef HousePhotoPicker = Future<XFile?> Function(ImageSource source);
 /// 身份证的两面，替代原来用字段名字符串当 tag 的写法。
 enum _IdcardSide { front, back }
 
-Future<XFile?> pickHousePhoto(ImageSource source) {
-  return ImagePicker().pickImage(source: source);
+Future<XFile?> pickHousePhoto(ImageSource source) async {
+  try {
+    return await pickImageWithCameraFallback(source: source);
+  } on PlatformException catch (error) {
+    final FormatException? cameraError = imagePickerCameraError(error);
+    if (cameraError != null) throw cameraError;
+    rethrow;
+  }
 }
 
 /// 用选楼流程里已选中的小区、楼栋、房间初始化一份空白房屋表单。
@@ -97,16 +109,26 @@ class HouseForm extends StatefulWidget {
     this.photoPicker = pickHousePhoto,
     this.uploadPhotoLoader = uploadPhotoAPI,
     this.submitHouseLoader = submitHouseAPI,
-    this.houseDetailLoader = getHouseDetailApi,
+    this.houseDetailLoader = getHouseEditDetailApi,
+    this.userInfoLoader = getUserInfoApi,
+    this.submissionLoader = getHouseSubmissionApi,
+    this.submissionCloser = closeHouseSubmissionApi,
+    this.submissionStore,
+    this.draftId,
     super.key,
   });
 
-  static const String routeName = AppRoutes.houseForm;
+  static const String routeName = houseForm;
 
   final HousePhotoPicker photoPicker;
   final UploadPhotoLoader uploadPhotoLoader;
   final SubmitHouseLoader submitHouseLoader;
   final HouseDetailLoader houseDetailLoader;
+  final UserInfoLoader userInfoLoader;
+  final Future<HouseSubmissionResult> Function(String) submissionLoader;
+  final Future<HouseSubmissionResult> Function(String) submissionCloser;
+  final HouseSubmissionStore? submissionStore;
+  final String? draftId;
 
   @override
   State<HouseForm> createState() => _HouseFormState();
@@ -114,6 +136,12 @@ class HouseForm extends StatefulWidget {
 
 class _HouseFormState extends State<HouseForm> {
   late final BuildController _controller;
+  final int _session = tokenManager.sessionId;
+  String? _draftId;
+  bool get _active =>
+      mounted &&
+      tokenManager.sessionId == _session &&
+      (_draftId == null || _controller.draftFor(_draftId!) != null);
   late House _house;
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _nameController = TextEditingController();
@@ -123,6 +151,23 @@ class _HouseFormState extends State<HouseForm> {
   bool _isPickingImage = false;
   bool _isLoading = false;
   bool _isLoadingDetail = false;
+  bool _hasEditConflict = false;
+  bool _isConfirmingReload = false;
+  bool _isLoadingSubmission = false;
+  bool _submissionReady = false;
+  bool _receiptResolved = false;
+  String _owner = '';
+  HouseSubmission? _pending;
+  String? _submissionError;
+  String? _pendingMessage;
+  HouseSubmissionStore get _submissionStore =>
+      widget.submissionStore ?? houseSubmissionStore;
+  bool get _photoActionsBlocked =>
+      _isPickingImage ||
+      _isLoading ||
+      _isLoadingDetail ||
+      _isConfirmingReload ||
+      (_houseId.isEmpty && (!_submissionReady || _pending != null));
   bool _showValidationErrors = false;
   bool _didReadRouteArguments = false;
   String _houseId = '';
@@ -140,7 +185,7 @@ class _HouseFormState extends State<HouseForm> {
   void initState() {
     super.initState();
     _controller = BuildController.instance();
-    _house = createHouseFormData(_controller);
+    _house = const House();
   }
 
   @override
@@ -150,7 +195,10 @@ class _HouseFormState extends State<HouseForm> {
     _didReadRouteArguments = true;
 
     final Object? arguments = ModalRoute.of(context)?.settings.arguments;
-    if (arguments == null) return;
+    if (arguments == null) {
+      _restoreDraft(widget.draftId ?? _controller.currentDraftId);
+      return;
+    }
 
     final String id = switch (arguments) {
       String() => arguments.trim(),
@@ -158,7 +206,11 @@ class _HouseFormState extends State<HouseForm> {
       Map<dynamic, dynamic>() => arguments['id']?.toString().trim() ?? '',
       _ => '',
     };
-    if (arguments is HouseFormArguments && arguments.isCreate) return;
+    if (arguments is HouseFormArguments && arguments.isCreate) {
+      _restoreDraft(
+          arguments.draftId ?? widget.draftId ?? _controller.currentDraftId);
+      return;
+    }
     if (id.isEmpty) {
       setState(() => _detailErrorMessage = '房屋参数不正确');
       return;
@@ -166,6 +218,146 @@ class _HouseFormState extends State<HouseForm> {
 
     _houseId = id;
     unawaited(_loadHouseDetail());
+  }
+
+  void _restoreDraft(String id) {
+    _draftId = id;
+    _controller.resumeAt(id, HouseSelectionStep.owner);
+    _house = _controller.houseFor(id);
+    _nameController.text = _house.name;
+    _mobileController.text = _house.mobile;
+    _idcardFrontPhotoPath = _house.idcardFrontUrl;
+    _idcardBackPhotoPath = _house.idcardBackUrl;
+    unawaited(_loadSubmission());
+  }
+
+  Future<void> _loadSubmission() async {
+    if (!_active || _isLoadingSubmission || _isLoading || _houseId.isNotEmpty) {
+      return;
+    }
+    setState(() {
+      _isLoadingSubmission = true;
+      _submissionReady = false;
+      _submissionError = null;
+    });
+    try {
+      final user = await widget.userInfoLoader();
+      if (!_active) return;
+      if (user.id.trim().isEmpty) {
+        throw const FormatException('账号信息缺少用户 ID，请重新加载');
+      }
+      final owner = user.id.trim();
+      final pending = await _submissionStore.load(owner);
+      if (!_active) return;
+      setState(() {
+        _owner = owner;
+        _pending = pending;
+        _submissionReady = true;
+      });
+    } on Object catch (error) {
+      if (_active) {
+        setState(() => _submissionError =
+            describeError(error, fallback: '加载房屋提交回执失败，请重新加载'));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingSubmission = false);
+    }
+  }
+
+  Future<bool> _clearSubmission() async {
+    final pending = _pending;
+    if (!_active || pending == null) return false;
+    final removed = await _submissionStore.remove(_owner, pending.id);
+    if (!_active) return false;
+    if (!removed) throw const FormatException('本机房屋回执尚未清理，请再次查看提交结果');
+    setState(() {
+      _pending = null;
+      _pendingMessage = null;
+      _receiptResolved = false;
+    });
+    return true;
+  }
+
+  Future<void> _finishCreation({bool deleted = false}) async {
+    final pending = _pending;
+    if (!_active || pending == null) return;
+    setState(() {
+      _receiptResolved = true;
+      _pendingMessage = deleted
+          ? '原房屋已删除，本次提交不会重新创建；本机回执尚未清理。'
+          : '房屋已创建，本机回执尚未清理；清理失败时请再次查看提交结果。';
+    });
+    if (!await _clearSubmission() || !_active) return;
+    await AppPrompt.showSuccess(deleted ? '原房屋已删除，本次提交已处理' : '添加成功');
+    if (!mounted || !_active) return;
+    final original = _controller.draftFor(pending.draftId);
+    if (original != null &&
+        pending.matches(_controller.houseFor(pending.draftId))) {
+      _controller.clearSelection(draftId: pending.draftId);
+    }
+    unawaited(Navigator.pushNamedAndRemoveUntil<void>(
+        context, HouseList.routeName, (route) => false));
+  }
+
+  Future<void> _recoverSubmission(
+      {bool retry = false, bool close = false}) async {
+    final pending = _pending;
+    if (_isLoading || !_active || pending == null) return;
+    setState(() => _isLoading = true);
+    try {
+      if (retry || close) {
+        final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+                  title: Text(close ? '停止本次提交' : '按原内容重试'),
+                  content: Text(close
+                      ? '已创建的房屋会找回原结果；未创建的提交将被停止，迟到请求不能再创建。此操作不会删除已有房屋。'
+                      : '将使用已保存的房屋、业主和证件照片地址重试，不会另建一套房屋。'),
+                  actions: <Widget>[
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        child: const Text('先不操作')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        child: Text(close ? '确认停止' : '确认重试')),
+                  ],
+                ));
+        if (!_active || confirmed != true) return;
+      }
+      if (retry) {
+        await widget.submitHouseLoader(pending.house);
+        if (_active) await _finishCreation();
+        return;
+      }
+      final result = await (close
+          ? widget.submissionCloser
+          : widget.submissionLoader)(pending.id);
+      if (!_active) return;
+      switch (result.state) {
+        case HouseSubmissionState.created:
+          await _finishCreation();
+        case HouseSubmissionState.deleted:
+          await _finishCreation(deleted: true);
+        case HouseSubmissionState.closed:
+          setState(() {
+            _receiptResolved = true;
+            _pendingMessage = '本次提交已停止，本机回执尚未清理。';
+          });
+          await _clearSubmission();
+        case HouseSubmissionState.unknown:
+          setState(() => _pendingMessage = '暂未查到结果，原请求可能仍在处理；可按原内容重试或停止本次提交。');
+      }
+    } on Object catch (error) {
+      if (_active) {
+        await AppPrompt.showException(error, fallback: '尚未确认提交结果，请保留回执后重试');
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _saveDraft() {
+    if (_active && _draftId != null) _controller.saveForm(_draftId!, _house);
   }
 
   @override
@@ -177,7 +369,13 @@ class _HouseFormState extends State<HouseForm> {
   }
 
   Future<void> _loadHouseDetail() async {
-    if (_isLoadingDetail || _houseId.isEmpty) return;
+    if (_isLoadingDetail ||
+        _isLoading ||
+        _isPickingImage ||
+        _houseId.isEmpty ||
+        !_active) {
+      return;
+    }
 
     setState(() {
       _isLoadingDetail = true;
@@ -185,7 +383,7 @@ class _HouseFormState extends State<HouseForm> {
     });
     try {
       final House detail = await widget.houseDetailLoader(_houseId);
-      if (!mounted) return;
+      if (!_active) return;
 
       setState(() {
         // 详情接口不返回 id 时以路由参数为准，避免提交时退化成“新增”。
@@ -194,26 +392,60 @@ class _HouseFormState extends State<HouseForm> {
         _mobileController.text = detail.mobile;
         _idcardFrontPhotoPath = detail.idcardFrontUrl;
         _idcardBackPhotoPath = detail.idcardBackUrl;
+        _hasEditConflict = false;
+        _ownerNameServerError = null;
+        _rejectedOwnerName = null;
+        _showValidationErrors = false;
       });
     } on Object catch (error) {
       final String msg = describeError(
         error,
         fallback: '获取房屋详情失败，请重试',
       );
-      if (!mounted) return;
+      if (!_active) return;
       setState(() => _detailErrorMessage = msg);
-      await PromptAction.showError(msg);
+      await AppPrompt.showError(msg);
     } finally {
       if (mounted) setState(() => _isLoadingDetail = false);
     }
   }
 
+  Future<void> _reloadLatestHouse() async {
+    if (_photoActionsBlocked || !_hasEditConflict || !_active) return;
+    setState(() => _isConfirmingReload = true);
+    try {
+      final bool? replace = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext dialogContext) => AlertDialog(
+          title: const Text('重新加载最新资料'),
+          content:
+              const Text('重新加载成功后，当前填写的姓名、手机号、性别和照片将替换为服务器上的最新资料，请重新核对后提交。'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('保留当前填写'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('替换为最新资料'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || !_active || replace != true) return;
+      FocusScope.of(context).unfocus();
+      await _loadHouseDetail();
+    } finally {
+      if (mounted) setState(() => _isConfirmingReload = false);
+    }
+  }
+
   Future<void> _submit() async {
-    if (_isLoading) return;
+    if (_photoActionsBlocked || _hasEditConflict || !_active) return;
 
     final String? selectionError = _validateHouseSelection(_house);
     if (selectionError != null) {
-      await PromptAction.showWarning(selectionError);
+      await AppPrompt.showWarning(selectionError);
       return;
     }
     if (_validateOwnerNameField(_house.name) != null ||
@@ -225,7 +457,7 @@ class _HouseFormState extends State<HouseForm> {
 
     final String? validationMessage = validateHouseFormData(_house);
     if (validationMessage != null) {
-      await PromptAction.showWarning(validationMessage);
+      await AppPrompt.showWarning(validationMessage);
       return;
     }
 
@@ -235,13 +467,33 @@ class _HouseFormState extends State<HouseForm> {
       mobile: _house.mobile.trim(),
     );
     try {
+      if (_houseId.isEmpty) {
+        final pending =
+            HouseSubmissionStore.prepare(submittingHouse, draftId: _draftId!);
+        final saved = await _submissionStore.save(_owner, pending);
+        if (!_active) return;
+        if (!saved) {
+          setState(() {
+            _submissionReady = false;
+            _submissionError = '提交回执未能保存，本次尚未发送，请重新加载';
+          });
+          return;
+        }
+        setState(() {
+          _pending = pending;
+          _pendingMessage = null;
+        });
+        await widget.submitHouseLoader(pending.house);
+        if (_active) await _finishCreation();
+        return;
+      }
       await widget.submitHouseLoader(submittingHouse);
-      if (!mounted) return;
+      if (!_active) return;
 
-      await PromptAction.showSuccess(
+      await AppPrompt.showSuccess(
         _houseId.isEmpty ? '添加成功' : '修改成功',
       );
-      if (!mounted) return;
+      if (!mounted || !_active) return;
 
       if (_houseId.isNotEmpty) {
         // 编辑路径不清选楼上下文：用户可能是从「添加房屋」流程点进来的，
@@ -249,21 +501,54 @@ class _HouseFormState extends State<HouseForm> {
         Navigator.pop(context, true);
         return;
       }
-
-      _controller.clearBuildingInfo();
-
-      unawaited(
-        Navigator.pushNamedAndRemoveUntil<void>(
-          context,
-          HouseList.routeName,
-          (Route<dynamic> route) => false,
-        ),
-      );
     } on Object catch (error) {
+      if (!_active) return;
+      if (_houseId.isEmpty) {
+        if (_pending != null && isDefiniteRequestRejection(error)) {
+          try {
+            if (!await _clearSubmission()) return;
+          } on Object {
+            if (!_active) return;
+            await AppPrompt.showWarning('请求已明确失败，但本机回执尚未清理；请重新查看提交结果');
+            return;
+          }
+          if (!_active) return;
+          if (error is BusinessException && error.code == 40002 &&
+              _nameController.text.trim() == submittingHouse.name) {
+            final String message = describeError(error, fallback: '姓名已被登记');
+            setState(() {
+              _ownerNameServerError = message;
+              _rejectedOwnerName = submittingHouse.name;
+              _showValidationErrors = true;
+            });
+            if (_scrollController.hasClients) _scrollController.jumpTo(0);
+            return;
+          }
+          await AppPrompt.showException(error, fallback: '添加房屋失败，请重试');
+          return;
+        }
+        if (_pending == null) {
+          setState(() {
+            _submissionReady = false;
+            _submissionError = describeError(error, fallback: '提交回执保存失败，请重新加载');
+          });
+        }
+        await AppPrompt.showException(error, fallback: '尚未确认房屋提交结果，请保留回执后重试');
+        return;
+      }
       final String msg = describeError(
         error,
         fallback: _houseId.isEmpty ? '添加房屋失败，请重试' : '修改房屋失败，请重试',
       );
+      if (_houseId.isNotEmpty &&
+          ((error is NetworkException && error.statusCode == 409) ||
+              (error is BusinessException && error.code == 40900))) {
+        setState(() {
+          _hasEditConflict = true;
+          _detailErrorMessage = null;
+        });
+        if (_scrollController.hasClients) _scrollController.jumpTo(0);
+      }
       if (error is BusinessException && error.code == 40002) {
         if (mounted && _nameController.text.trim() == submittingHouse.name) {
           setState(() {
@@ -275,23 +560,25 @@ class _HouseFormState extends State<HouseForm> {
         }
         return;
       }
-      await PromptAction.showError(msg);
+      await AppPrompt.showError(msg);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _goToHouseSelection() async {
-    if (!mounted) return;
+    if (!_active) return;
     // 直达房屋表单时替换当前空表单，避免完成选择后又返回到这份无效页面。
     await Navigator.pushReplacementNamed<void, void>(
       context,
-      AppRoutes.locationList,
+      locationList,
+      arguments:
+          HouseSelectionArguments(_draftId ?? _controller.currentDraftId),
     );
   }
 
   Future<void> _showIdcardPhotoOptions(_IdcardSide side) async {
-    if (_isPickingImage) return;
+    if (_photoActionsBlocked || !_active) return;
 
     await showCameraDialog(
       context,
@@ -320,16 +607,17 @@ class _HouseFormState extends State<HouseForm> {
           if (photoPath != null) _idcardBackPhotoPath = photoPath;
       }
     });
+    _saveDraft();
   }
 
   Future<void> _pickIdcardPhoto(_IdcardSide side, ImageSource source) async {
-    if (_isPickingImage) return;
+    if (_photoActionsBlocked || !_active) return;
 
     setState(() => _isPickingImage = true);
     final AppLocalizations l10n = AppLocalizations.of(context)!;
     try {
       final XFile? photo = await widget.photoPicker(source);
-      if (photo == null || !mounted) {
+      if (photo == null || !_active) {
         return;
       }
 
@@ -352,7 +640,7 @@ class _HouseFormState extends State<HouseForm> {
       if (fileBytes.length > _maxIdentityPhotoBytes) {
         throw FormatException(l10n.idPhotoTooLarge);
       }
-      if (!mounted) return;
+      if (!_active) return;
 
       _setIdcardPhoto(side, photoPath: photoPath);
 
@@ -360,15 +648,16 @@ class _HouseFormState extends State<HouseForm> {
         fileBytes: fileBytes,
         fileName: fileName,
       );
-      if (!mounted) return;
+      if (!_active) return;
       _setIdcardPhoto(side, url: photoUrl);
     } on Object catch (error) {
+      if (!_active) return;
       if (mounted) {
         // 上传失败时回退到已保存的图片地址，避免界面留着一张没上传成功的本地图。
         _setIdcardPhoto(side, photoPath: _idcardUrl(side));
       }
       final String msg = describeError(error, fallback: '上传图片失败，请重试');
-      await PromptAction.showError(msg);
+      await AppPrompt.showError(msg);
     } finally {
       if (mounted) setState(() => _isPickingImage = false);
     }
@@ -386,6 +675,7 @@ class _HouseFormState extends State<HouseForm> {
   }
 
   void _clearIdcardPhoto(_IdcardSide side) {
+    if (_photoActionsBlocked || !_active) return;
     _setIdcardPhoto(side, url: '', photoPath: '');
   }
 
@@ -394,7 +684,8 @@ class _HouseFormState extends State<HouseForm> {
       button: true,
       label: info,
       child: InkWell(
-        onTap: _isPickingImage ? null : () => _showIdcardPhotoOptions(side),
+        onTap:
+            _photoActionsBlocked ? null : () => _showIdcardPhotoOptions(side),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -428,7 +719,8 @@ class _HouseFormState extends State<HouseForm> {
           child: IconButton(
             icon: const Icon(Icons.delete, color: Colors.red),
             tooltip: '删除照片',
-            onPressed: _isPickingImage ? null : () => _clearIdcardPhoto(side),
+            onPressed:
+                _photoActionsBlocked ? null : () => _clearIdcardPhoto(side),
           ),
         ),
       ],
@@ -479,11 +771,20 @@ class _HouseFormState extends State<HouseForm> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => HouseDraftGuard(
+      draftId: _draftId, sessionId: _session, child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: Text(_houseId.isEmpty ? '添加房屋信息' : '修改房屋信息'),
+        actions: <Widget>[
+          if (_houseId.isEmpty)
+            HouseDraftActions(
+                enabled:
+                    !_isLoading && !_isPickingImage && !_isLoadingSubmission),
+        ],
       ),
       body: Align(
         alignment: Alignment.topCenter,
@@ -496,12 +797,51 @@ class _HouseFormState extends State<HouseForm> {
   }
 
   Widget _buildBody() {
-    if (_isLoadingDetail) {
+    final pending = _pending;
+    if (_houseId.isEmpty && pending != null) {
+      return ListView(padding: const EdgeInsets.all(16), children: <Widget>[
+        const Text('当前账号有一份待确认的房屋提交，确认结果前不能再提交新的房屋；其他选房草稿仍会保留。'),
+        const SizedBox(height: 12),
+        Text(pending.house.fullName),
+        Text('业主：${pending.house.name}'),
+        Text('手机号：${pending.house.mobile}'),
+        const Text('重试将沿用已保存的两面证件照片。'),
+        if (_pendingMessage != null) Text(_pendingMessage!),
+        if (_isLoading) const LinearProgressIndicator(),
+        FilledButton(
+            onPressed: _isLoading ? null : _recoverSubmission,
+            child: const Text('查看提交结果')),
+        OutlinedButton(
+            onPressed: _isLoading || _receiptResolved
+                ? null
+                : () => _recoverSubmission(retry: true),
+            child: const Text('按原内容重试')),
+        TextButton(
+            onPressed:
+                _isLoading ? null : () => _recoverSubmission(close: true),
+            child: const Text('停止本次提交')),
+      ]);
+    }
+    if (_houseId.isEmpty && !_submissionReady) {
+      return Center(
+          child: _isLoadingSubmission
+              ? const CircularProgressIndicator()
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(_submissionError ?? '房屋提交回执尚未就绪',
+                        textAlign: TextAlign.center),
+                    TextButton(
+                        onPressed: _loadSubmission, child: const Text('重新加载')),
+                  ],
+                ));
+    }
+    if (_isLoadingDetail && !_hasEditConflict) {
       return const Center(child: CircularProgressIndicator());
     }
 
     final String? detailErrorMessage = _detailErrorMessage;
-    if (detailErrorMessage != null) {
+    if (detailErrorMessage != null && !_hasEditConflict) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -540,6 +880,29 @@ class _HouseFormState extends State<HouseForm> {
       controller: _scrollController,
       padding: const EdgeInsets.only(top: 10, bottom: 10),
       children: <Widget>[
+        if (_hasEditConflict)
+          Card(
+            margin: const EdgeInsets.all(10),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Text('房屋资料或审核状态已更新，当前填写内容已保留；重新加载并核对后才能提交。'),
+                  if (detailErrorMessage != null) ...<Widget>[
+                    const SizedBox(height: 8),
+                    Text(detailErrorMessage,
+                        style: const TextStyle(color: Colors.red)),
+                  ],
+                  if (_isLoadingDetail) const LinearProgressIndicator(),
+                  TextButton(
+                    onPressed: _photoActionsBlocked ? null : _reloadLatestHouse,
+                    child: const Text('重新加载最新资料'),
+                  ),
+                ],
+              ),
+            ),
+          ),
         const SectionTitle('房屋信息'),
         Material(
           color: Colors.white,
@@ -568,6 +931,12 @@ class _HouseFormState extends State<HouseForm> {
                               fontSize: 14,
                             ),
                           ),
+                          if (_houseId.isNotEmpty) ...<Widget>[
+                            const SizedBox(height: 6),
+                            Text('审核状态：${_house.statusText}'),
+                            if (_house.reviewReason.isNotEmpty)
+                              Text('打回原因：${_house.reviewReason}'),
+                          ],
                         ],
                       )
                     : const Text(
@@ -584,9 +953,11 @@ class _HouseFormState extends State<HouseForm> {
           padding: const EdgeInsets.symmetric(horizontal: 10),
           child: TextFormField(
             controller: _nameController,
+            enabled: !_photoActionsBlocked,
             maxLength: 15,
             onChanged: (String value) {
               _house = _house.copyWith(name: value);
+              _saveDraft();
               if (_ownerNameServerError != null) {
                 setState(() {
                   _ownerNameServerError = null;
@@ -615,8 +986,9 @@ class _HouseFormState extends State<HouseForm> {
           child: RadioGroup<int>(
             groupValue: _house.gender,
             onChanged: (int? value) {
-              if (value == null) return;
+              if (value == null || _photoActionsBlocked || !_active) return;
               setState(() => _house = _house.copyWith(gender: value));
+              _saveDraft();
             },
             child: const Row(
               children: <Widget>[
@@ -636,10 +1008,13 @@ class _HouseFormState extends State<HouseForm> {
           padding: const EdgeInsets.symmetric(horizontal: 10),
           child: TextFormField(
             controller: _mobileController,
+            enabled: !_photoActionsBlocked,
             keyboardType: TextInputType.phone,
             maxLength: 11,
-            onChanged: (String value) =>
-                _house = _house.copyWith(mobile: value),
+            onChanged: (String value) {
+              _house = _house.copyWith(mobile: value);
+              _saveDraft();
+            },
             decoration: const InputDecoration(
               labelText: '手机号',
               hintText: '请输入手机号',
@@ -681,7 +1056,8 @@ class _HouseFormState extends State<HouseForm> {
           child: SizedBox(
             height: 52,
             child: ElevatedButton.icon(
-              onPressed: _isLoading ? null : _submit,
+              onPressed:
+                  _photoActionsBlocked || _hasEditConflict ? null : _submit,
               icon: const Icon(Icons.exit_to_app),
               label: const Text('提交审核'),
             ),

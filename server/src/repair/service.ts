@@ -1,17 +1,22 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { RecordData, Store } from '../database.js';
 import { mobileSchema } from '../auth.js';
 import { ApiError, requireValue } from '../errors.js';
 import { date, houseInfo } from '../community/resources.js';
-import { Status, type Role, currentRound, localTimePattern, newRound, repairItems } from './model.js';
+import { Status, type Role, addEvent, currentRound, localTimePattern, newRound, openPending, repairItems } from './model.js';
+import { eligibility, holdingEligibility, inRepairPool, staffingPlan } from './workforce.js';
 import * as actions from './actions.js';
-import { ANY_REVISION, RepairRepository, type Loaded } from './repository.js';
+import { RepairRepository, type Loaded } from './repository.js';
 import { RepairViews } from './views.js';
-import { type Capacity, availableDates, bookingRejection, businessDate, dispatchSlots, parseSlot, requireDispatchSlot, scheduleRules, slotAvailability, slotFromTime, workerConflict } from './schedule.js';
+import { type Capacity, availableDates, bookingRejection, businessDate, dispatchSlots, parseSlot, requireDispatchSlot, requireFreeWorker, scheduleRules, slotAvailability, slotFromTime } from './schedule.js';
 import { activeRepair, compareQueue, shiftRejection, shiftSuggestions, urgentAwaitingDispatch, requireUrgentDispatch } from './policy.js';
+import { applyUnstaffedSlot, closeOffer, offerOf, openOffer, unstaffed } from './unstaffed.js';
+import type { ManagementAction } from '../management-audit.js';
 
 const revision = z.number().int().min(0);
+const capacityRevision = z.string({ error: '请重新加载容量配置后再操作' })
+  .regex(/^[a-f0-9]{64}$/, '容量版本无效，请重新加载后再操作');
 const weekday = z.string().regex(/^[1-7]$/, '星期必须为 1–7').transform(Number);
 const reason = z.string().trim().min(1, '请填写原因').max(500);
 const optionalNote = z.string().trim().max(1000).default('');
@@ -31,7 +36,8 @@ function requestSlot(slot?: string, time?: string) {
 
 // expectedTime 为住户选择的具体期望上门时间（带时区偏移）；appointment 为其当地日期，兼容旧客户端与旧数据。
 export const repairSchema = z.object({
-  houseId: z.string().uuid(), repairItemId: z.enum(['1001', '1002', '1003']), mobile: mobileSchema,
+  submissionId: z.string().uuid().optional(),
+  houseId: z.string().uuid(), repairItemId: z.enum(['1001', '1002', '1003', '1004', '1005']), mobile: mobileSchema,
   appointment: date.optional(), expectedTime: z.string().regex(localTimePattern, '期望上门时间格式不正确').optional(),
   slot: z.union([slotCode, z.literal('')]).optional(), urgentRequest: z.boolean().default(false), asap: z.boolean().default(false),
   description: z.string().trim().max(2000).default(''),
@@ -43,15 +49,82 @@ export class RepairService {
   private readonly repository: RepairRepository;
   private readonly views: RepairViews;
 
-  constructor(store: Store, private readonly now: () => number, propertyPhone: string,
+  constructor(private readonly store: Store, private readonly now: () => number, propertyPhone: string,
     log: (event: object) => void = () => {}, publicBaseUrl = '') {
     this.repository = new RepairRepository(store, now, log, publicBaseUrl);
     this.views = new RepairViews(now, propertyPhone, log);
   }
 
   settleAll(filter: { owner?: string; workerId?: string } = {}) { this.repository.settleAll(filter); }
+
+  private requireResident(userId: string) {
+    if (this.repository.role(userId) !== 'resident') throw new ApiError(403, 40300, '仅工单所属住户可操作');
+  }
+
+  unstaffedOptions(userId: string, id: string, admin = false, raw: unknown = {}) {
+    if (admin) this.requireAdmin(userId); else this.requireResident(userId);
+    const input = z.object({ date: date.optional() }).strict().parse(raw);
+    this.repository.settleAll();
+    const loaded = this.repository.load(id);
+    if (!admin) this.requireOwner(loaded.owner, userId);
+    const context = this.repository.staffingContext();
+    const options = unstaffed(loaded.record, context) && (admin || openOffer(loaded.record))
+      ? this.repository.unstaffedOptions(loaded.record, context) : [];
+    const day = input.date ?? businessDate(this.now());
+    const slots = admin ? options.slice(0, 3) : options.filter(slot => slot.date === day);
+    return { serverTime: new Date(this.now()).toISOString(), today: businessDate(this.now()), date: day, dates: availableDates(this.now()),
+      repairId: id, revision: loaded.record.revision, offerId: offerOf(loaded.record)?.id ?? '',
+      slots: admin ? slots : slots.map(({ capacity, remaining, eligibleWorkerCount, occupied, ...slot }) => slot),
+      ...(admin ? { remainingTotal: slots.reduce((sum, slot) => sum + slot.remaining, 0),
+        selectableRemainingTotal: slots.reduce((sum, slot) => sum + slot.remaining, 0) } : {}) };
+  }
+
+  unstaffedChoice(userId: string, id: string, raw: unknown) {
+    this.requireResident(userId);
+    const input = z.union([z.object({ revision, offerId: z.string().min(1), slot: slotCode }).strict(),
+      z.object({ revision, offerId: z.string().min(1), keep: z.literal(true) }).strict()]).parse(raw);
+    const requireOffer = (record: RecordData) => {
+      const offer = openOffer(record);
+      if (!offer || offer.id !== input.offerId || Date.parse(offer.deadline) <= this.now()) {
+        throw new ApiError(409, 40900, '已过可选时间，物业会联系您');
+      }
+    };
+    return this.respondView(this.repository.mutate(id, input.revision, ({ owner }) => this.requireOwner(owner, userId),
+      (record, now) => {
+        requireOffer(record);
+        const context = this.repository.staffingContext();
+        if (!unstaffed(record, context)) throw new ApiError(409, 40900, '已过可选时间，物业会联系您');
+        if ('keep' in input) closeOffer(record, now, 'resident_kept');
+        else {
+          if (!this.repository.unstaffedOptions(record, context).some(slot => slot.slot === input.slot))
+            throw new ApiError(409, 40900, '该时段刚被约满，请重新选择');
+          applyUnstaffedSlot(record, input.slot, now, 'resident');
+        }
+      }, undefined, requireOffer), 'resident');
+  }
+
+  unstaffedReschedule(userId: string, id: string, raw: unknown) {
+    this.requireAdmin(userId);
+    const input = z.object({ revision, slot: slotCode, notified: z.boolean().optional() }).strict().parse(raw);
+    requireValue(input.notified === true, '请先勾选已电话告知住户');
+    return this.respondView(this.mutateAs(userId, 'repair.unstaffed', id, input.revision, () => this.requireAdmin(userId), (record, now) => {
+      const context = this.repository.staffingContext();
+      requireValue(unstaffed(record, context), '仅确定无人可接的已约时间工单可使用此操作');
+      if (!this.repository.unstaffedOptions(record, context).some(slot => slot.slot === input.slot))
+        throw new ApiError(409, 40900, '该时段已不可选');
+      applyUnstaffedSlot(record, input.slot, now, 'admin');
+    }), 'admin');
+  }
+  settleWorkforceChange() { this.repository.settleAll({}, this.repository.staffingContext(), true); }
   view(record: RecordData, role: Role) { return this.views.view(record, role); }
   private respondView(loaded: Loaded, role: Role) { return this.view(loaded.record, role); }
+
+  // Audit only the mutation transaction; the repository's earlier settlement stays independently committed.
+  private mutateAs(actorId: string | undefined, action: ManagementAction, id: string, expected: number,
+    authorize: (loaded: Loaded) => void, change: (record: RecordData, now: number) => void) {
+    return this.repository.mutate(id, expected, authorize, change, undefined, undefined,
+      actorId ? { actorId, action } : undefined);
+  }
 
   private requireOwner(owner: string, userId: string) {
     if (owner !== userId) throw new ApiError(404, 40400, '记录不存在或无权访问');
@@ -63,6 +136,20 @@ export class RepairService {
   residentList(userId: string) {
     this.settleAll({ owner: userId });
     return this.views.listViews(this.repository.residentRows(userId), 'resident');
+  }
+
+  residentPage(userId: string, current: number, pageSize: number,
+    filter: 'all' | 'pending' | 'waiting' | 'processing' | 'completed' = 'all') {
+    // Settle all the owner's records first, including expired records off this page.
+    this.settleAll({ owner: userId });
+    const statuses: Record<Exclude<typeof filter, 'all'>, readonly number[]> = {
+      pending: [Status.pending], waiting: [Status.assigned],
+      processing: [Status.processing, Status.confirming], completed: [Status.completed],
+    };
+    const page = this.views.pageViews(this.repository.residentRowsIterator(userId), 'resident', current, pageSize,
+      filter === 'all' ? undefined : record => statuses[filter].includes(Number(record.status)));
+    // Filtered clients can detect an older server silently ignoring the query.
+    return { ...page, ...(filter === 'all' ? {} : { filter }) };
   }
 
   residentDetail(userId: string, id: string) {
@@ -84,9 +171,45 @@ export class RepairService {
     return this.view(loaded.record, 'worker');
   }
 
-  adminList() {
-    this.settleAll();
-    return this.views.listViews(this.repository.allRows(), 'admin');
+  repairPool(workerId: string) {
+    if (this.repository.role(workerId) !== 'worker') throw new ApiError(403, 40300, '仅维修人员可操作');
+    const context = this.repository.staffingContext();
+    this.repository.settleAll({}, context);
+    return [...context.slots.values()].flat().filter(record => context.eligible(record).includes(workerId))
+      .sort(compareQueue).map(record => this.views.pool(this.repository.poolLocation(record)));
+  }
+
+  claim(workerId: string, id: string, raw: unknown) {
+    const input = z.object({ revision, slot: slotCode.optional() }).strict().parse(raw);
+    return this.respondView(this.repository.mutate(id, input.revision, ({ record }) => {
+      if (this.repository.role(workerId) !== 'worker') throw new ApiError(403, 40300, '仅维修人员可操作');
+      if (record.workerId) throw new ApiError(409, 40900, record.assignmentSource === 'pool'
+        ? '已被其他师傅接走' : '物业已安排其他师傅');
+    }, (record, now) => {
+      if (!inRepairPool(record)) throw new ApiError(409, 40900, '此工单已不在可接单列表，请刷新');
+      const worker = this.repository.worker(workerId);
+      requireValue(worker, '维修人员不存在');
+      const why = eligibility(this.repository.workerAvailability().find(item => item.id === workerId), record, String(record.slot ?? ''));
+      if (why) throw new ApiError(409, 40900, why);
+      if (record.slot) {
+        requireValue(!input.slot || input.slot === record.slot, '上门时间不变，请按原时段接单');
+        this.repository.checkWorker(String(record.slot), workerId, id, record);
+      } else {
+        requireValue(input.slot, '请选择首次上门时段');
+        this.repository.checkSlot(input.slot, now, id, workerId);
+      }
+      actions.assign(record, { workerId, worker }, now);
+      actions.accept(record, { workerId, slot: input.slot, reason: '师傅接单并提议首次上门时间', pendingId: randomUUID() }, now);
+      record.assignmentSource = 'pool';
+      addEvent(record, { action: 'pool_claimed', label: '师傅从列表接单', at: new Date(now).toISOString(), by: 'worker' });
+    }, () => this.repository.settleWorkforceAfterClaim()), 'worker');
+  }
+
+  adminList(): RecordData[] {
+    const context = this.repository.staffingContext();
+    this.repository.settleAll({}, context);
+    return this.views.listViews(this.repository.allRows(), 'admin').map(record => ({ ...record,
+      inRepairPool: inRepairPool(record), eligibleWorkerCount: context.eligible(record).length }));
   }
 
   queue(userId: string) {
@@ -97,7 +220,7 @@ export class RepairService {
 
   grade(userId: string, id: string, raw: unknown) {
     const input = z.object({ revision, priority: z.enum(['urgent', 'medium', 'light']), reason }).strict().parse(raw);
-    return this.respondView(this.repository.mutate(id, input.revision, () => this.requireAdmin(userId),
+    return this.respondView(this.mutateAs(userId, 'repair.priority', id, input.revision, () => this.requireAdmin(userId),
       (record, now) => actions.grade(record, input, now)), 'admin');
   }
 
@@ -112,7 +235,7 @@ export class RepairService {
     const input = z.object({ revision, slot: slotCode, reason }).strict().parse(raw);
     this.requireAdmin(userId);
     this.repository.settleAll();
-    return this.respondView(this.repository.mutate(id, input.revision, () => this.requireAdmin(userId), (record, now) => {
+    return this.respondView(this.mutateAs(userId, 'repair.shift', id, input.revision, () => this.requireAdmin(userId), (record, now) => {
       const rejection = shiftRejection(record, now);
       requireValue(!rejection, rejection);
       this.repository.checkSlot(input.slot, now, record.id, String(record.workerId ?? ''));
@@ -123,16 +246,24 @@ export class RepairService {
   dispatchOptions(userId: string, id: string, raw: unknown) {
     this.requireAdmin(userId);
     const input = z.object({ limit: z.coerce.number().int().min(1).max(scheduleRules.days * scheduleRules.hours.length).default(11) }).strict().parse(raw);
-    this.repository.settleAll();
+    const staffing = this.repository.staffingContext();
+    this.repository.settleAll({}, staffing);
     const { record } = this.repository.load(id);
     requireUrgentDispatch(record);
     const now = this.now();
     const workers = this.repository.workers();
     const dates = new Map<string, RecordData[]>();
+    const capacities = new Map<string, Capacity>();
     const slots = dispatchSlots(now, input.limit).map(slot => {
       if (!dates.has(slot.date)) dates.set(slot.date, this.repository.scheduledRowsForDate(slot.date));
-      const free = workers.filter(worker => !workerConflict(dates.get(slot.date)!, slot.code, String(worker.id), record.id));
+      if (!capacities.has(slot.date)) capacities.set(slot.date, this.repository.capacities(slot.date).effective);
+      const coordination = (record.staffingIssue || record.workforceReturned) && record.agreedTime && record.slot !== slot.code
+        ? '人手待协调，调整已约定时间须先走改约确认流程' : '';
+      const free = coordination ? [] : workers.filter(worker => !this.repository.staffingReason(slot.code, { ...record, workerId: String(worker.id) }, staffing));
+      const { occupied, unassigned, workerCount, shortage } = staffingPlan(dates.get(slot.date)!.filter(row => row.id !== id), slot.code, staffing.workers);
+      const reason = coordination || (free.length ? '' : this.repository.staffingReason(slot.code, { ...record, workerId: '' }, staffing) || '该时段暂无可派师傅，请物业协调其他安排');
       return { slot: slot.code, start: slot.start, end: slot.end, current: slot.startsAt <= now,
+        occupied, unassigned, workerCount, shortage, reason, dispatchable: !reason, publicCapacity: capacities.get(slot.date)![slot.hour] ?? 0,
         workers: free.map(worker => ({ id: String(worker.id), nickName: String(worker.nickName), mobile: String(worker.mobile) })) };
     });
     return { serverTime: new Date(now).toISOString(), repairId: id, revision: record.revision, slots };
@@ -142,42 +273,92 @@ export class RepairService {
     const input = z.object({ revision, workerId: z.string().uuid(), slot: slotCode, reason: optionalNote }).strict().parse(raw);
     this.requireAdmin(userId);
     this.repository.settleAll();
-    return this.respondView(this.repository.mutate(id, input.revision, () => this.requireAdmin(userId), (record, now) => {
+    return this.respondView(this.mutateAs(userId, 'repair.dispatch', id, input.revision, () => this.requireAdmin(userId), (record, now) => {
       requireUrgentDispatch(record);
+      requireValue(!(record.staffingIssue || record.workforceReturned) || !record.agreedTime || record.slot === input.slot,
+        '人手待协调，调整已约定时间须先走改约确认流程');
       const worker = this.repository.worker(input.workerId);
       requireValue(worker, '请选择有效的维修人员');
       requireDispatchSlot(input.slot, now);
-      this.repository.checkWorker(input.slot, input.workerId, record.id);
+      this.repository.checkWorker(input.slot, input.workerId, record.id, record);
       actions.dispatch(record, { ...input, worker }, now);
     }), 'admin');
   }
 
   createRepair(userId: string, raw: unknown, readRows = () => this.residentList(userId)) {
-    const input = repairSchema.parse(raw);
-    const slot = requestSlot(input.slot, input.expectedTime) ?? '';
-    requireValue(!input.appointment || Boolean(slot), '请选择具体上门时段，或提交后等待安排');
-    requireValue(!input.asap || !slot, '尽快上门不能同时选择时段');
-    requireValue(!input.appointment || input.appointment === slot.slice(0, 10), '日期与时段不一致');
-    const appointment = slot ? slot.slice(0, 10) : '';
-    const id = randomUUID();
-    const result = this.repository.create(userId, input.houseId, input.attachment, house => {
-      const createdAt = new Date(this.now()).toISOString();
-      if (slot) this.repository.checkSlot(slot, this.now());
-      return { ...input, appointment, expectedTime: slot ? parseSlot(slot)!.start : '', agreedTime: slot ? parseSlot(slot)!.start : '',
-        slot, expectedSlot: slot, priority: '', autoAccepted: false, shiftCount: 0, needsAdmin: false,
-        id, status: 1, workflowVersion: 1, revision: 1, createdAt,
-        rounds: [newRound(1, 'first', createdAt)], pendings: [],
-        timeline: [{ action: 'submitted', label: '住户申请', at: createdAt, by: 'resident',
-          detail: slot ? `期望上门时段 ${slot}` : input.asap ? '紧急诉求：尽快上门' : '提交后等待安排' }],
-        houseInfo: houseInfo(house), repairItemName: repairItems.find(item => item.id === input.repairItemId)!.name };
-    }, readRows);
-    return { ...result, createdId: id };
+    const { submissionId, ...input } = repairSchema.parse(raw);
+    if (submissionId) this.requireResident(userId);
+    // 已完成回执与工单一起保留，不因时间过去而允许同一标识再次创建。
+    // 摘要仅包含校验后的固定字段，既不保存重复隐私正文，也不依赖 JSON 键顺序。
+    const requestHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    const create = () => {
+      const previous = submissionId ? this.store.one(
+        'SELECT requestHash,repairId FROM repair_submissions WHERE userId=? AND submissionId=?', userId, submissionId) : undefined;
+      if (previous) {
+        if (previous.repairId === null) throw new ApiError(409, 40903, '本次提交已停止，请使用新的提交回执');
+        if (previous.requestHash !== requestHash) throw new ApiError(409, 40902, '该提交回执对应的内容不同，请先查看原提交结果');
+        this.residentDetail(userId, String(previous.repairId));
+        const rows = readRows();
+        return { complete: true, rows, total: rows.length, createdId: String(previous.repairId) };
+      }
+      const slot = requestSlot(input.slot, input.expectedTime) ?? '';
+      requireValue(!input.appointment || Boolean(slot), '请选择具体上门时段，或提交后等待安排');
+      requireValue(!input.asap || !slot, '尽快上门不能同时选择时段');
+      requireValue(!input.appointment || input.appointment === slot.slice(0, 10), '日期与时段不一致');
+      const appointment = slot ? slot.slice(0, 10) : '';
+      const id = randomUUID();
+      const result = this.repository.create(userId, input.houseId, input.attachment, house => {
+        const createdAt = new Date(this.now()).toISOString();
+        if (slot) { this.repository.checkSlot(slot, this.now()); this.repository.checkSkillAvailability(slot, { id, repairItemId: input.repairItemId }, id); }
+        return { ...input, appointment, expectedTime: slot ? parseSlot(slot)!.start : '', agreedTime: slot ? parseSlot(slot)!.start : '',
+          slot, expectedSlot: slot, priority: '', autoAccepted: false, shiftCount: 0, needsAdmin: false,
+          id, status: 1, workflowVersion: 1, revision: 1, createdAt,
+          roundCount: 1, rounds: [newRound(1, 'first', createdAt)], fees: [], pendings: [],
+          timeline: [{ action: 'submitted', label: '住户申请', at: createdAt, by: 'resident',
+            detail: slot ? `期望上门时段 ${slot}` : input.asap ? '紧急诉求：尽快上门' : '提交后等待安排' }],
+          houseInfo: houseInfo(house), community: String(house.point ?? ''), building: String(house.building ?? ''),
+          repairItemName: repairItems.find(item => item.id === input.repairItemId)!.name };
+      }, readRows);
+      if (submissionId) this.store.run(
+        'INSERT INTO repair_submissions(userId,submissionId,requestHash,repairId,createdAt) VALUES (?,?,?,?,?)',
+        userId, submissionId, requestHash, id, this.now());
+      return { ...result, createdId: id };
+    };
+    if (submissionId) {
+      this.repository.settleAll();
+      return this.store.transaction(create);
+    }
+    return create();
   }
 
-  /** 旧客户端撤销仍返回完整列表；已到期结算不受后续撤销/列表读取失败影响。 */
+  submissionResult(userId: string, rawId: unknown) {
+    this.requireResident(userId);
+    const submissionId = z.string().uuid().parse(rawId);
+    const receipt = this.store.one('SELECT repairId FROM repair_submissions WHERE userId=? AND submissionId=?', userId, submissionId);
+    // 查不到不等于提交失败：原请求可能尚未取得写锁；跨账号与不存在返回相同结果。
+    if (!receipt) return { state: 'unknown', createdId: '' };
+    if (receipt.repairId === null) return { state: 'closed', createdId: '' };
+    this.residentDetail(userId, String(receipt.repairId));
+    return { state: 'created', createdId: String(receipt.repairId) };
+  }
+
+  closeSubmission(userId: string, rawId: unknown) {
+    this.requireResident(userId);
+    const submissionId = z.string().uuid().parse(rawId);
+    return this.store.transaction(() => {
+      const result = this.submissionResult(userId, submissionId);
+      if (result.state !== 'unknown') return result;
+      // 保留关闭标识，拒绝网络中迟到的原请求；已创建的工单只返回编号，不会撤销。
+      this.store.run('INSERT INTO repair_submissions(userId,submissionId,requestHash,repairId,createdAt) VALUES (?,?,?,NULL,?)',
+        userId, submissionId, '', this.now());
+      return { state: 'closed', createdId: '' };
+    });
+  }
+
+  /** 直接撤销返回完整列表；已到期结算不受后续撤销/列表读取失败影响。 */
   legacyRevoke(userId: string, id: string, raw: unknown) {
     let rows: RecordData[] = [];
-    this.revokeRecord(userId, id, raw, () => { rows = this.residentList(userId); });
+    this.revokeRecord(userId, id, raw, () => { rows = this.residentList(userId); }, true);
     return { complete: true, rows, total: rows.length };
   }
 
@@ -190,7 +371,12 @@ export class RepairService {
   reject(userId: string, id: string, raw: unknown) {
     const input = z.object({ revision, reason }).strict().parse(raw);
     return this.respondView(this.repository.mutate(id, input.revision, ({ owner }) => this.requireOwner(owner, userId),
-      (record, now) => actions.reject(record, { ...input, worker: this.repository.user(currentRound(record).workerId) }, now)), 'resident');
+      (record, now) => actions.reject(record, { ...input, worker: this.reworkWorker(record) }, now)), 'resident');
+  }
+
+  private reworkWorker(record: RecordData) {
+    const id = currentRound(record).workerId;
+    return { ...this.repository.user(id), qualified: !holdingEligibility(this.repository.workerAvailability().find(worker => worker.id === id), { ...record, workerId: id }) };
   }
 
   applyAftersale(userId: string, id: string, raw: unknown) {
@@ -209,12 +395,16 @@ export class RepairService {
     return this.respondView(this.revokeRecord(userId, id, raw), 'resident');
   }
 
-  private revokeRecord(userId: string, id: string, raw: unknown, afterSave?: () => void) {
-    // 旧客户端只传 id：兼容为未接单前的直接撤销，此时不校验 revision（与旧接口行为一致）。
+  private revokeRecord(userId: string, id: string, raw: unknown, afterSave?: () => void, directOnly = false) {
+    // 缺少版本交由仓储在归属检查后返回409，不能绕过并发保护。
     const input = z.object({ revision: revision.optional(), reason: reason.default('住户撤销'),
-      notified: z.boolean().default(false) }).strict().parse(raw);
-    return this.repository.mutate(id, input.revision ?? ANY_REVISION, ({ owner }) => this.requireOwner(owner, userId),
-      (record, now) => actions.revoke(record, { ...input, pendingId: randomUUID() }, now), afterSave);
+      notified: z.boolean().default(false) }).strict().parse(raw ?? {});
+    return this.repository.mutate(id, input.revision, ({ owner }) => this.requireOwner(owner, userId),
+      (record, now) => {
+        if (directOnly) requireValue(record.status === Status.pending || record.status === Status.assigned,
+          '当前阶段不能直接取消，请刷新后按最新状态操作');
+        actions.revoke(record, { ...input, pendingId: randomUUID() }, now);
+      }, afterSave);
   }
 
   propose(userId: string, role: Role, id: string, raw: unknown) {
@@ -223,7 +413,7 @@ export class RepairService {
     const slot = requestSlot(input.slot, input.time);
     requireValue(slot, '请选择上门时段');
     this.repository.settleAll();
-    return this.respondView(this.repository.mutate(id, input.revision, ({ owner, record }) => {
+    return this.respondView(this.mutateAs(role === 'admin' ? userId : undefined, 'repair.reschedule.propose', id, input.revision, ({ owner, record }) => {
       if (role === 'resident') this.requireOwner(owner, userId);
       else if (role === 'worker') this.requireWorker(record, userId);
       else this.requireAdmin(userId);
@@ -233,6 +423,7 @@ export class RepairService {
         else {
           const rejection = bookingRejection(slot, now);
           requireValue(!rejection, rejection);
+          this.repository.checkSkillAvailability(slot, record, record.id);
         }
         actions.propose(record, { ...input, slot, pendingId: randomUUID(), role }, now);
       }), role);
@@ -243,7 +434,7 @@ export class RepairService {
     requireValue(input.accept || input.reason.length > 0, '请填写不同意的原因');
     this.repository.settleAll();
     let conflict: ApiError | undefined;
-    const result = this.repository.mutate(id, input.revision, ({ owner, record }) => {
+    const result = this.mutateAs(role === 'admin' ? userId : undefined, 'repair.reschedule.respond', id, input.revision, ({ owner, record }) => {
       if (role === 'resident') this.requireOwner(owner, userId);
       else if (role === 'worker') this.requireWorker(record, userId);
       else this.requireAdmin(userId);
@@ -254,7 +445,7 @@ export class RepairService {
           // 历史提议确认也是新安排，必须映射到时段，不能绕开名额约束。
           const target = proposal.proposedSlot || slotFromTime(proposal.proposedTime);
           requireValue(target, '历史改约时间不符合时段规则，请拒绝后重新协商');
-          if (proposal.firstSchedule) this.repository.checkWorker(target, String(record.workerId ?? ''), record.id);
+          if (proposal.firstSchedule) this.repository.checkWorker(target, String(record.workerId ?? ''), record.id, record);
           else {
             try { this.repository.checkSlot(target, now, record.id, String(record.workerId ?? '')); }
             catch (error) {
@@ -278,23 +469,34 @@ export class RepairService {
     this.repository.settleAll();
     return this.respondView(this.repository.mutate(id, input.revision, ({ record }) => this.requireWorker(record, workerId),
       (record, now) => {
-        if (record.slot) this.repository.checkWorker(String(record.slot), workerId, record.id);
+        const eligibilityReason = holdingEligibility(this.repository.workerAvailability().find(worker => worker.id === workerId), record, String(record.slot ?? ''));
+        if (eligibilityReason) throw new ApiError(409, 40900, eligibilityReason);
+        if (record.slot) requireFreeWorker(this.repository.scheduledRows(String(record.slot)), String(record.slot), workerId, record.id);
         else if (slot) {
           if (!record.agreedTime) this.repository.checkSlot(slot, now, record.id, workerId);
           else {
             const rejection = bookingRejection(slot, now);
             requireValue(!rejection, rejection);
+            this.repository.checkSkillAvailability(slot, record, record.id);
           }
         }
         actions.accept(record, { ...input, slot, pendingId: randomUUID(), workerId }, now);
       }), 'worker');
   }
 
-  complete(workerId: string, id: string, raw: unknown) {
-    const input = z.object({ revision, result: z.string().trim().max(1000).default(''), cost: cost.default(0) }).strict().parse(raw);
-    requireValue(input.result.length > 0, '请填写处理结果后再完成维修');
+  complete(workerId: string, id: string, raw: unknown, saveOnly = false) {
+    const input = z.object({ revision, result: z.string().trim().max(1000).default(''), cost: cost.default(0),
+      ready: saveOnly ? z.boolean() : z.never().optional(),
+      problem: z.string().trim().min(1).max(1000).optional(), cause: z.string().trim().min(1).max(1000).optional() }).strict().parse(raw);
+    if (!saveOnly || input.ready) requireValue(input.result.length > 0, '请填写处理结果后再完成维修');
     return this.respondView(this.repository.mutate(id, input.revision, ({ record }) => this.requireWorker(record, workerId),
-      (record, now) => actions.complete(record, { ...input, workerId }, now)), 'worker');
+      (record, now) => {
+        if (Number(record.roundCount ?? currentRound(record).number) > 1) {
+          requireValue(!holdingEligibility(this.repository.workerAvailability().find(worker => worker.id === workerId), { ...record, workerId }), '请由具备对应技能的师傅重新排查，需要时联系物业协调');
+        }
+        if (saveOnly) actions.saveResult(record, { ...input, workerId, ready: input.ready! }, now);
+        else actions.complete(record, { ...input, workerId }, now);
+      }), 'worker');
   }
 
   progress(workerId: string, id: string, raw: unknown) {
@@ -321,29 +523,61 @@ export class RepairService {
       (record, now) => actions.objectRevoke(record, input, now)), 'worker');
   }
 
-  assign(id: string, raw: unknown) {
+  assign(userId: string, id: string, raw: unknown) {
+    this.requireAdmin(userId);
     const input = z.object({ revision, workerId: z.string().uuid() }).strict().parse(raw);
     const worker = this.repository.worker(input.workerId);
     requireValue(worker, '请选择有效的维修人员');
     this.repository.settleAll();
-    return this.respondView(this.repository.mutate(id, input.revision, () => {},
+    return this.respondView(this.mutateAs(userId, 'repair.assign', id, input.revision, () => this.requireAdmin(userId),
       (record, now) => {
-        if (record.slot) this.repository.checkWorker(String(record.slot), input.workerId, record.id);
+        const reason = eligibility(this.repository.workerAvailability().find(item => item.id === input.workerId), record);
+        if (reason) throw new ApiError(409, 40900, reason);
+        if (record.slot) this.repository.checkWorker(String(record.slot), input.workerId, record.id, record);
         actions.assign(record, { ...input, worker }, now);
       }), 'admin');
   }
 
-  reviewAftersale(id: string, raw: unknown) {
-    const input = z.object({ revision, approve: z.boolean(), reason: optionalNote }).strict().parse(raw);
-    requireValue(input.approve || input.reason.length > 0, '拒绝售后申请必须填写原因');
-    return this.respondView(this.repository.mutate(id, input.revision, () => {},
-      (record, now) => actions.reviewAftersale(record, { ...input, worker: this.repository.user(currentRound(record).workerId) }, now)), 'admin');
+  classify(userId: string, id: string, raw: unknown) {
+    this.requireAdmin(userId);
+    const input = z.object({ revision, skill: z.enum(['plumbing', 'electrical', 'doors']), reason }).strict().parse(raw);
+    return this.respondView(this.mutateAs(userId, 'repair.skill', id, input.revision, () => this.requireAdmin(userId), (record, now) => {
+      requireValue(activeRepair(record), '仅可分类未完成工单');
+      requireValue(['1001', '1003'].includes(String(record.repairItemId)), '此工单已有明确维修类别');
+      record.requiredSkill = input.skill;
+      addEvent(record, { action: 'skill_classified', label: '物业明确维修技能', at: new Date(now).toISOString(), by: 'admin', detail: input.reason });
+    }), 'admin');
   }
 
-  note(id: string, raw: unknown) {
+  assignmentOptions(userId: string, id: string) {
+    this.requireAdmin(userId);
+    const staffing = this.repository.staffingContext();
+    this.repository.settleAll({}, staffing);
+    const { record } = this.repository.load(id);
+    const people = staffing.workers;
+    return this.repository.workers().map(worker => {
+      const candidate = { ...record, workerId: String(worker.id) };
+      const reason = openPending(record, 'revoke') ? '住户已申请撤销，请先处理撤销申请'
+        : record.status === Status.processing && worker.id === record.workerId ? '当前维修人员，请选择其他师傅'
+        : record.slot ? this.repository.staffingReason(String(record.slot), candidate, staffing)
+        : eligibility(people.find(item => item.id === worker.id), candidate);
+      return { ...worker, selectable: !reason, reason };
+    });
+  }
+
+  reviewAftersale(userId: string, id: string, raw: unknown) {
+    this.requireAdmin(userId);
+    const input = z.object({ revision, approve: z.boolean(), reason: optionalNote }).strict().parse(raw);
+    requireValue(input.approve || input.reason.length > 0, '拒绝售后申请必须填写原因');
+    return this.respondView(this.mutateAs(userId, 'repair.aftersale', id, input.revision, () => this.requireAdmin(userId),
+      (record, now) => actions.reviewAftersale(record, { ...input, worker: this.reworkWorker(record) }, now)), 'admin');
+  }
+
+  note(userId: string, id: string, raw: unknown) {
+    this.requireAdmin(userId);
     const input = z.object({ revision, content: reason, target: z.enum(['feedback', 'objection', 'verify', 'follow']).default('follow'),
       cost: cost.optional(), round: z.number().int().min(1).optional(), resolveNeedsAdmin: z.boolean().optional() }).strict().parse(raw);
-    return this.respondView(this.repository.mutate(id, input.revision, () => {},
+    return this.respondView(this.mutateAs(userId, 'repair.note', id, input.revision, () => this.requireAdmin(userId),
       (record, now) => actions.note(record, input, now)), 'admin');
   }
 
@@ -352,23 +586,37 @@ export class RepairService {
   }
 
   slots(userId: string, raw: unknown) {
-    const input = z.object({ date: date.optional(), excludeId: z.string().uuid().optional() }).strict().parse(raw);
+    const input = z.object({ date: date.optional(), excludeId: z.string().uuid().optional(), repairItemId: z.string().optional() }).strict().parse(raw);
     const now = this.now();
     const day = input.date ?? businessDate(now);
-    this.repository.settleAll({ slotDate: day });
+    const staffing = this.repository.staffingContext();
+    this.repository.settleAll({ slotDate: day }, staffing);
     let context: { workerId?: string; firstSchedule?: boolean } = {};
+    let candidate: RecordData | undefined = input.repairItemId ? { id: '', repairItemId: input.repairItemId, status: Status.pending } : undefined;
     let shiftRecord: RecordData | undefined;
     if (input.excludeId) {
-      this.repository.settleOne(input.excludeId);
+      this.repository.settleOne(input.excludeId, staffing);
       const loaded = this.repository.load(input.excludeId);
       const role = this.repository.role(userId);
-      if (role === 'worker') this.requireWorker(loaded.record, userId);
+      if (role === 'worker' && inRepairPool(loaded.record) && staffing.eligible(loaded.record).includes(userId)) {
+        loaded.record = { ...loaded.record, workerId: userId };
+      } else if (role === 'worker') this.requireWorker(loaded.record, userId);
       else if (role !== 'admin') this.requireOwner(loaded.owner, userId);
       context = { workerId: String(loaded.record.workerId ?? ''), firstSchedule: !loaded.record.slot && !loaded.record.agreedTime };
+      candidate = loaded.record;
       if (role === 'admin') shiftRecord = loaded.record;
     }
     const values = this.repository.capacities(day);
-    const slots = slotAvailability(day, values.effective, this.repository.scheduledRowsForDate(day), now, input.excludeId, context);
+    const slots = slotAvailability(day, values.effective, this.repository.scheduledRowsForDate(day), now, input.excludeId, context).map(slot => {
+      if (!candidate) {
+        const anySkill = ['1004', '1005', '1002'].some(repairItemId =>
+          !this.repository.staffingReason(slot.slot, { id: '', status: Status.pending, repairItemId }, staffing));
+        const reason = slot.reason || (anySkill ? '' : '该时段暂无可安排的人手，请提交后等待物业协调');
+        return { ...slot, selectable: !reason, reason };
+      }
+      const reason = slot.reason || this.repository.staffingReason(slot.slot, candidate, staffing);
+      return { ...slot, selectable: !reason, reason };
+    });
     return { date: day, today: businessDate(now), dates: availableDates(now), serverTime: new Date(now).toISOString(),
       slots: shiftRecord ? slots.map(slot => ({ ...slot, shiftSelectable: slot.selectable && !shiftRejection(shiftRecord!, now)
         && parseSlot(slot.slot)!.startsAt > (parseSlot(shiftRecord!.slot)?.startsAt ?? Infinity) })) : slots,
@@ -386,20 +634,21 @@ export class RepairService {
   capacities(userId: string, raw: unknown) {
     this.requireAdmin(userId);
     const input = z.object({ date: date.optional() }).strict().parse(raw);
-    return this.capacityView(this.repository.capacities(input.date), input.date);
+    return this.capacityView(this.repository.capacitySnapshot(input.date), input.date);
   }
 
   saveCapacities(userId: string, raw: unknown, rawDate?: unknown) {
     this.requireAdmin(userId);
     const day = rawDate === undefined ? undefined : date.parse(rawDate);
-    const input = z.object({ capacities: capacityValues }).strict().parse(raw);
-    return this.capacityView(this.repository.saveCapacities(input.capacities, day), day);
+    const input = z.object({ capacities: capacityValues, revision: capacityRevision }).strict().parse(raw);
+    return this.capacityView(this.repository.saveCapacities(input.capacities, input.revision, userId, day), day);
   }
 
-  clearCapacities(userId: string, rawDate: unknown) {
+  clearCapacities(userId: string, rawDate: unknown, raw: unknown) {
     this.requireAdmin(userId);
     const day = date.parse(rawDate);
-    return this.capacityView(this.repository.clearCapacities(day), day);
+    const input = z.object({ revision: capacityRevision }).strict().parse(raw);
+    return this.capacityView(this.repository.clearCapacities(day, input.revision, userId), day);
   }
 
   weekdayCapacities(userId: string) {
@@ -410,13 +659,15 @@ export class RepairService {
   saveWeekdayCapacities(userId: string, rawWeekday: unknown, raw: unknown) {
     this.requireAdmin(userId);
     const day = weekday.parse(rawWeekday);
-    const input = z.object({ capacities: capacityValues }).strict().parse(raw);
-    return this.repository.saveWeekdayCapacities(day, input.capacities);
+    const input = z.object({ capacities: capacityValues, revision: capacityRevision }).strict().parse(raw);
+    return this.repository.saveWeekdayCapacities(day, input.capacities, input.revision, userId);
   }
 
-  clearWeekdayCapacities(userId: string, rawWeekday: unknown) {
+  clearWeekdayCapacities(userId: string, rawWeekday: unknown, raw: unknown) {
     this.requireAdmin(userId);
-    return this.repository.clearWeekdayCapacities(weekday.parse(rawWeekday));
+    const day = weekday.parse(rawWeekday);
+    const input = z.object({ revision: capacityRevision }).strict().parse(raw);
+    return this.repository.clearWeekdayCapacities(day, input.revision, userId);
   }
 
 }

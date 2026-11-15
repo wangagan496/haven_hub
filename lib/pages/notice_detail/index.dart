@@ -14,7 +14,7 @@ class NoticeDetail extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = AppRoutes.noticeDetail;
+  static const String routeName = noticeDetail;
 
   final AnnouncementDetailLoader detailLoader;
 
@@ -76,7 +76,7 @@ class _NoticeDetailState extends State<NoticeDetail> {
         return;
       }
       setState(() => _errorMessage = message);
-      await PromptAction.showError(message);
+      await AppPrompt.showError(message);
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);

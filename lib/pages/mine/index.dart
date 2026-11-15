@@ -6,6 +6,7 @@ import 'package:get/get.dart' hide FormData, MultipartFile;
 import '../../api/user.dart';
 import '../../controller/build_controller.dart';
 import '../../controller/user_info_controller.dart';
+import '../../platform/visitor_pass_share.dart';
 import '../../router/app_routes.dart';
 import '../../utils/app_exception.dart';
 import '../../utils/emitter.dart';
@@ -55,7 +56,7 @@ class _MinePageState extends State<MinePage> {
     (
       label: '报修通知与待办',
       icon: 'assets/images/repair_profile_icon@2x.png',
-      routeName: AppRoutes.notifications,
+      routeName: notifications,
     ),
   ];
 
@@ -104,7 +105,7 @@ class _MinePageState extends State<MinePage> {
     if (Get.isRegistered<UserInfoController>()) {
       Get.find<UserInfoController>().clearUserInfo();
     }
-    BuildController.instance().clearBuildingInfo();
+    BuildController.instance().clearSelection();
   }
 
   void _onLoginSuccess(LoginSuccessEvent event) {
@@ -174,7 +175,7 @@ class _MinePageState extends State<MinePage> {
           tokenManager.getToken().isEmpty) {
         return;
       }
-      _userInfoController.updateUser(userInfo);
+      _userInfoController.updateLocalUserInfo(userInfo);
     } on Object catch (error) {
       if (!mounted ||
           requestId != _userInfoRequestId ||
@@ -184,7 +185,7 @@ class _MinePageState extends State<MinePage> {
         return;
       }
       final String msg = describeError(error, fallback: '获取用户信息失败');
-      await PromptAction.showError(msg);
+      await AppPrompt.showError(msg);
     }
   }
 
@@ -309,6 +310,7 @@ class _MinePageState extends State<MinePage> {
     _resetSessionState();
     try {
       final bool deleted = await tokenManager.deleteToken();
+      unawaited(clearVisitorPassShareCache());
       if (!deleted) {
         throw const FormatException('登录状态清除失败');
       }
@@ -322,7 +324,7 @@ class _MinePageState extends State<MinePage> {
       if (dialogContext.mounted) {
         Navigator.pop(dialogContext);
       }
-      await PromptAction.showSuccess('已退出登录');
+      await AppPrompt.showSuccess('已退出登录');
     } on Object {
       if (mounted) {
         setState(() {
@@ -332,7 +334,7 @@ class _MinePageState extends State<MinePage> {
           await _loadUserInfo();
         }
       }
-      await PromptAction.showError('退出失败，请重试');
+      await AppPrompt.showError('退出失败，请重试');
     } finally {
       if (mounted) {
         setState(() {

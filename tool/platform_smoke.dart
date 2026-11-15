@@ -54,7 +54,7 @@ class _PlatformSmokeState extends State<_PlatformSmoke> {
           'locationService=$locationService');
     } on Object catch (error) {
       if (!mounted) return;
-      await PromptAction.showError(describeError(error, fallback: '读取权限失败'));
+      await AppPrompt.showError(describeError(error, fallback: '读取权限失败'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -75,7 +75,7 @@ class _PlatformSmokeState extends State<_PlatformSmoke> {
       setState(() => _result = error is PlatformException
           ? '平台返回 ${error.code}: ${error.message}'
           : message);
-      await PromptAction.showError(message);
+      await AppPrompt.showError(message);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -122,7 +122,7 @@ class _PlatformSmokeState extends State<_PlatformSmoke> {
       ));
     } on Object catch (error) {
       if (!mounted) return;
-      await PromptAction.showError(describeError(error, fallback: '准备测试图片失败'));
+      await AppPrompt.showError(describeError(error, fallback: '准备测试图片失败'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

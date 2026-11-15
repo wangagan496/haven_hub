@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../api/notifications.dart';
 import '../router/app_routes.dart';
-import '../utils/app_exception.dart';
 import '../utils/toast.dart';
 
 class NotificationInboxButton extends StatelessWidget {
@@ -9,7 +8,7 @@ class NotificationInboxButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) => IconButton(
     tooltip: '报修通知与待办', icon: const Icon(Icons.notifications_outlined),
-    onPressed: () => Navigator.pushNamed<void>(context, AppRoutes.notifications),
+    onPressed: () => Navigator.pushNamed<void>(context, notifications),
   );
 }
 
@@ -27,9 +26,9 @@ class _RepairReminderButtonState extends State<RepairReminderButton> {
     try {
       await remindRepairApi(widget.repairId);
       if (!mounted) return;
-      await PromptAction.showSuccess('已加入提醒队列，实际送达以系统通知为准');
+      await AppPrompt.showSuccess('已加入提醒队列，实际送达以系统通知为准');
     } on Object catch (error) {
-      if (mounted) await PromptAction.showError(describeError(error, fallback: '提醒失败，请重试'));
+      if (mounted) await AppPrompt.showException(error, fallback: '提醒失败，请重试');
     } finally { if (mounted) setState(() => _sending = false); }
   }
   @override

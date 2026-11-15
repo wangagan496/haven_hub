@@ -1,6 +1,16 @@
 import 'repair_slots.dart';
 export 'repair_slots.dart';
 
+class RepairRescheduleOffer {
+  const RepairRescheduleOffer({required this.id, required this.deadline, this.resolvedAt = ''});
+  factory RepairRescheduleOffer.fromJson(Map<String, dynamic> json) => RepairRescheduleOffer(
+      id: json['id']?.toString() ?? '', deadline: json['deadline']?.toString() ?? '', resolvedAt: json['resolvedAt']?.toString() ?? '');
+  final String id;
+  final String deadline;
+  final String resolvedAt;
+  bool get isOpen => id.isNotEmpty && resolvedAt.isEmpty;
+}
+
 class RepairItem {
   const RepairItem({required this.id, required this.name});
 
@@ -24,8 +34,41 @@ abstract final class RepairStatus {
   static const int confirming = 6;
 }
 
+/// 服务端给出的操作快照，只用于展示；提交仍须服务端重新鉴权和校验版本。
+class RepairActionAvailability {
+  const RepairActionAvailability({
+    required this.code,
+    required this.enabled,
+    this.reasonCode = '',
+  });
+
+  factory RepairActionAvailability.fromJson(Map<String, dynamic> json) =>
+      RepairActionAvailability(
+        code: json['code'] is String ? json['code'] as String : '',
+        enabled: json['enabled'] == true && json['reasonCode'] == '',
+        reasonCode: json['reasonCode'] is String
+            ? json['reasonCode'] as String
+            : 'unavailable',
+      );
+
+  final String code;
+  final bool enabled;
+  final String reasonCode;
+
+  String get confirmationReason => switch (reasonCode) {
+        'resident_only' => '仅报修住户可以确认修好',
+        'not_in_progress' => '请等待师傅接单并保存维修结果',
+        'result_not_ready' => '请等待师傅保存维修结果和费用后再确认',
+        'revoke_pending' => '请先处理撤销申请',
+        'already_completed' => '工单已完成，无需重复确认',
+        'cancelled' => '工单已取消，不能确认修好',
+        _ => '暂时无法确认修好，请刷新工单后重试',
+      };
+}
+
 class RepairRecord {
   const RepairRecord({
+    this.submissionId = '',
     this.id = '',
     this.houseId = '',
     this.houseInfo = '',
@@ -46,6 +89,9 @@ class RepairRecord {
     this.urgentRequest = false,
     this.asap = false,
     this.needsAdmin = false,
+    this.staffingIssue = '',
+    this.staffingMessage = '',
+    this.rescheduleOffer,
     this.description = '',
     this.status = unknownStatus,
     this.attachment = const <String>[],
@@ -56,6 +102,8 @@ class RepairRecord {
     this.workerMobile = '',
     this.propertyPhone = '',
     this.completionNote = '',
+    this.resultReady = false,
+    this.fees = const <RepairFee>[],
     this.round = 1,
     this.reworkUsed = false,
     this.confirmDeadline = '',
@@ -64,6 +112,7 @@ class RepairRecord {
     this.rounds = const <RepairRound>[],
     this.pendings = const <RepairPending>[],
     this.timeline = const <RepairEvent>[],
+    this.availableActions,
   });
 
   /// 服务端未给出或无法解析 [status] 时使用。
@@ -73,6 +122,7 @@ class RepairRecord {
   static const int unknownStatus = -1;
 
   factory RepairRecord.fromJson(Map<String, dynamic> json) => RepairRecord(
+        submissionId: json['submissionId']?.toString() ?? '',
         id: json['id']?.toString().trim() ?? '',
         houseId: json['houseId']?.toString().trim() ?? '',
         houseInfo: json['houseInfo']?.toString().trim() ?? '',
@@ -95,6 +145,10 @@ class RepairRecord {
         urgentRequest: json['urgentRequest'] == true,
         asap: json['asap'] == true,
         needsAdmin: json['needsAdmin'] == true,
+        staffingIssue: json['staffingIssue']?.toString() ?? '',
+        staffingMessage: json['staffingMessage']?.toString() ?? '',
+        rescheduleOffer: json['rescheduleOffer'] is Map<String, dynamic>
+            ? RepairRescheduleOffer.fromJson(json['rescheduleOffer'] as Map<String, dynamic>) : null,
         description: json['description']?.toString().trim() ?? '',
         status: _toInt(json['status']),
         attachment: (json['attachment'] is List<dynamic>)
@@ -109,6 +163,8 @@ class RepairRecord {
         workerMobile: json['workerMobile']?.toString() ?? '',
         propertyPhone: json['propertyPhone']?.toString() ?? '',
         completionNote: json['completionNote']?.toString() ?? '',
+        resultReady: json['resultReady'] == true,
+        fees: _list(json['fees'], RepairFee.fromJson),
         round: int.tryParse('${json['round']}') ?? 1,
         reworkUsed: json['reworkUsed'] == true,
         confirmDeadline: json['confirmDeadline']?.toString() ?? '',
@@ -117,10 +173,18 @@ class RepairRecord {
         rounds: _list(json['rounds'], RepairRound.fromJson),
         pendings: _list(json['pendings'], RepairPending.fromJson),
         timeline: _list(json['timeline'], RepairEvent.fromJson),
+        availableActions: json.containsKey('availableActions')
+            ? _list(json['availableActions'], RepairActionAvailability.fromJson)
+            : null,
       );
 
   final String id;
+  /// 新建请求的回执标识；工单详情不依赖此字段，服务端不将它存入工单正文。
+  final String submissionId;
   final String houseId;
+  final String staffingIssue;
+  final String staffingMessage;
+  final RepairRescheduleOffer? rescheduleOffer;
   final String houseInfo;
   final String repairItemId;
   final String repairItemName;
@@ -174,6 +238,8 @@ class RepairRecord {
   final String workerMobile;
   final String propertyPhone;
   final String completionNote;
+  final bool resultReady;
+  final List<RepairFee> fees;
   final int round;
   final bool reworkUsed;
   final String confirmDeadline;
@@ -184,6 +250,24 @@ class RepairRecord {
   final List<RepairRound> rounds;
   final List<RepairPending> pendings;
   final List<RepairEvent> timeline;
+  /// null 仅表示旧服务端未提供字段；已提供但无效时不能回退成本地可执行判断。
+  final List<RepairActionAvailability>? availableActions;
+
+  RepairActionAvailability? get confirmationAction {
+    final matches = availableActions
+        ?.where((action) => action.code == 'confirm')
+        .toList(growable: false);
+    if (matches == null || matches.isEmpty) return null;
+    if (matches.length != 1) {
+      return const RepairActionAvailability(
+          code: 'confirm', enabled: false, reasonCode: 'unavailable');
+    }
+    return matches.single;
+  }
+
+  String get confirmUnavailableReason => availableActions == null || canConfirm
+      ? ''
+      : confirmationAction?.confirmationReason ?? '暂时无法确认修好，请刷新工单后重试';
 
   RepairPending? openPending(String kind) {
     for (final RepairPending item in pendings) {
@@ -208,11 +292,15 @@ class RepairRecord {
   /// 兼容旧调用：未接单前可直接撤销。
   bool get canCancel =>
       status == RepairStatus.pending || status == RepairStatus.assigned;
-  bool get canConfirm => status == RepairStatus.confirming;
-  bool get canReject => status == RepairStatus.confirming && !reworkUsed;
+  bool get canConfirm => availableActions != null
+      ? confirmationAction?.enabled ?? false
+      : revokeRequest == null &&
+          (status == RepairStatus.confirming ||
+              (status == RepairStatus.processing && resultReady));
+  bool get canReject => status == RepairStatus.confirming;
   bool get inWarranty =>
       status == RepairStatus.completed && warrantyEnd.isNotEmpty && !closed;
-  bool get canApplyAftersale => inWarranty && !reworkUsed && aftersale == null;
+  bool get canApplyAftersale => inWarranty && aftersale == null;
   bool get canFeedback => !closed && feedback == null;
   bool get canReschedule =>
       status == RepairStatus.processing &&
@@ -236,6 +324,7 @@ class RepairRecord {
       };
 
   Map<String, dynamic> toJson() => <String, dynamic>{
+        if (submissionId.isNotEmpty) 'submissionId': submissionId,
         if (id.isNotEmpty) 'id': id,
         'houseId': houseId,
         'repairItemId': repairItemId,
@@ -259,6 +348,8 @@ class RepairRound {
     this.confirmedBy = '',
     this.rejectReason = '',
     this.verifiedNote = '',
+    this.problem = '',
+    this.cause = '',
   });
 
   factory RepairRound.fromJson(Map<String, dynamic> json) => RepairRound(
@@ -271,6 +362,8 @@ class RepairRound {
         confirmedBy: json['confirmedBy']?.toString() ?? '',
         rejectReason: json['rejectReason']?.toString() ?? '',
         verifiedNote: json['verifiedNote']?.toString() ?? '',
+        problem: json['problem']?.toString() ?? '',
+        cause: json['cause']?.toString() ?? '',
       );
 
   final int number;
@@ -283,6 +376,19 @@ class RepairRound {
   final String confirmedAt;
   final String confirmedBy;
   final String rejectReason;
+  final String verifiedNote;
+  final String problem;
+  final String cause;
+}
+
+class RepairFee {
+  const RepairFee({required this.number, required this.cost, this.verifiedNote = ''});
+  factory RepairFee.fromJson(Map<String, dynamic> json) => RepairFee(
+    number: int.tryParse('${json['number']}') ?? 1,
+    cost: num.tryParse('${json['cost']}') ?? 0,
+    verifiedNote: json['verifiedNote']?.toString() ?? '');
+  final int number;
+  final num cost;
   final String verifiedNote;
 }
 

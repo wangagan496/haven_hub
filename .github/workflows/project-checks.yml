@@ -1,0 +1,45 @@
+name: project checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install pinned Flutter OH SDK
+        shell: pwsh
+        run: ./tool/setup_ci_flutter.ps1 -Destination "$env:RUNNER_TEMP/flutter-ohos"
+      - name: Audit dependencies, build, analyze and test
+        shell: pwsh
+        env:
+          FLUTTER_OHOS_HOME: ${{ runner.temp }}/flutter-ohos
+          # pubspec.lock records this hosted source; `pub get --enforce-lockfile` rejects any other.
+          PUB_HOSTED_URL: https://pub.flutter-io.cn
+        run: ./tool/check_project.ps1 -LogDirectory "$env:RUNNER_TEMP/haven-project-checks"
+      - name: Preserve check evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/haven-project-checks/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7

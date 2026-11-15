@@ -181,7 +181,7 @@ if (!_draftLoaded) {
   await _restoreDraft();
   ...
   if (!_draftLoaded) {
-    await PromptAction.showWarning(_draftUserKey.isEmpty
+    await AppPrompt.showWarning(_draftUserKey.isEmpty
         ? '账号信息尚未就绪，请保留当前页面，稍后再提交'
         : '草稿尚未读取完成，请保留当前页面，稍后再提交');
     return;                                    // ← 请求不发出
@@ -236,7 +236,7 @@ Future<RepairDraft?> _loadDraft() async {
 
 ### 4.2 凭证测试的失败模型缺一种形态（P2，测试覆盖）
 
-`test/token_persistence_race_test.dart` 用真实 `SharedPreferencesTokenStorage` + mock 偏好设置后端，断言与实现一致（迟到写入返回 `false`、`sessionVersion` 只在落盘成功后推进、重载后状态符合预期）。文档也明确排除了断电与原生存储故障，结论限定是诚实的。
+`test/auth/token_persistence_race_test.dart` 用真实 `SharedPreferencesTokenStorage` + mock 偏好设置后端，断言与实现一致（迟到写入返回 `false`、`sessionVersion` 只在落盘成功后推进、重载后状态符合预期）。文档也明确排除了断电与原生存储故障，结论限定是诚实的。
 
 缺口在于：测试替身 `_DelayedTokenStorage.clear()` 的失败分支是「完全不清除」（`invalidate(); return false;`），而真实实现返回的是**两次删除的与**：
 
@@ -388,11 +388,11 @@ if (!_draftLoaded) {
   await _restoreDraft();
   if (!mounted) return;
   if (!_sameOwner) {
-    await PromptAction.showWarning('登录账号已变化，请返回后重新打开报修页面');
+    await AppPrompt.showWarning('登录账号已变化，请返回后重新打开报修页面');
     return;
   }
   if (!_draftLoaded) {
-    await PromptAction.showWarning(_identityFailed
+    await AppPrompt.showWarning(_identityFailed
         ? '无法获取账号信息，请检查网络后重试'
         : '无法确认当前账号，请返回后重新打开报修页面');
     return;
@@ -423,7 +423,7 @@ if (_draftUserKey.isEmpty)
 
 **红-绿顺序很重要**：先只加注入字段（不接线）→ 写测试并观察到失败 → 再实现接线。否则无法证明测试真的覆盖了缺陷。
 
-`test/repair_identity_test.dart` 新增 5 条（该文件已有 11 条，均不注入 `draftUserKey`，走生产身份解析分支）：
+`test/repair/repair_identity_test.dart` 新增 5 条（该文件已有 11 条，均不注入 `draftUserKey`，走生产身份解析分支）：
 
 1. **冷启动按需取身份并恢复草稿**：注入返回 `UserInfo(id: 'user-a')` 的 loader；断言 loader 被调用 1 次、`saved A draft` 被恢复、「账号信息尚未就绪」横幅消失、提交发出 1 个请求。**接线前该用例必然失败于「loader 调用次数为 0」。**
 2. **取身份失败可重试**：首次 `throw const NetworkException(...)`；断言不发出请求且文案为「无法获取账号信息，请检查网络后重试」；随后置为成功再点提交，断言请求发出。证明不存在永久阻塞。
@@ -431,9 +431,9 @@ if (_draftUserKey.isEmpty)
 4. **无 token 时不发起请求**：断言 loader 调用 0 次。
 5. **按需取到身份后仍保留未确认状态**：磁盘草稿 `resultUnconfirmed: true`；断言提交时仍弹出「上次提交结果未确认」对话框。证明本次改动没有绕过既有的重复创建确认。
 
-**既有用例的迁移**：`test/repair_flow_test.dart` 的 `form()` 辅助函数需新增 `userInfoLoader` 透传参数。多数用例注入 `draftUserKey: () => 'test-user'`，因 `widget.draftUserKey != null` 会整体跳过新路径，不受影响。
+**既有用例的迁移**：`test/repair/repair_flow_test.dart` 的 `form()` 辅助函数需新增 `userInfoLoader` 透传参数。多数用例注入 `draftUserKey: () => 'test-user'`，因 `widget.draftUserKey != null` 会整体跳过新路径，不受影响。
 
-**必须处理的一处**：`test/repair_flow_test.dart:464` 的 `'stale profile id from previous login cannot restore its draft'` 走 `productionIdentity: true` 且已设置 token，接线后会真的发起 HTTP 请求。需给该用例注入 `userInfoLoader: () async => const UserInfo.empty()`——`updateUser(empty)` 会把 `currentUserSessionId` 置 `null`、键保持为空，断言与现在一致。
+**必须处理的一处**：`test/repair/repair_flow_test.dart:464` 的 `'stale profile id from previous login cannot restore its draft'` 走 `productionIdentity: true` 且已设置 token，接线后会真的发起 HTTP 请求。需给该用例注入 `userInfoLoader: () async => const UserInfo.empty()`——`updateUser(empty)` 会把 `currentUserSessionId` 置 `null`、键保持为空，断言与现在一致。
 
 ### 6.4 文档同步
 
@@ -443,7 +443,7 @@ if (_draftUserKey.isEmpty)
 ### 6.5 验证与验收标准
 
 ```powershell
-.\tool\flutter_ohos.ps1 test --no-pub --reporter expanded test/repair_identity_test.dart
+.\tool\flutter_ohos.ps1 test --no-pub --reporter expanded test/repair/repair_identity_test.dart
 ```
 
 ```powershell

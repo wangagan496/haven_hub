@@ -3,6 +3,39 @@ import '../models/repair.dart';
 import '../utils/json_utils.dart';
 import '../utils/request_dio.dart';
 
+Future<List<RepairRecord>> getWorkerRepairPoolApi() async {
+  final dynamic data = await requestDio.get(HttpPath.workerRepairPool);
+  if (data is! List<dynamic>) throw const FormatException('可接单列表格式不正确');
+  return data.map((dynamic value) {
+    final row = asMap(value, '可接单');
+    return RepairRecord.fromJson(<String, dynamic>{...row,
+      'houseInfo': '${row['community'] ?? ''} ${row['building'] ?? ''}'.trim()});
+  }).toList();
+}
+
+Future<RepairRecord> claimWorkerRepairApi(RepairRecord record, {String? slot}) async =>
+    RepairRecord.fromJson(asMap(await requestDio.put(HttpPath.workerRepairAction(record.id, 'claim'),
+      data: <String, dynamic>{'revision': record.revision, if (slot != null) 'slot': slot}), '接单结果'));
+
+class WorkerSkills {
+  const WorkerSkills(this.skills, this.revision);
+  factory WorkerSkills.fromJson(Map<String, dynamic> json) => WorkerSkills(
+    (json['skills'] as List<dynamic>).whereType<String>().toList(),
+    (json['workforceRevision'] as num).toInt());
+  final List<String> skills;
+  final int revision;
+}
+
+Future<WorkerSkills> getWorkerSkillsApi() async =>
+    WorkerSkills.fromJson(asMap(await requestDio.get(HttpPath.workerSkills), '我的技能'));
+
+Future<Map<String, dynamic>> saveWorkerSkillsApi(WorkerSkills profile, List<String> skills,
+    {bool preview = false, String? previewToken}) async =>
+    asMap(await requestDio.put(HttpPath.workerSkills, data: <String, dynamic>{
+      'workforceRevision': profile.revision, 'skills': skills, 'preview': preview,
+      if (previewToken != null) 'previewToken': previewToken,
+    }), '技能保存');
+
 Future<List<RepairRecord>> getWorkerRepairsApi() async {
   final dynamic data = await requestDio.get(HttpPath.workerRepairs);
   if (data is! List<dynamic>) throw const FormatException('工单列表格式不正确');
@@ -21,24 +54,37 @@ Future<RepairRecord> processWorkerRepairApi(RepairRecord record,
     {required bool complete,
     String result = '',
     num cost = 0,
+    bool saveOnly = false,
+    bool ready = false,
+    String? problem,
+    String? cause,
     String? slot,
     String reason = '', RequestDio? client}) async {
   final String trimmedResult = result.trim();
-  if (complete && trimmedResult.isEmpty) {
+  if (complete && (!saveOnly || ready) && trimmedResult.isEmpty) {
     throw const FormatException('请填写处理结果后再完成维修');
   }
-  if (cost < 0) throw const FormatException('费用不能为负数');
+  if (!cost.isFinite || cost < 0) throw const FormatException('请填写有效费用');
   final dynamic data = await (client ?? requestDio).put(
-      HttpPath.workerRepairAction(record.id, complete ? 'complete' : 'accept'),
+      HttpPath.workerRepairAction(record.id, complete ? (saveOnly ? 'result' : 'complete') : 'accept'),
       data: <String, dynamic>{
         'revision': record.revision,
         if (complete) 'result': trimmedResult,
         if (complete) 'cost': cost,
+        if (complete && saveOnly) 'ready': ready,
+        if (complete && problem != null) 'problem': problem.trim(),
+        if (complete && cause != null) 'cause': cause.trim(),
         if (!complete && slot != null) 'slot': slot,
         if (!complete && slot != null) 'reason': reason.trim(),
       });
   return RepairRecord.fromJson(asMap(data, '工单处理'));
 }
+
+Future<RepairRecord> saveWorkerRepairResultApi(RepairRecord record,
+    {required bool ready, required String result, required num cost,
+    String? problem, String? cause}) =>
+    processWorkerRepairApi(record, complete: true, saveOnly: true,
+        ready: ready, result: result, cost: cost, problem: problem, cause: cause);
 
 /// 无法继续接单：填写原因后退出，工单交回物业重新派单。
 Future<void> releaseWorkerRepairApi(RepairRecord record, String reason) =>

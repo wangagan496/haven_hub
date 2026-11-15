@@ -6,7 +6,7 @@ import { image } from '@kit.ImageKit';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
 
-/** App-local bridge. No account data or remote URL crosses this channel. */
+/** App-local bridge. Cache keys are compared only and never used as file paths. */
 export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAware, MethodCallHandler,
   WindowFocusChangedListener {
   private channel: MethodChannel | null = null;
@@ -15,6 +15,10 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
   private pending: MethodResult | null = null;
   private abilityBinding: AbilityPluginBinding | null = null;
   private focused: boolean = true;
+  private cachedPath: string = '';
+  private cachedKey: string = '';
+  private cachedSize: number = 0;
+  private cachedContext: common.UIAbilityContext | null = null;
   private readonly onDismiss: () => void = () => { this.finish(); };
 
   getUniqueClassName(): string { return 'VisitorPassSharePlugin'; }
@@ -52,6 +56,17 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
   }
 
   onMethodCall(call: MethodCall, result: MethodResult): void {
+    if (call.method === 'hasCachedImage') {
+      const key = call.argument('cacheKey') as string;
+      result.success(typeof key === 'string' && this.matchesCache(key));
+      return;
+    }
+    if (call.method === 'clearCache') {
+      this.finish('unavailable');
+      this.clearCache();
+      result.success(null);
+      return;
+    }
     if (call.method !== 'shareImage') {
       result.notImplemented();
       return;
@@ -66,6 +81,11 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
       return;
     }
     const bytes = call.argument('bytes') as Uint8Array;
+    const key = call.argument('cacheKey') as string;
+    if (typeof key !== 'string') {
+      result.error('invalid_image', 'Missing cache key', null);
+      return;
+    }
     if (!(bytes instanceof Uint8Array) || bytes.length < 8 || bytes.length > 5 * 1024 * 1024) {
       result.error('invalid_image', 'Invalid image bytes', null);
       return;
@@ -91,12 +111,13 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
       anchor = { windowOffset: { x: x, y: y }, size: { width: width, height: height } };
     }
     this.pending = result;
-    this.openShare(context, bytes, png, result, anchor);
+    this.openShare(context, bytes, key, png, result, anchor);
   }
 
-  private async openShare(context: common.UIAbilityContext, bytes: Uint8Array,
+  private async openShare(context: common.UIAbilityContext, bytes: Uint8Array, key: string,
     png: boolean, result: MethodResult, anchor?: systemShare.ShareControllerAnchor): Promise<void> {
     let path = '';
+    let created = false;
     try {
       const source = image.createImageSource(bytes.buffer);
       try {
@@ -112,18 +133,31 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
       const directory = `${context.cacheDir}/visitor-pass-share`;
       if (!fs.accessSync(directory)) fs.mkdirSync(directory);
       await this.cleanOldFiles(directory);
-      path = `${directory}/pass-${Date.now()}.${png ? 'png' : 'jpg'}`;
-      const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-      try {
-        const written = await fs.write(file.fd, bytes.buffer);
-        if (written !== bytes.byteLength) throw new Error('Incomplete image write');
-      } finally {
-        await fs.close(file);
+      if (this.pending !== result || this.context !== context) return;
+      const reusable = this.matchesCache(key) && this.cachedSize === bytes.byteLength;
+      if (reusable) {
+        path = this.cachedPath;
+      } else {
+        created = true;
+        path = `${directory}/pass-${Date.now()}.${png ? 'png' : 'jpg'}`;
+        const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        try {
+          const written = await fs.write(file.fd, bytes.buffer);
+          if (written !== bytes.byteLength) throw new Error('Incomplete image write');
+        } finally {
+          await fs.close(file);
+        }
       }
       if (this.pending !== result || this.context !== context || !this.focused) {
-        await fs.unlink(path);
+        if (!reusable) {
+          try { await fs.unlink(path); } catch (_) { /* Already removed. */ }
+        }
         return;
       }
+      this.cachedPath = path;
+      this.cachedKey = key;
+      this.cachedSize = bytes.byteLength;
+      this.cachedContext = context;
       const data = new systemShare.SharedData({
         utd: png ? uniformTypeDescriptor.UniformDataType.PNG : uniformTypeDescriptor.UniformDataType.JPEG,
         uri: fileUri.getUriFromPath(path),
@@ -142,7 +176,7 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
       // Keep the file after dismissal so the receiving app can still read it.
     } catch (_) {
       if (this.pending === result) this.finish('share_failed');
-      if (path.length > 0) {
+      if (created && path.length > 0) {
         try { await fs.unlink(path); } catch (_) { /* Already removed. */ }
       }
     }
@@ -173,8 +207,40 @@ export default class VisitorPassSharePlugin implements FlutterPlugin, AbilityAwa
       if (!/^pass-\d+\.(png|jpg)$/.test(name)) continue;
       const timestamp = Number(name.substring(5, name.lastIndexOf('.')));
       if (Date.now() - timestamp > 24 * 60 * 60 * 1000) {
-        try { await fs.unlink(`${directory}/${name}`); } catch (_) { /* Best effort. */ }
+        try {
+          const fullPath = `${directory}/${name}`;
+          await fs.unlink(fullPath);
+          if (this.cachedPath === fullPath) {
+            this.cachedPath = '';
+            this.cachedKey = '';
+            this.cachedSize = 0;
+          }
+        } catch (_) { /* Best effort. */ }
       }
     }
+  }
+
+  private clearCache(): void {
+    const context = this.context ?? this.cachedContext;
+    this.cachedPath = '';
+    this.cachedKey = '';
+    this.cachedSize = 0;
+    this.cachedContext = null;
+    if (context === null) return;
+    const directory = `${context.cacheDir}/visitor-pass-share`;
+    try {
+      for (const name of fs.listFileSync(directory)) {
+        if (!/^pass-\d+\.(png|jpg)$/.test(name)) continue;
+        try { fs.unlinkSync(`${directory}/${name}`); } catch (_) { /* Best effort. */ }
+      }
+    } catch (_) { /* Directory may not exist yet. */ }
+  }
+
+  private matchesCache(key: string): boolean {
+    if (this.cachedContext !== this.context || key.length === 0 || this.cachedKey !== key || this.cachedPath.length === 0) return false;
+    try {
+      if (!fs.accessSync(this.cachedPath) || fs.statSync(this.cachedPath).size !== this.cachedSize) return false;
+    } catch (_) { return false; }
+    return true;
   }
 }

@@ -19,7 +19,7 @@ class LoginPage extends StatefulWidget {
     super.key,
   });
 
-  static const String routeName = '/login';
+  static const String routeName = login;
 
   final String? toName;
 
@@ -56,11 +56,11 @@ class _LoginPageState extends State<LoginPage> {
 
     final String mobileInput = _phoneController.text.trim();
     if (mobileInput.isEmpty) {
-      await PromptAction.showWarning('请输入手机号');
+      await AppPrompt.showWarning('请输入手机号');
       return;
     }
     if (!_mobilePattern.hasMatch(mobileInput)) {
-      await PromptAction.showWarning('请输入正确的手机号（支持 +86）');
+      await AppPrompt.showWarning('请输入正确的手机号（支持 +86）');
       return;
     }
     final String mobile = _normalizeMobile(mobileInput);
@@ -73,15 +73,23 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) {
         return;
       }
+      if (_normalizeMobile(_phoneController.text.trim()) != mobile) {
+        setState(() => isSend = false);
+        return;
+      }
 
-      final String? developmentCode = widget.enableDevelopmentCodeAutofill
-          ? _extractVerificationCode(result)
-          : null;
+      final String? developmentCode =
+          widget.enableDevelopmentCodeAutofill && result['development'] == true
+              ? _extractVerificationCode(result)
+              : null;
       if (developmentCode != null) {
         _codeController.text = developmentCode;
-        await PromptAction.showSuccess('开发验证码已填入，不发送短信');
+        await AppPrompt.showSuccess('开发验证码已填入，不发送短信');
+      } else if (result['development'] == false && result['expiresIn'] == 300) {
+        _codeController.clear();
+        await AppPrompt.showSuccess('验证码已发送，请查看手机短信');
       } else {
-        throw const FormatException('未获取到开发验证码，请重新获取');
+        throw const FormatException('验证码响应不完整，请重新获取');
       }
       if (!mounted) {
         return;
@@ -93,7 +101,7 @@ class _LoginPageState extends State<LoginPage> {
       setState(() {
         isSend = false;
       });
-      await PromptAction.showError(describeError(error, fallback: '操作失败，请重试'));
+      await AppPrompt.showError(describeError(error, fallback: '操作失败，请重试'));
     }
   }
 
@@ -132,11 +140,11 @@ class _LoginPageState extends State<LoginPage> {
     final String mobileInput = _phoneController.text.trim();
     final String code = _codeController.text.trim();
     if (mobileInput.isEmpty || code.isEmpty) {
-      await PromptAction.showWarning('手机号和验证码不能为空');
+      await AppPrompt.showWarning('手机号和验证码不能为空');
       return;
     }
     if (!_mobilePattern.hasMatch(mobileInput) || !_codePattern.hasMatch(code)) {
-      await PromptAction.showWarning('手机号或验证码格式不正确');
+      await AppPrompt.showWarning('手机号或验证码格式不正确');
       return;
     }
     final String mobile = _normalizeMobile(mobileInput);
@@ -152,7 +160,9 @@ class _LoginPageState extends State<LoginPage> {
       if (token.isEmpty) {
         throw const FormatException('登录接口未返回 token');
       }
-
+      if (refreshToken.isEmpty) {
+        throw const FormatException('登录接口未返回 refreshToken');
+      }
       final bool saved = await tokenManager.setToken(
         token,
         refreshToken: refreshToken,
@@ -165,16 +175,17 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       eventBus.fire(const LoginSuccessEvent());
-      await PromptAction.showSuccess('登录成功');
+      await AppPrompt.showSuccess('登录成功');
       if (!mounted) {
         return;
       }
 
       final String? toName = widget.toName;
-      if (result['role'] == 'worker' && !(toName?.startsWith(AppRoutes.notifications) ?? false)) {
+      if (result['role'] == 'worker' &&
+          !(toName?.startsWith(notifications) ?? false)) {
         // 师傅工作台由 TabsPage 按角色承载，登出事件也由它统一处理。
         await Navigator.pushNamedAndRemoveUntil<void>(
-            context, AppRoutes.home, (_) => false);
+            context, home, (_) => false);
         return;
       }
       if (toName != null && toName.isNotEmpty) {
@@ -188,12 +199,11 @@ class _LoginPageState extends State<LoginPage> {
       if (Navigator.canPop(context)) {
         await Navigator.maybePop(context);
       } else {
-        await Navigator.pushReplacementNamed<void, void>(context, AppRoutes.home);
+        await Navigator.pushReplacementNamed<void, void>(context, home);
       }
     } on Object catch (error) {
       if (mounted) {
-        await PromptAction.showError(
-            describeError(error, fallback: '操作失败，请重试'));
+        await AppPrompt.showError(describeError(error, fallback: '操作失败，请重试'));
       }
     } finally {
       if (mounted) {
@@ -279,7 +289,7 @@ class _LoginPageState extends State<LoginPage> {
             const SizedBox(height: 30),
             const Padding(
               padding: EdgeInsets.only(bottom: 12),
-              child: Text('本地学习版：使用开发验证码，不发送短信'),
+              child: Text('请勿向他人提供登录验证码'),
             ),
             Row(
               children: <Widget>[

@@ -1,6 +1,7 @@
 class VisitorRecord {
   const VisitorRecord({
     this.id = '',
+    this.submissionId = '',
     this.houseId = '',
     this.houseInfo = '',
     this.name = '',
@@ -15,6 +16,7 @@ class VisitorRecord {
 
   factory VisitorRecord.fromJson(Map<String, dynamic> json) => VisitorRecord(
         id: json['id']?.toString().trim() ?? '',
+        submissionId: json['submissionId']?.toString().trim() ?? '',
         houseId: json['houseId']?.toString().trim() ?? '',
         houseInfo: json['houseInfo']?.toString().trim() ?? '',
         name: json['name']?.toString().trim() ?? '',
@@ -28,6 +30,7 @@ class VisitorRecord {
       );
 
   final String id;
+  final String submissionId;
   final String houseId;
   final String houseInfo;
   final String name;
@@ -50,12 +53,38 @@ class VisitorRecord {
       };
 
   Map<String, dynamic> toJson() => <String, dynamic>{
+        if (submissionId.isNotEmpty) 'submissionId': submissionId,
         'houseId': houseId,
         'name': name,
         'gender': gender,
         'mobile': mobile,
         'visitDate': visitDate,
       };
+}
+
+enum VisitorSubmissionState { unknown, created, closed }
+
+class VisitorSubmissionResult {
+  const VisitorSubmissionResult(this.state, {this.createdId = ''});
+  final VisitorSubmissionState state;
+  final String createdId;
+
+  factory VisitorSubmissionResult.fromJson(Map<String, dynamic> json) {
+    final state = switch (json['state']) {
+      'unknown' => VisitorSubmissionState.unknown,
+      'created' => VisitorSubmissionState.created,
+      'closed' => VisitorSubmissionState.closed,
+      _ => throw const FormatException('访客提交结果格式不正确'),
+    };
+    final id = json['createdId'];
+    if (id is! String ||
+        (state == VisitorSubmissionState.created
+            ? id.trim().isEmpty
+            : id.isNotEmpty)) {
+      throw const FormatException('访客提交结果格式不正确');
+    }
+    return VisitorSubmissionResult(state, createdId: id.trim());
+  }
 }
 
 int _integer(Object? value) => value is num

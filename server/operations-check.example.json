@@ -1,0 +1,20 @@
+{
+  "baseUrl": "http://127.0.0.1:3000",
+  "authentication": "operations-key",
+  "tokenFile": "C:/private/haven-operations-key/token.json",
+  "clientVersion": "1.0.0",
+  "timeoutMs": 3000,
+  "thresholds": {
+    "minimumRequests": 20,
+    "maxServerErrorRate": 0.01,
+    "maxAuthRejected": 10,
+    "maxAborted": 5,
+    "maxP95Ms": 1000,
+    "maxDue": 20,
+    "maxDueDelayMs": 60000,
+    "maxStopped": 0,
+    "maxExpiredLeases": 0,
+    "maxUnconfigured": 0,
+    "maxBackgroundFailures": 0
+  }
+}

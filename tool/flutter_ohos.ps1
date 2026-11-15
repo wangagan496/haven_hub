@@ -4,7 +4,8 @@ param(
   [string] $FlutterOhosSdk = $env:FLUTTER_OHOS_HOME,
   [string] $DartDefinesFile,
   [Alias('d')]
-  [string] $DeviceId
+  [string] $DeviceId,
+  [switch] $UseDart
 )
 
 # PowerShell binds --debug to its common Debug parameter before collecting
@@ -150,6 +151,13 @@ $gitConfigIndex = if ($env:GIT_CONFIG_COUNT) { [int]$env:GIT_CONFIG_COUNT } else
 [Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$gitConfigIndex", 'true', 'Process')
 $env:GIT_CONFIG_COUNT = [string]($gitConfigIndex + 1)
 
+# Dart dependency restores need the same package cache and Git settings as Flutter.
+if ($UseDart) {
+  Write-Host "Using Dart from Flutter OH SDK: $flutterOhosRoot"
+  & (Join-Path $flutterOhosBin 'dart.bat') @FlutterArguments
+  exit $LASTEXITCODE
+}
+
 if ($FlutterArguments.Count -gt 0 -and $FlutterArguments[0] -in @('run', 'build')) {
   $tencentMapKey = Get-DartDefineValue `
     -Name 'TENCENT_MAP_KEY' `
@@ -186,6 +194,16 @@ $toolPaths = @(
   (Join-Path $devecoHome 'sdk\default\openharmony\toolchains')
 ) | Where-Object { Test-Path -LiteralPath $_ }
 $env:PATH = ($toolPaths + $env:PATH) -join ';'
+
+if ($FlutterArguments.Count -gt 0 -and $FlutterArguments[0] -in @('run', 'build', 'test')) {
+  . (Join-Path $PSScriptRoot 'client_version.ps1')
+  $clientVersion = Get-HavenClientVersion -PubspecPath (Join-Path $projectRoot 'pubspec.yaml') -Arguments $FlutterArguments
+  $providedVersion = Get-DartDefineValue -Name 'HAVEN_CLIENT_VERSION' -DefinesFile $dartDefinesPath -Arguments $FlutterArguments
+  if ($null -ne $providedVersion -and $providedVersion -cne $clientVersion) {
+    throw 'HAVEN_CLIENT_VERSION must match pubspec.yaml or --build-name'
+  }
+  $FlutterArguments += "--dart-define=HAVEN_CLIENT_VERSION=$clientVersion"
+}
 
 Write-Host "Using Flutter OH SDK: $flutterOhosRoot"
 if (-not [string]::IsNullOrWhiteSpace($DeviceId)) {

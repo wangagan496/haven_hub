@@ -60,7 +60,7 @@ class _CommunitySearchPageState extends State<CommunitySearchPage> {
     final String city = _city.text.trim();
     final String keyword = _keyword.text.trim();
     if (city.isEmpty || keyword.isEmpty) {
-      await PromptAction.showWarning('请填写城市和小区名称');
+      await AppPrompt.showWarning('请填写城市和小区名称');
       return;
     }
     FocusScope.of(context).unfocus();
@@ -86,7 +86,7 @@ class _CommunitySearchPageState extends State<CommunitySearchPage> {
           onOtherError: (Object error) =>
               error is TimeoutException ? '搜索超时，请重试' : null);
       setState(() => _error = message);
-      await PromptAction.showError(message);
+      await AppPrompt.showError(message);
     } finally {
       if (mounted && requestId == _requestId) {
         setState(() => _isLoading = false);

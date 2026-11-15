@@ -8,6 +8,7 @@
   <title>享家 · 物业工作台</title>
   <link rel="icon" type="image/svg+xml" href="./brand.svg">
   <link rel="stylesheet" href="./style.css">
+  <script src="./client-version.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./push.js" defer></script>
 </head>
@@ -15,7 +16,7 @@
 <a class="skip-link" href="#main">跳到主要内容</a>
 <header class="topbar">
   <div class="brand"><img src="./brand.svg" width="38" height="38" alt=""><div><strong>享家社区</strong><span>物业工作台</span></div></div>
-  <div class="header-right"><span class="environment">本地演示</span><span id="account-name" hidden></span><button id="logout" class="quiet" hidden>退出登录</button></div>
+  <div class="header-right"><a href="./audit.html">操作记录</a><span class="environment">物业管理</span><span id="account-name" hidden></span><button id="logout" class="quiet" hidden>退出登录</button></div>
 </header>
 <main id="main">
   <section id="login-panel" class="login-layout" aria-labelledby="login-title">
@@ -41,7 +42,7 @@
         <p id="code-hint" class="field-hint" aria-live="polite">使用已开通权限的物业账号登录</p>
         <button type="submit" class="primary login-submit">登录工作台 <span aria-hidden="true">→</span></button>
       </form>
-      <div class="login-note"><span class="note-symbol" aria-hidden="true">i</span><p>当前为本地演示环境，验证码会自动填入。<br>如需开通物业账号，请联系管理员。</p></div>
+      <div class="login-note"><span class="note-symbol" aria-hidden="true">i</span><p>请勿向他人提供登录验证码。<br>如需开通物业账号，请联系管理员。</p></div>
     </div>
     <footer class="login-footer"><span>享家社区 · 物业服务管理</span><span>让日常管理更从容</span></footer>
   </section>
@@ -57,7 +58,7 @@
         <button data-tab="workers" aria-pressed="false"><span class="nav-icon" aria-hidden="true">♧</span>维修人员</button>
       </nav>
       <div class="sidebar-note"><span class="status-dot"></span><strong>每一件，都有着落</strong><p>审核资料、安排师傅，<br>及时回应住户的需求。</p></div>
-      <div class="sidebar-footer">享家社区 <span>物业端</span></div>
+      <div class="sidebar-footer">享家社区 <span>物业工作台</span></div>
     </aside>
     <div class="workspace-main">
       <div class="breadcrumb">社区管理 <span>/</span> <span id="breadcrumb-page">房屋审核</span></div>

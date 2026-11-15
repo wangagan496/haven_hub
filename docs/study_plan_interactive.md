@@ -29,13 +29,30 @@
 **验收标准**：能用一句话描述项目是什么
 
 **任务 1.2：运行项目**（30 分钟）
-```bash
-# 1. 启动 Web 代理
-dart run tool/web_api_proxy.dart
 
-# 2. 在另一个终端启动 Flutter Web
-flutter run -d chrome \
-  --dart-define-from-file=tool/dart_defines.web.local.env \
+下面均使用 PowerShell；每个新终端从项目根目录 `D:\haven_hub` 开始。先按 README“Web 调试”配置两个被 Git 忽略的 env 文件及地图 Key。
+
+```powershell
+# 1. 启动本地业务服务（端口 3000；首次运行先安装依赖并编译）
+Set-Location D:\haven_hub\server
+npm ci
+npm run build
+npm start
+```
+
+```powershell
+# 2. 另一个终端启动地图代理（端口 3001，只转发地图）
+Set-Location D:\haven_hub
+# 本机 Flutter OH SDK 路径；更换电脑后调整
+& 'C:\flutter_flutter_3.41.10_ohos\bin\dart.bat' run tool/web_api_proxy.dart 3001 --direct
+```
+
+```powershell
+# 3. 再开一个终端启动 Flutter Web
+#    dart_defines.web.local.env 中 API_BASE_URL 应为 http://127.0.0.1:3000/
+Set-Location D:\haven_hub
+.\tool\flutter_ohos.ps1 run -d chrome --web-port=8080 `
+  --dart-define-from-file=tool/dart_defines.web.local.env `
   --dart-define-from-file=tool/dart_defines.local.env
 ```
 
@@ -119,7 +136,8 @@ flutter run -d chrome \
 **验收标准**：能画出 401 处理流程图
 
 ```
-请求 → 401 → 检查条件 → 刷新 → 重放/登出
+请求 → 401 → 检查会话归属 → 刷新 → 同会话白名单 GET 恢复一次；写操作不重放
+刷新失败 → 仅清理仍属于原会话的凭证
 ```
 
 #### 下午（2 小时）：背诵技术难点
@@ -138,7 +156,7 @@ flutter run -d chrome \
 **难点 2：日志脱敏**
 - [ ] 为什么要脱敏？
 - [ ] 哪些字段敏感？
-- [ ] 如何递归处理？
+- [ ] 如何只记录固定摘要，避免遍历嵌套数据？
 
 **验收标准**：对着镜子讲一遍，不看笔记
 
@@ -322,9 +340,9 @@ class _FeedbackListState extends State<FeedbackList>
 **任务：理解测试策略**（4 小时）
 
 #### 上午：阅读测试用例
-- [ ] [test/core_logic_test.dart](../test/core_logic_test.dart)
-- [ ] [test/session_lifecycle_test.dart](../test/session_lifecycle_test.dart)
-- [ ] [test/repair_flow_test.dart](../test/repair_flow_test.dart)
+- [ ] [test/shared/core_logic_test.dart](../test/shared/core_logic_test.dart)
+- [ ] [test/auth/session_lifecycle_test.dart](../test/auth/session_lifecycle_test.dart)
+- [ ] [test/repair/repair_flow_test.dart](../test/repair/repair_flow_test.dart)
 
 **关键学习点**：
 - 如何 Mock 异步请求
@@ -377,7 +395,7 @@ testWidgets('提交反馈成功后返回列表页', (tester) async {
 精读 [utils/request_dio.dart](../lib/utils/request_dio.dart)，理解：
 - 请求拦截器：Token 注入
 - 响应拦截器：数据解析
-- 错误拦截器：Token 刷新 + 重放
+- 错误拦截器：Token 刷新；同会话安全读取恢复一次，写操作不重放
 - 日志拦截器：脱敏处理
 
 **练习**：实现一个自定义拦截器
@@ -385,24 +403,20 @@ testWidgets('提交反馈成功后返回列表页', (tester) async {
 class RetryInterceptor extends Interceptor {
   @override
   void onError(DioException error, ErrorInterceptorHandler handler) {
-    // 网络错误自动重试 3 次
+    // 练习边界：仅安全读取在请求层内处理超时、502/503/504，最多追加两次。
+    // 写操作不重放，不能在页面层叠加重试。
   }
 }
 ```
 
 #### 下午：日志脱敏深入
-理解递归脱敏算法：
-- 为什么要递归？
-- 如何处理嵌套对象？
-- 为什么响应顶层的 `code` 不脱敏？
+理解固定摘要日志：
+- 为什么仅截短输出不能限制遍历完整数据的开销？
+- 哪些固定字段足够定位请求、状态和耗时？
+- 为什么只读取响应外层的数字 `code`，不展开 `data`？
+- 省略业务正文后，怎样为单次请求选择少量非敏感诊断字段并限制开销？
 
-**练习**：实现一个简化版脱敏函数
-```dart
-dynamic redact(dynamic value, {int depth = 0}) {
-  // 递归处理 Map、List
-  // 脱敏敏感字段
-}
-```
+**练习**：让响应包含很大的嵌套数据，确认日志不遍历这些内容、实际返回值不变。
 
 ### Day 9：深入业务模块
 
@@ -446,7 +460,7 @@ dynamic redact(dynamic value, {int depth = 0}) {
 
 3. **日志脱敏**
    - 问题：敏感信息泄露
-   - 方案：递归脱敏 + 分层处理
+   - 方案：固定摘要 + 省略业务正文 + 短路径脱敏
    - 结果：保护用户隐私，合规
 
 4. **鸿蒙平台适配**
@@ -519,7 +533,7 @@ dynamic redact(dynamic value, {int depth = 0}) {
 1. **Token 管理**
    - sessionId：区分账号
    - sessionVersion：区分凭证代次
-   - 重放条件：三个同时满足
+   - 恢复条件：同会话白名单 GET，刷新后最多恢复一次；写操作不重放
 
 ### 不理解的地方
 - 为什么要推进 sessionVersion？

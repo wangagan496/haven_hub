@@ -5,9 +5,8 @@ import '../constant/index.dart';
 /// Persistence boundary for authentication credentials.
 ///
 /// The app talks to this abstraction instead of coupling pages to a concrete
-/// storage implementation. On HarmonyOS the bundled SharedPreferences plugin
-/// is sandboxed; a native keystore-backed implementation can be injected here
-/// without changing TokenManager or any page code.
+/// storage implementation. HarmonyOS uses the system Asset Store through
+/// HarmonyTokenStorage; other platforms retain the preferences implementation.
 abstract interface class TokenStorage {
   Future<void> load();
 

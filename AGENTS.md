@@ -6,13 +6,13 @@
 
 ## 已封装的核心工具（必须复用）
 
-### 1. UI 提示 → `PromptAction`（`lib/utils/toast.dart`）
+### 1. UI 提示 → `AppPrompt`（`lib/utils/toast.dart`）
 
 ```dart
-PromptAction.showToast('普通提示');    // 灰色
-PromptAction.showSuccess('操作成功');  // 绿色
-PromptAction.showError('操作失败');    // 红色
-PromptAction.showWarning('格式错误');  // 黄色
+AppPrompt.showToast('普通提示');    // 灰色
+AppPrompt.showSuccess('操作成功');  // 绿色
+AppPrompt.showError('操作失败');    // 红色
+AppPrompt.showWarning('格式错误');  // 黄色
 ```
 
 禁止直接调用 `Fluttertoast.showToast`，禁止使用 `ScaffoldMessenger.showSnackBar`。
@@ -58,7 +58,7 @@ await requestDio.delete(url, data: {...});
     FormatException()   => error.message,
     _                   => '操作失败，请重试',
   };
-  await PromptAction.showError(msg);
+  await AppPrompt.showError(msg);
 }
 ```
 
@@ -89,7 +89,7 @@ Future<void> _doSomething() async {
 
   // 2. 表单校验（失败则 showWarning + return）
   if (someInput.isEmpty) {
-    await PromptAction.showWarning('请填写xxx');
+    await AppPrompt.showWarning('请填写xxx');
     return;
   }
 
@@ -100,7 +100,7 @@ Future<void> _doSomething() async {
     // 3. 异步后必须检查 mounted
     if (!mounted) return;
 
-    await PromptAction.showSuccess('操作成功');
+    await AppPrompt.showSuccess('操作成功');
     if (!mounted) return;
 
     Navigator.maybePop(context); // 或其他导航
@@ -111,7 +111,7 @@ Future<void> _doSomething() async {
       FormatException()   => error.message,
       _                   => '操作失败，请重试',
     };
-    await PromptAction.showError(msg);
+    await AppPrompt.showError(msg);
   } finally {
     if (mounted) setState(() => _isLoading = false);
   }
@@ -132,7 +132,7 @@ lib/
 │   ├── mine/
 │   └── ...
 └── utils/
-    ├── toast.dart          # PromptAction
+    ├── toast.dart          # AppPrompt
     ├── app_exception.dart  # NetworkException + BusinessException
     ├── token_manager.dart  # TokenManager + tokenManager 单例
     └── request_dio.dart    # RequestDio + requestDio 单例
@@ -144,7 +144,7 @@ lib/
 
 | ❌ 禁止 | ✅ 替代 |
 |---|---|
-| `Fluttertoast.showToast(...)` | `PromptAction.showXxx(...)` |
+| `Fluttertoast.showToast(...)` | `AppPrompt.showXxx(...)` |
 | `SharedPreferences` 操作 token | `tokenManager.setToken / getToken` |
 | `new Dio()` 或 `http` 包 | `requestDio.get / post` |
 | 页面层直接处理 `DioException` | `NetworkException / BusinessException` |

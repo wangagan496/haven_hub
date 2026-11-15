@@ -96,7 +96,7 @@ class _TabsPageState extends State<TabsPage> {
         // 报错，让这次失败可见。
         tokenManager.invalidateLocalSession();
         if (mounted) {
-          await PromptAction.showError('本地登录信息清除失败，请重试');
+          await AppPrompt.showError('本地登录信息清除失败，请重试');
         }
         return;
       }
@@ -116,7 +116,7 @@ class _TabsPageState extends State<TabsPage> {
         (Route<dynamic> route) => route.isFirst,
       );
     } on Object {
-      await PromptAction.showError('退出登录失败，请重试');
+      await AppPrompt.showError('退出登录失败，请重试');
     } finally {
       _isHandlingLogout = false;
     }
@@ -129,7 +129,7 @@ class _TabsPageState extends State<TabsPage> {
   }
 
   Future<void> _initializeIdentity() async {
-    await tokenManager.init();
+    await tokenManager.loadTokens();
     await _resolveRole();
   }
 
@@ -151,7 +151,7 @@ class _TabsPageState extends State<TabsPage> {
     }
     if (isWorker != _isWorker) setState(() => _isWorker = isWorker);
     if (failed) {
-      await PromptAction.showWarning('身份信息获取失败，已按住户界面进入');
+      await AppPrompt.showWarning('身份信息获取失败，已按住户界面进入');
     }
   }
 

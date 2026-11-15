@@ -26,6 +26,8 @@ export function validatePushEndpoint(endpoint: string) {
 
 export const MAX_ATTEMPTS = 5;
 export const REMIND_INTERVAL_MS = 60_000;
+// 实际推送请求超时为10秒；领取保留60秒，供进程中断后的定时恢复使用。
+export const DELIVERY_LEASE_MS = 60_000;
 const STOPPED_REASON = '已停止自动重试，请手动重试';
 
 export class Notifications {
@@ -33,8 +35,7 @@ export class Notifications {
   private stopped = false;
   constructor(private readonly store: Store, private readonly transport: PushTransport, private readonly now = Date.now,
     private readonly log: (event: object) => void = () => {}) {
-    // 表结构由 Store 的 user_version 迁移创建；这里只恢复进程中断时停在 sending 的投递。
-    store.run("UPDATE push_deliveries SET status = 'queued' WHERE status = 'sending'");
+    this.recoverExpiredDeliveries();
   }
 
   config(userId: string) { return { ...this.transport.publicConfig(), profileId: hash('haven-push:' + userId) }; }
@@ -54,8 +55,13 @@ export class Notifications {
   }
 
   private syncTasks(owner: string, record: RecordData) {
-    const admins = this.store.db.prepare("SELECT id FROM users WHERE role = 'admin'").all().map(row => String(row.id));
-    const tasks = repairNotificationTasks(record, owner, admins);
+    const admins = this.store.db.prepare("SELECT id FROM users WHERE role = 'admin' AND disabledAt=0").all().map(row => String(row.id));
+    const tasks = repairNotificationTasks(record, owner, admins).filter(task => {
+      const user = this.store.one('SELECT disabledAt FROM users WHERE id=?', task.userId);
+      // Missing users are corrupt data, not intentionally disabled recipients.
+      if (!user) throw new Error('Notification recipient missing');
+      return Number(user.disabledAt) === 0;
+    });
     this.store.transaction(() => {
       const existing = this.store.db.prepare('SELECT id,userId,taskKey,active FROM notifications WHERE repairId = ?').all(record.id);
       for (const old of existing) {
@@ -129,7 +135,7 @@ export class Notifications {
   list(userId: string) {
     return this.store.db.prepare(`SELECT id,repairId,taskKey,role,title,body,active,createdAt,readAt FROM notifications
       WHERE userId = ? ORDER BY active DESC,
-      CASE WHEN active = 1 AND taskKey IN ('urgent_dispatch', 'urgent_request') THEN 0 ELSE 1 END, createdAt DESC LIMIT 100`).all(userId).map(note => ({
+      CASE WHEN active = 1 AND (taskKey IN ('urgent_dispatch', 'urgent_request') OR taskKey LIKE 'staffing:%') THEN 0 ELSE 1 END, createdAt DESC LIMIT 100`).all(userId).map(note => ({
       id: String(note.id), repairId: String(note.repairId), role: String(note.role), title: String(note.title),
       body: String(note.body), active: Number(note.active), createdAt: Number(note.createdAt), readAt: note.readAt,
       kind: notificationKind(String(note.taskKey)),
@@ -179,36 +185,51 @@ export class Notifications {
   }
 
   private async sendBatch() {
-    const rows = this.store.db.prepare("SELECT d.*, n.title,n.body,p.payload FROM push_deliveries d JOIN notifications n ON n.id=d.notificationId JOIN push_devices p ON p.id=d.deviceId AND p.userId=n.userId WHERE n.active=1 AND d.status IN ('queued','failed') AND d.attempts < ? AND d.nextAt <= ? LIMIT 20").all(MAX_ATTEMPTS, this.now());
+    this.recoverExpiredDeliveries();
+    const rows = this.store.db.prepare("SELECT d.notificationId,d.deviceId,p.payload FROM push_deliveries d JOIN notifications n ON n.id=d.notificationId JOIN push_devices p ON p.id=d.deviceId AND p.userId=n.userId WHERE n.active=1 AND d.status IN ('queued','failed') AND d.attempts < ? AND d.nextAt <= ? LIMIT 20").all(MAX_ATTEMPTS, this.now());
     for (const row of rows) {
       if (this.stopped) return;
-      const current = this.store.one('SELECT n.active,p.payload,d.status FROM notifications n JOIN push_devices p ON p.userId=n.userId JOIN push_deliveries d ON d.notificationId=n.id AND d.deviceId=p.id WHERE n.id=? AND p.id=?',String(row.notificationId),String(row.deviceId));
-      // A device may be rebound or its token rotated while an earlier send awaits.
-      if (!current?.active || current.payload !== row.payload || !['queued','failed'].includes(String(current.status))) continue;
-      const lease = randomUUID();
-      this.store.run("UPDATE push_deliveries SET status='sending', attempts=attempts+1,lease=? WHERE notificationId=? AND deviceId=?",lease,String(row.notificationId),String(row.deviceId));
-      const result = await this.transport.send(JSON.parse(String(row.payload)) as PushDevice, {
-        notificationId: String(row.notificationId), title: String(row.title), body: String(row.body),
+      const notificationId = String(row.notificationId), deviceId = String(row.deviceId);
+      // BEGIN IMMEDIATE 将资格检查与领取串行化；不跨网络等待持有数据库事务。
+      const claim = this.store.transaction(() => {
+        const current = this.store.one("SELECT n.title,n.body,p.payload,d.attempts FROM push_deliveries d JOIN notifications n ON n.id=d.notificationId JOIN push_devices p ON p.id=d.deviceId AND p.userId=n.userId WHERE d.notificationId=? AND d.deviceId=? AND n.active=1 AND d.status IN ('queued','failed') AND d.attempts < ? AND d.nextAt <= ?", notificationId, deviceId, MAX_ATTEMPTS, this.now());
+        // 上一条发送期间设备可能已换号/换Token，退避或尝试次数也可能已改变。
+        if (!current || current.payload !== row.payload) return;
+        const lease = randomUUID();
+        this.store.run("UPDATE push_deliveries SET status='sending',attempts=attempts+1,lease=?,nextAt=? WHERE notificationId=? AND deviceId=?", lease, this.now() + DELIVERY_LEASE_MS, notificationId, deviceId);
+        return { payload: String(current.payload), title: String(current.title), body: String(current.body),
+          attempts: Number(current.attempts) + 1, lease };
+      });
+      if (!claim) continue;
+      const result = await this.transport.send(JSON.parse(claim.payload) as PushDevice, {
+        notificationId, title: claim.title, body: claim.body,
       }).catch(error => {
         this.log({ event: 'push_send_failed', type: error instanceof Error ? error.name : 'unknown' });
         return { status: 'failed' as const, reason: '发送失败，将自动重试' };
       });
       if (this.stopped) return;
-      const pending = this.store.one("SELECT p.payload FROM push_deliveries d JOIN push_devices p ON p.id=d.deviceId WHERE d.notificationId=? AND d.deviceId=? AND d.status='sending' AND d.lease=?",String(row.notificationId),String(row.deviceId),lease);
-      if (pending?.payload !== row.payload) continue;
-      const attempts = Number(row.attempts) + 1;
-      const reason = result.status === 'failed' && attempts >= MAX_ATTEMPTS ? STOPPED_REASON : result.reason;
       this.store.transaction(() => {
-        this.store.run("UPDATE push_deliveries SET status=?,reason=?,nextAt=? WHERE notificationId=? AND deviceId=? AND status='sending'",result.status,reason,
-          this.now() + Math.min(60_000 * 2 ** Number(row.attempts),3_600_000),String(row.notificationId),String(row.deviceId));
+        // 完成确认与设备清理使用同一事务、同一领取标识，迟到响应不能覆盖新任务。
+        const pending = this.store.one("SELECT p.payload FROM push_deliveries d JOIN notifications n ON n.id=d.notificationId JOIN push_devices p ON p.id=d.deviceId AND p.userId=n.userId WHERE d.notificationId=? AND d.deviceId=? AND n.active=1 AND d.status='sending' AND d.lease=?", notificationId, deviceId, claim.lease);
+        if (pending?.payload !== claim.payload) return;
+        const reason = result.status === 'failed' && claim.attempts >= MAX_ATTEMPTS ? STOPPED_REASON : result.reason;
+        this.store.run("UPDATE push_deliveries SET status=?,reason=?,nextAt=?,lease='' WHERE notificationId=? AND deviceId=? AND status='sending' AND lease=?",result.status,reason,
+          this.now() + Math.min(60_000 * 2 ** (claim.attempts - 1),3_600_000),notificationId,deviceId,claim.lease);
         if (result.status !== 'expired') return;
         // 订阅失效：删除设备及其其他投递，只保留本条 expired 记录供界面提示"需要重新开启"。
-        const removed = this.store.run('DELETE FROM push_devices WHERE id=? AND payload=?',String(row.deviceId),String(row.payload));
+        const removed = this.store.run('DELETE FROM push_devices WHERE id=? AND payload=?',deviceId,claim.payload);
         if (Number(removed.changes) > 0) {
-          this.store.run('DELETE FROM push_deliveries WHERE deviceId=? AND notificationId != ?',String(row.deviceId),String(row.notificationId));
+          this.store.run('DELETE FROM push_deliveries WHERE deviceId=? AND notificationId != ?',deviceId,notificationId);
         }
       });
     }
+  }
+
+  private recoverExpiredDeliveries() {
+    // sending 时 nextAt 是领取截止时刻；其他状态下仍为下次尝试时刻。
+    // 包括旧版无领取标识、已过期的行；达到上限仍保留为可手动重试的failed。
+    this.store.run("UPDATE push_deliveries SET status='failed',lease='',reason=CASE WHEN attempts >= ? THEN ? ELSE ? END WHERE status='sending' AND nextAt <= ?",
+      MAX_ATTEMPTS, STOPPED_REASON, '上次发送结果未确认，将重试', this.now());
   }
 
   async stop() { this.stopped = true; await this.running; }

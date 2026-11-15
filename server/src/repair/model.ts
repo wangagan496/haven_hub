@@ -21,6 +21,10 @@ export type Round = {
   rejectedAt: string;
   rejectReason: string;
   verifiedNote: string;
+  problem?: string;
+  cause?: string;
+  /** 仅师傅明确选择可供现场确认时设置；保存进度会清空。 */
+  resultSavedAt?: string;
 };
 
 export type Pending = {
@@ -71,6 +75,24 @@ export function ensureRounds(record: RecordData): Round[] {
 }
 
 export function currentRound(record: RecordData): Round { return ensureRounds(record).at(-1)!; }
+
+/** Once written this counter is authoritative, independent of retained records. */
+export function repairRoundNumber(record: RecordData): number {
+  if (Number.isSafeInteger(record.roundCount) && Number(record.roundCount) >= 1) return Number(record.roundCount);
+  return Math.max(1, ...ensureRounds(record).map(item => item.number));
+}
+
+export type RepairFee = { number: number; cost: number; completedAt: string; verifiedNote: string };
+export function repairFees(record: RecordData): RepairFee[] {
+  const fees = Array.isArray(record.fees) ? (record.fees as RepairFee[]).map(fee => ({ ...fee })) : [];
+  // Compatibility for records created before the fee ledger existed.
+  for (const round of ensureRounds(record)) {
+    if (round.completedAt && typeof round.cost === 'number' && !fees.some(fee => fee.number === round.number)) {
+      fees.push({ number: round.number, cost: round.cost, completedAt: round.completedAt, verifiedNote: round.verifiedNote });
+    }
+  }
+  return fees;
+}
 export function addEvent(record: RecordData, event: Event) {
   record.timeline = [...events(record), event];
 }
@@ -84,4 +106,16 @@ export function voidReschedule(record: RecordData, at: string, resolution: strin
 export const localTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?[+-]\d{2}:\d{2}$/;
 
 export type Role = Exclude<Actor, 'system'>;
-export const repairItems = [{ id: '1001', name: '水电维修' }, { id: '1002', name: '门窗维修' }, { id: '1003', name: '其他维修' }];
+export const repairItems = [
+  { id: '1001', name: '水电维修' }, { id: '1004', name: '水暖维修' }, { id: '1005', name: '电气维修' },
+  { id: '1002', name: '门窗五金' }, { id: '1003', name: '其他维修' },
+];
+export type RepairSkill = 'plumbing' | 'electrical' | 'doors';
+export const repairSkills: readonly { id: RepairSkill; name: string }[] = [
+  { id: 'plumbing', name: '水暖' }, { id: 'electrical', name: '电气' }, { id: 'doors', name: '门窗五金' },
+];
+/** 历史水电和其他维修必须由物业明确技能，不能当作任意师傅都能接。 */
+export function requiredSkill(record: RecordData): RepairSkill | '' {
+  if (repairSkills.some(skill => skill.id === record.requiredSkill)) return record.requiredSkill as RepairSkill;
+  return record.repairItemId === '1004' ? 'plumbing' : record.repairItemId === '1005' ? 'electrical' : record.repairItemId === '1002' ? 'doors' : '';
+}

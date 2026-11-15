@@ -85,11 +85,17 @@ class HttpPath {
   static const String userInfo = 'userInfo';
   static const String upload = 'upload';
   static const String houseList = 'room';
+  static String houseSubmission(String id) => 'room-submissions/${Uri.encodeComponent(id)}';
+  static String closeHouseSubmission(String id) => '${houseSubmission(id)}/close';
   static const String refreshToken = 'refreshToken';
   static const String repair = 'repair';
+  static String repairSubmission(String id) => 'repair-submissions/${Uri.encodeComponent(id)}';
+  static String closeRepairSubmission(String id) => '${repairSubmission(id)}/close';
   static const String repairSlots = 'repair/slots';
   static const String repairItem = 'repairItem';
   static const String visitor = 'visitor';
+  static String visitorSubmission(String id) => 'visitor-submissions/${Uri.encodeComponent(id)}';
+  static String closeVisitorSubmission(String id) => '${visitorSubmission(id)}/close';
   static const String notifications = 'notifications';
   static const String notificationConfig = 'notifications/config';
   static const String notificationDevices = 'notifications/devices';
@@ -100,6 +106,8 @@ class HttpPath {
   static String repairRemind(String repairId) =>
       'notifications/repairs/${Uri.encodeComponent(repairId)}/remind';
   static const String workerRepairs = 'worker/repairs';
+  static const String workerRepairPool = 'worker/repair-pool';
+  static const String workerSkills = 'worker/skills';
   static String workerRepair(String id) => '$workerRepairs/${Uri.encodeComponent(id)}';
   static String workerRepairAction(String id, String action) => '${workerRepair(id)}/$action';
 
@@ -140,6 +148,9 @@ class HttpPath {
 
   static String cancelRepair(String id) =>
       'cancel/repair/${Uri.encodeComponent(id)}';
+
+  static String repairUnstaffedOptions(String id) => 'repair/$id/unstaffed-options';
+  static String repairUnstaffedChoice(String id) => 'repair/$id/unstaffed-choice';
 
   /// 住户对工单的操作：confirm / reject / aftersale / feedback / reschedule。
   static String repairAction(String id, String action) =>

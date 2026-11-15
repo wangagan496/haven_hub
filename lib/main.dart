@@ -9,6 +9,7 @@ import 'constant/index.dart';
 import 'core/app_initializer.dart';
 import 'l10n/app_localizations.dart';
 import 'pages/not_found/not_found.dart';
+import 'router/app_routes.dart';
 import 'router/index.dart';
 import 'theme/app_theme.dart';
 import 'utils/logger.dart';
@@ -16,20 +17,29 @@ import 'widgets/error_boundary.dart';
 import 'widgets/push_lifecycle.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  prepareFlutter();
 
-  // 初始化应用依赖
-  await AppInitializer.initialize();
+  // 准备项目公共工具：登录凭证管理、网络请求。
+  await prepareAppServices();
 
-  // 初始化全局错误处理
-  GlobalErrorHandler.initialize(
-    onError: (Object error, StackTrace stackTrace) {
-      // 这里可以添加错误上报逻辑（如上报到 Sentry、Firebase Crashlytics 等）
-      Logger.error('Global Error Caught', error, stackTrace);
-    },
-  );
+  // 准备错误处理；出错时调用 logAppError 记录日志。
+  prepareErrorHandling(onError: logAppError);
 
   runApp(const HavenHubApp());
+}
+
+/// 准备 Flutter 的基础支持；已经准备好时直接继续。
+const prepareFlutter = WidgetsFlutterBinding.ensureInitialized;
+
+/// 准备项目公共工具，沿用原来的启动准备流程。
+const prepareAppServices = AppInitializer.initialize;
+
+/// 准备错误处理，接收发生错误时要执行的动作。
+const prepareErrorHandling = GlobalErrorHandler.initialize;
+
+/// 记录应用错误：error 是错误本身，callTrace 是出错时的调用路径。
+void logAppError(Object error, StackTrace callTrace) {
+  Logger.error('Global Error Caught', error, callTrace);
 }
 
 class HavenHubApp extends StatelessWidget {
@@ -76,7 +86,7 @@ class HavenHubApp extends StatelessWidget {
           Locale('en', ''), // 英文
         ],
 
-        initialRoute: '/',
+        initialRoute: home,
         // Web 冷启动时地址栏 hash（如通知点击打开的 #/notifications/<id>）会成为初始路由。
         // 默认实现会按 "/" 逐级拆出 /、/notifications、/notifications/<id> 三层，
         // 导致同一条通知被打开两次；这里只保留首页加目标页两层。
@@ -102,7 +112,7 @@ class HavenHubApp extends StatelessWidget {
       settings.name,
       announcementLoader: announcementLoader,
       announcementDetailLoader: announcementDetailLoader,
-      arguments: settings.arguments,
+      pageData: settings.arguments,
     );
     if (page == null) return null;
 

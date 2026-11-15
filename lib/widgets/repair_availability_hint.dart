@@ -49,7 +49,7 @@ class _RepairAvailabilityHintState extends State<RepairAvailabilityHint> with Wi
       final data = await widget.loader();
       if (!mounted || request != _request || session != tokenManager.sessionId) return;
       setState(() => _message = data.slots.any((slot) => slot.selectable && slot.slot.startsWith('${data.today}#'))
-          ? '今天可预约' : '今天已约满，可选后续日期或提交待安排');
+          ? '今天有可约时段，具体以维修类别为准' : '今天暂无可约时段，可选后续日期或提交待安排');
     } on Object {
       if (mounted && request == _request && session == tokenManager.sessionId) setState(() => _message = '暂时无法获取');
     } finally {

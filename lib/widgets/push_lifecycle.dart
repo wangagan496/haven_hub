@@ -56,7 +56,7 @@ class _PushLifecycleState extends State<PushLifecycle> with WidgetsBindingObserv
   }
   Future<void> _resume() async {
     try {
-      await tokenManager.init();
+      await tokenManager.loadTokens();
       if (!mounted) return;
       _syncClickTimer();
       await pushSubscription.resume();

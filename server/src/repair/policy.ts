@@ -1,10 +1,29 @@
 import type { RecordData } from '../database.js';
-import { Status, type Actor, type Pending, addEvent, currentRound, ensureRounds, openPending, pendings, voidReschedule } from './model.js';
+import { Status, type Actor, type Pending, type Role, addEvent, currentRound, ensureRounds, openPending, pendings, rounds, voidReschedule, repairRoundNumber } from './model.js';
 import { clearFutureSlot, parseSlot, setSlot } from './schedule.js';
 import { requireValue } from '../errors.js';
 
 export function activeRepair(record: RecordData) {
   return ([Status.pending, Status.assigned, Status.processing] as number[]).includes(Number(record.status));
+}
+
+export type ConfirmationReason = '' | 'resident_only' | 'not_in_progress' | 'result_not_ready'
+  | 'revoke_pending' | 'already_completed' | 'cancelled';
+
+/** Read-only snapshot after settlement; authorization and revision are still checked on execution. */
+export function confirmationAvailability(record: RecordData, role: Role) {
+  let reasonCode: ConfirmationReason = '';
+  if (role !== 'resident') reasonCode = 'resident_only';
+  else if (record.status === Status.completed) reasonCode = 'already_completed';
+  else if (record.status === Status.cancelled || record.status === 4) reasonCode = 'cancelled';
+  else if (record.status !== Status.processing && record.status !== Status.confirming) reasonCode = 'not_in_progress';
+  else {
+    // Do not call currentRound: its legacy normalization mutates the record.
+    const round = rounds(record).at(-1);
+    if (record.status === Status.processing && !(round?.resultSavedAt && round.note)) reasonCode = 'result_not_ready';
+    else if (openPending(record, 'revoke')) reasonCode = 'revoke_pending';
+  }
+  return { code: 'confirm' as const, enabled: reasonCode === '', reasonCode };
 }
 export function urgentAwaitingRating(record: RecordData) {
   return activeRepair(record) && record.urgentRequest === true && !record.priority;
@@ -27,6 +46,7 @@ export function compareQueue(a: RecordData, b: RecordData) {
 }
 export function shiftRejection(record: RecordData, now: number): string {
   if (!activeRepair(record)) return '当前阶段不能顺延';
+  if (record.staffingIssue && (parseSlot(record.slot)?.startsAt ?? Infinity) <= now) return '该时段已开始，请改派';
   if (!record.agreedTime || pendings(record).some(item => item.kind === 'reschedule' && item.firstSchedule && !item.resolvedAt)) {
     return '首次上门时间尚未确认，请等待住户回应或重新提议';
   }
@@ -51,10 +71,9 @@ const hour = 3_600_000;
 // 期限一律按服务端时钟的连续小时计算；集中在此，便于调整和测试注入时钟。
 export const rules = {
   autoConfirmMs: 72 * hour,
-  warrantyMs: [720 * hour, 480 * hour] as const,
+  warrantyMs: 720 * hour,
   revokeAutoMs: 2 * hour,
   objectionMs: 72 * hour,
-  maxRounds: 2,
   unassignedAlertMs: 24 * hour,
   unacceptedAlertMs: 48 * hour,
   rescheduleAlertMs: 24 * hour,
@@ -63,16 +82,15 @@ export const rules = {
   periods: { morning: [9, 12], noon: [14, 17], evening: [18, 21] } as const,
 };
 
-export function reworkUsed(record: RecordData) { return ensureRounds(record).length >= rules.maxRounds; }
+export function reworkUsed(record: RecordData) { return repairRoundNumber(record) > 1; }
 
-// 售后期从最终确认完成起算：第一轮 720 小时，第二轮 480 小时。
+// 每一轮售后期均从最终确认完成起算 720 小时，返修次数不设上限。
 export function warrantyEnd(record: RecordData): string {
   if (record.status !== Status.completed) return '';
   const round = currentRound(record);
   const confirmed = Date.parse(round.confirmedAt);
   if (!Number.isFinite(confirmed)) return '';
-  const length = rules.warrantyMs[Math.min(round.number, rules.maxRounds) - 1] ?? rules.warrantyMs[1];
-  return new Date(confirmed + length).toISOString();
+  return new Date(confirmed + rules.warrantyMs).toISOString();
 }
 
 export function inWarranty(record: RecordData, now: number) {
@@ -119,7 +137,7 @@ export function settle(record: RecordData, now: number): boolean {
     changed = true;
   }
   const proposal = openPending(record, 'reschedule');
-  if (proposal?.firstSchedule && proposal.deadline && proposal.proposedSlot
+  if (!record.staffingIssue && proposal?.firstSchedule && proposal.deadline && proposal.proposedSlot
     && activeRepair(record)
     && now >= Date.parse(proposal.deadline)) {
     // 提议时已持有名额和师傅时段；到期只确认，不重新竞争名额。
@@ -139,6 +157,8 @@ export function todoTags(record: RecordData, now: number): string[] {
   if (urgentAwaitingDispatch(record)) tags.push('急单待调度');
   if (urgentAwaitingRating(record)) tags.push('紧急诉求待定级');
   if (activeRepair(record) && record.needsAdmin) tags.push('师傅请求物业协助');
+  if (activeRepair(record) && record.staffingIssue) tags.push('人手待协调');
+  if (activeRepair(record) && record.poolShortage) tags.push('可接单时段缺人');
   if (openPending(record, 'reschedule')?.firstSchedule) tags.push('等待确认时间');
   const time = (value: unknown) => Date.parse(String(value ?? ''));
   const agreed = time(record.agreedTime);
