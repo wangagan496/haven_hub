@@ -4,6 +4,15 @@ import { ApiError, requireValue } from './errors.js';
 
 export type MediaPurpose = 'identity' | 'repair' | 'visitor' | 'avatar';
 
+/** 共享上传归属校验，住房、报修和头像均复用，不依赖社区业务服务。 */
+export function ownedUpload(store: Store, publicBaseUrl: string, userId: string, url: string, purpose?: MediaPurpose) {
+  const prefix = `${publicBaseUrl}/media/`;
+  requireValue(url.startsWith(prefix), '图片必须先上传到当前服务');
+  const upload = store.one('SELECT id FROM uploads WHERE id = ? AND userId = ?', url.slice(prefix.length), userId);
+  requireValue(upload, '图片不存在或不属于当前账号');
+  if (purpose) requireMediaPurpose(store, String(upload.id), purpose);
+}
+
 export function mediaId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   try {

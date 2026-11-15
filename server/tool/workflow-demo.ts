@@ -4,11 +4,13 @@ import sharp from 'sharp';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { CommunityService } from '../src/community/service.js';
+import { HousingService } from '../src/housing/service.js';
 
 // 独立演示数据库，所有资料均为虚构；不会修改原 haven.sqlite。
 const config = { ...readConfig({}), port: 3010, publicBaseUrl: 'http://127.0.0.1:3010', databasePath: resolve('data/workflow-demo.sqlite') };
 const { app, store } = createApp(config, { workflowWebRoot: resolve('../build/web/workflow') });
 const service = new CommunityService(store, config.publicBaseUrl);
+const housing = new HousingService(store, config.publicBaseUrl);
 const accounts = [
   {mobile:'19900000001',role:'resident',name:'演示住户'},
   {mobile:'19900000002',role:'admin',name:'演示物业'},
@@ -32,7 +34,7 @@ if (!store.list('rooms',resident).length) {
   const image=await sharp(svg).png().toBuffer();
   store.run('INSERT INTO uploads VALUES (?,?,?,?)',id,resident,'image/png',image);
   const url=`${config.publicBaseUrl}/media/${id}`;
-  const house=service.saveRoom(resident,{point:'演示小区',building:'1栋',room:'101',name:'测试住户',gender:1,mobile:accounts[0].mobile,idcardFrontUrl:url,idcardBackUrl:url}).rows[0]!;
+  const house=housing.save(resident,{point:'演示小区',building:'1栋',room:'101',name:'测试住户',gender:1,mobile:accounts[0].mobile,idcardFrontUrl:url,idcardBackUrl:url}).rows[0]!;
   const repairImageId=randomBytes(32).toString('hex');
   store.run('INSERT INTO uploads(id,userId,mime,bytes) VALUES (?,?,?,?)',repairImageId,resident,'image/png',image);
   const repairImageUrl=`${config.publicBaseUrl}/media/${repairImageId}`;

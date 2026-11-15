@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { RecordData, Store } from '../database.js';
 import { ApiError } from '../errors.js';
-import { ownedUpload } from '../community/resources.js';
+import { ownedUpload } from '../media.js';
 import { ensureRounds, requiredSkill } from './model.js';
 import { activeRepair, settle } from './policy.js';
 import { type Capacity, parseSlot, requireAvailable, requireFreeWorker, scheduleRules } from './schedule.js';

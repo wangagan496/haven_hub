@@ -1,0 +1,6 @@
+{
+  "database": "./data/haven.sqlite",
+  "directory": "D:/haven-backups/primary",
+  "replicaDirectory": "E:/haven-backups/replica",
+  "keep": 48
+}

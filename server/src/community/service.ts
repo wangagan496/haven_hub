@@ -4,51 +4,14 @@ import type { Collection, RecordData, Store } from '../database.js';
 import { mobileSchema } from '../auth.js';
 import { ApiError, requireValue } from '../errors.js';
 import { RepairService } from '../repair/service.js';
-import { date, houseInfo, ownedUpload } from './resources.js';
-import { bindMedia, type MediaPurpose } from '../media.js';
+import { date, houseInfo } from './resources.js';
+import { bindMedia, ownedUpload, type MediaPurpose } from '../media.js';
 
 const text = z.string().trim().min(1).max(100);
 export const announcements = [{ id: 'local-welcome', title: '欢迎使用享家本地学习版',
   content: '这里的数据保存在本机 SQLite 数据库。验证码仅供开发使用，不会发送短信。请使用虚构资料和示例图片。',
   createdAt: '2026-10-12T00:00:00.000Z', creatorName: '本地学习服务' }];
 
-export const roomSchema = z.object({
-  submissionId: z.string().uuid().optional(),
-  id: z.string().uuid().optional(), revision: z.number().int().min(0).optional(),
-  point: text, building: text, room: text,
-  floor: z.string().trim().regex(/^(?:[1-9]\d{0,3}|B[1-9]\d?)?$/).default(''),
-  name: z.string().trim().regex(/^(?=.{2,15}$)[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z '-]*[\u4e00-\u9fa5A-Za-z]$/), gender: z.union([z.literal(0), z.literal(1)]),
-  mobile: mobileSchema, idcardFrontUrl: z.url(), idcardBackUrl: z.url(),
-}).strict().refine(input => !(input.id && input.submissionId), { message: '编辑不能使用创建回执' });
-
-// 中文姓名可重名；含英文字母的姓名按大小写及连续空格归一后全局唯一。
-function englishOwnerKey(name: string): string | null {
-  return /[A-Za-z]/.test(name) ? name.trim().replace(/ +/g, ' ').toLowerCase() : null;
-}
-
-function roomValidationMessage(error: z.ZodError): string {
-  const labels: Record<string, string> = {
-    id: '房屋编号', point: '小区', building: '楼栋', room: '房间', floor: '楼层',
-    name: '业主姓名', gender: '性别', mobile: '手机号',
-    idcardFrontUrl: '身份证正面照片', idcardBackUrl: '身份证背面照片',
-  };
-  const issue = error.issues[0];
-  const field = typeof issue?.path[0] === 'string' ? issue.path[0] : '';
-  if (!field) return '参数格式不正确，请检查输入';
-  if (field === 'revision') return '房屋版本无效，请重新加载后再提交';
-  const label = labels[field] ?? '房屋信息';
-  if (field === 'mobile') return '手机号格式不正确';
-  if (field === 'floor') return '请输入有效楼层，例如33、100或B1';
-  if (field === 'name') return '业主姓名格式不正确，请填写2-15个中文或英文字符';
-  if (field === 'idcardFrontUrl' || field === 'idcardBackUrl') {
-    return `${label}无效，请重新上传`;
-  }
-  if (issue?.code === 'too_big') return `${label}不能超过100个字符`;
-  if (field && (issue?.code === 'too_small' || issue?.code === 'invalid_type')) {
-    return `${label}不能为空`;
-  }
-  return `${label}格式不正确，请检查输入`;
-}
 export const visitorSchema = z.object({
   submissionId: z.string().uuid().optional(),
   houseId: z.string().uuid(), name: text, gender: z.union([z.literal(0), z.literal(1)]), mobile: mobileSchema, visitDate: date,
@@ -72,79 +35,6 @@ export class CommunityService {
       operation();
       const rows = this.list(table, userId);
       return { complete: true, rows, total: rows.length };
-    });
-  }
-  saveRoom(userId: string, raw: unknown) {
-    const parsed = roomSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new ApiError(200, 40000, roomValidationMessage(parsed.error));
-    }
-    const input = parsed.data;
-    return this.store.transaction(() => {
-      const { submissionId, ...content } = input;
-      const requestHash = this.roomRequestHash(input);
-      if (submissionId) {
-        const receipt = this.store.one('SELECT requestHash,roomId FROM room_submissions WHERE userId=? AND submissionId=?', userId, submissionId);
-        if (receipt) {
-          if (receipt.roomId === null) throw new ApiError(409, 40903, '本次提交已停止，请使用新的提交回执');
-          if (receipt.requestHash !== requestHash) throw new ApiError(409, 40902, '该提交回执对应的内容不同，请先查看原提交结果');
-          if (!this.store.get('rooms', userId, String(receipt.roomId))) throw new ApiError(409, 40904, '原房屋已删除，本次提交不会重新创建');
-          const rows = this.list('rooms', userId);
-          return { complete: true, rows, total: rows.length, createdId: String(receipt.roomId) };
-        }
-      }
-      const id = input.id ?? randomUUID();
-      const result = this.mutate('rooms', userId, () => {
-        const previous = input.id ? this.detail('rooms', userId, input.id) : undefined;
-        // 所属关系、版本检查及写入共用事务，旧表单不能覆盖较新的资料或审核结果。
-        if (previous && input.revision !== Number(previous.revision ?? 0)) {
-          throw new ApiError(409, 40900, '房屋资料或审核状态已更新，请重新加载后再提交');
-        }
-        this.ownedUpload(userId, input.idcardFrontUrl, 'identity');
-        this.ownedUpload(userId, input.idcardBackUrl, 'identity');
-        const nameKey = englishOwnerKey(input.name);
-        if (nameKey !== null && this.store.roomOwnerNames().some(room =>
-          room.id !== input.id && englishOwnerKey(room.name) === nameKey)) {
-          throw new ApiError(200, 40002, '该英文姓名已被登记，请更换姓名');
-        }
-        this.store.save('rooms', userId, { ...content, id, status: 1,
-          revision: Number(previous?.revision ?? 0) + 1, reviewReason: '', reviewedAt: '',
-          submittedAt: this.iso() }, Boolean(input.id));
-        if (submissionId) this.store.run('INSERT INTO room_submissions VALUES (?,?,?,?,?)',
-          userId, submissionId, requestHash, id, this.now());
-      });
-      return input.id ? result : { ...result, createdId: id };
-    });
-  }
-  private roomRequestHash(input: z.infer<typeof roomSchema>) {
-    const { submissionId: _, id: _id, revision: _revision, ...content } = input;
-    return createHash('sha256').update(JSON.stringify(content)).digest('hex');
-  }
-  roomSubmissionResult(userId: string, rawId: unknown) {
-    const id = z.string().uuid().parse(rawId);
-    const receipt = this.store.one('SELECT roomId FROM room_submissions WHERE userId=? AND submissionId=?', userId, id);
-    if (!receipt) return { state: 'unknown', createdId: '' };
-    if (receipt.roomId === null) return { state: 'closed', createdId: '' };
-    const createdId = String(receipt.roomId);
-    return { state: this.store.get('rooms', userId, createdId) ? 'created' : 'deleted', createdId };
-  }
-  closeRoomSubmission(userId: string, rawId: unknown) {
-    const id = z.string().uuid().parse(rawId);
-    return this.store.transaction(() => {
-      const result = this.roomSubmissionResult(userId, id);
-      if (result.state !== 'unknown') return result;
-      this.store.run('INSERT INTO room_submissions VALUES (?,?,?,NULL,?)', userId, id, '', this.now());
-      return { state: 'closed', createdId: '' };
-    });
-  }
-  deleteRoom(userId: string, id: string, raw: unknown) {
-    return this.mutate('rooms', userId, () => {
-      const previous = this.detail('rooms', userId, id);
-      const { revision } = z.object({ revision: z.number().int().min(0).optional() }).strict().parse(raw ?? {});
-      if (revision !== Number(previous.revision ?? 0)) {
-        throw new ApiError(409, 40900, '房屋资料或审核状态已更新，请刷新核对后再删除');
-      }
-      this.store.delete('rooms', userId, id);
     });
   }
   /** 兼容演示脚本；创建逻辑统一由报修模块负责，保留原来的完整列表响应。 */

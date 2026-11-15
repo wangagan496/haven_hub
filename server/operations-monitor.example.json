@@ -1,0 +1,8 @@
+{
+  "checkConfigFile": "C:/private/haven-operations-check.json",
+  "directory": "C:/private/haven-operations-history",
+  "intervalSeconds": 30,
+  "failureSamples": 2,
+  "recoverySamples": 2,
+  "retentionEvents": 10000
+}

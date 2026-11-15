@@ -19,7 +19,7 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/main.js",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "cors": "^2.8.5",

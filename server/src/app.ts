@@ -22,6 +22,8 @@ import { WorkflowService } from './workflow.js';
 import { ManagementAudit } from './management-audit.js';
 import { RepairService } from './repair/service.js';
 import { createRepairRouter } from './repair/routes.js';
+import { HousingService } from './housing/service.js';
+import { createHousingRouter } from './housing/routes.js';
 import { RepairPath } from './repair/paths.js';
 import { Notifications } from './notifications.js';
 import { createPushTransport, type PushTransport } from './push-transport.js';
@@ -66,6 +68,7 @@ function configureApp(config: Config, options: AppOptions, store: Store, runtime
     hourlyLimit: config.sms!.hourlyLimit, dailyLimit: config.sms!.dailyLimit, globalDailyLimit: config.sms!.globalDailyLimit, log,
   } : { mode: 'development' });
   const service = new CommunityService(store, config.publicBaseUrl, now);
+  const housing = new HousingService(store, config.publicBaseUrl, now);
   const repairs = new RepairService(store, now, config.propertyPhone, log, config.publicBaseUrl);
   const workflow = new WorkflowService(store, now, () => repairs.settleWorkforceChange());
   const audit = new ManagementAudit(store, now);
@@ -151,7 +154,7 @@ function configureApp(config: Config, options: AppOptions, store: Store, runtime
     const webRoot = options.workflowWebRoot;
     app.use('/workflow', helmet.contentSecurityPolicy({ directives: {
       'script-src': ["'self'", "'wasm-unsafe-eval'"],
-      'connect-src': ["'self'", 'https://fonts.gstatic.com', 'http://127.0.0.1:3001/tencent-map/', 'http://127.0.0.1:3001/amap-map/'],
+      'connect-src': ["'self'", 'blob:', 'https://fonts.gstatic.com', 'http://127.0.0.1:3001/tencent-map/', 'http://127.0.0.1:3001/amap-map/'],
       'img-src': ["'self'", 'data:', 'blob:'],
       'worker-src': ["'self'", 'blob:'],
       'upgrade-insecure-requests': null,
@@ -239,17 +242,8 @@ function configureApp(config: Config, options: AppOptions, store: Store, runtime
     workflow.requireRole(operatorUserId, 'admin');
     next();
   });
-  app.get('/management/rooms', (_req, res) => res.json(ok(workflow.rooms())));
   app.get('/management/operations', operationsLimit(), (_req, res) => res.json(ok(operationsSnapshot())));
   app.get('/management/audit-events', (req, res) => res.json(ok(audit.list(res.locals.userId, req.query))));
-  app.put('/management/rooms/:id/review', (request, response) => {
-    const houseId = request.params.id;
-    // 操作人编号由前面的登录校验确定，不从网页提交的审核数据里取。
-    const reviewerUserId: string = response.locals.userId;
-    const reviewData: unknown = request.body;
-    const houseReviewResult = workflow.reviewHouse(houseId, reviewerUserId, reviewData);
-    response.json(ok(houseReviewResult));
-  });
   app.get('/management/workers', (_req, res) => res.json(ok(workflow.workers())));
   app.get('/management/workforce-summary', (_req, res) => res.json(ok(workflow.workforceSummary())));
   app.post('/management/workers', (req, res) => res.json(ok(workflow.saveWorker(req.body, res.locals.userId))));
@@ -262,12 +256,7 @@ function configureApp(config: Config, options: AppOptions, store: Store, runtime
   app.get(RepairPath.skills, (_req, res) => res.json(ok(workflow.workerSkills(res.locals.userId))));
   app.put(RepairPath.skills, (req, res) => res.json(ok(workflow.saveSkills(res.locals.userId, req.body))));
   app.use(createRepairRouter(repairs));
-  app.get('/room', (_req, res) => res.json(ok(service.list('rooms', res.locals.userId))));
-  app.get('/room-submissions/:id', (req, res) => res.json(ok(service.roomSubmissionResult(res.locals.userId, req.params.id))));
-  app.put('/room-submissions/:id/close', (req, res) => res.json(ok(service.closeRoomSubmission(res.locals.userId, req.params.id))));
-  app.get('/room/:id', (req, res) => res.json(ok(service.detail('rooms', res.locals.userId, req.params.id))));
-  app.post('/room', (req, res) => res.json(ok(service.saveRoom(res.locals.userId, req.body))));
-  app.delete('/room/:id', (req, res) => res.json(ok(service.deleteRoom(res.locals.userId, req.params.id, req.body))));
+  app.use(createHousingRouter(housing));
   app.get('/visitor', (_req, res) => res.json(ok({ rows: service.list('visitors', res.locals.userId) })));
   app.get('/visitor-submissions/:id', (req, res) => res.json(ok(service.visitorSubmissionResult(res.locals.userId, req.params.id))));
   app.put('/visitor-submissions/:id/close', (req, res) => res.json(ok(service.closeVisitorSubmission(res.locals.userId, req.params.id))));

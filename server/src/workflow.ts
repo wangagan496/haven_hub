@@ -23,7 +23,7 @@ type SkillPreview = {
 const SKILL_PREVIEW_ACTOR_LIMIT = 8;
 const SKILL_PREVIEW_TOTAL_LIMIT = 256;
 
-/** 角色校验、房屋审核和维修人员名册。报修工单流转见 repair/service.ts。 */
+/** 角色校验和维修人员名册；住房审核见 housing/service.ts，工单流转见 repair/service.ts。 */
 export class WorkflowService {
   // 短期、有限数量的确认凭据；重启或过期后必须重新预览。
   private readonly skillPreviews = new Map<string, SkillPreview>();
@@ -41,11 +41,6 @@ export class WorkflowService {
 
   role(userId: string) {
     return String(this.store.one('SELECT role FROM users WHERE id = ?', userId)?.role ?? '');
-  }
-
-  rooms(): RecordData[] {
-    return this.store.db.prepare('SELECT payload FROM rooms ORDER BY seq DESC').all()
-      .map(row => JSON.parse(String(row.payload)) as RecordData);
   }
 
   workers() {
@@ -288,66 +283,5 @@ export class WorkflowService {
     if (!worker) throw new ApiError(404, 40400, '维修人员不存在');
     requireValue(Number(worker.disabledAt) === 0, '该账号已停用，请先恢复使用');
     if (expected !== Number(worker.workforceRevision)) throw new ApiError(409, 40900, '人员安排已更新，请刷新后再操作');
-  }
-
-  private checkHouseReviewData(reviewData: unknown) {
-    // 定义审核决定的规则：只允许通过（approve）或打回（reject）。
-    const reviewDecisionRule = z.enum(['approve', 'reject']);
-    const houseReviewRules = z.object({
-      revision,
-      decision: reviewDecisionRule,
-      reason: note.default(''),
-    }).strict();
-
-    // 按上面的规则检查提交的数据，不符合规则就报错停止。
-    const reviewDataToCheck = houseReviewRules.parse(reviewData);
-    if (reviewDataToCheck.decision === 'reject') {
-      requireValue(reviewDataToCheck.reason.length > 0, '请填写打回原因');
-    }
-    return reviewDataToCheck;
-  }
-
-  private saveReview(ownerUserId: string, reviewedHouse: RecordData) {
-    this.store.save('rooms', ownerUserId, reviewedHouse, true);
-  }
-
-  reviewHouse(houseId: string, reviewerUserId: string, reviewData: unknown) {
-    this.requireRole(reviewerUserId, 'admin');
-    // 提交格式和必填内容检查通过，才会拿到结果；检查失败会报错停止。
-    const passedCheckData = this.checkHouseReviewData(reviewData);
-    return this.store.transaction(() => {
-      const storedHouseData = this.store.one('SELECT userId, payload FROM rooms WHERE id = ?', houseId);
-      if (!storedHouseData) throw new ApiError(404, 40400, '记录不存在');
-      const ownerUserId = String(storedHouseData.userId);
-      const houseToReview = JSON.parse(String(storedHouseData.payload)) as RecordData;
-      const target: AuditTarget = { type: 'room', id: houseId };
-      const before = this.audit.snapshot(target);
-      const currentRevision = Number(houseToReview.revision ?? 0);
-      const submittedRevision = passedCheckData.revision;
-      if (currentRevision !== submittedRevision) {
-        throw new ApiError(409, 40900, '记录已更新，请刷新后再操作');
-      }
-      if (houseToReview.status !== 1) {
-        throw new ApiError(409, 40900, '这份房屋资料已审核，请刷新查看最新状态');
-      }
-      let reviewStatus = 2; // 已通过
-      let rejectionReason = '';
-      if (passedCheckData.decision === 'reject') {
-        reviewStatus = 3; // 已打回
-        rejectionReason = passedCheckData.reason;
-      }
-      // 资料编辑与审核共用版本，审核前打开的住户表单也必须重新加载。
-      const reviewedHouse = {
-        ...houseToReview,
-        status: reviewStatus,
-        reviewReason: rejectionReason,
-        reviewedAt: new Date(this.now()).toISOString(),
-        reviewedBy: reviewerUserId,
-        revision: currentRevision + 1,
-      };
-      this.saveReview(ownerUserId, reviewedHouse);
-      this.audit.append({ actorId: reviewerUserId, action: 'room.review' }, target, before);
-      return reviewedHouse;
-    });
   }
 }
