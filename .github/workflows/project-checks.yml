@@ -34,6 +34,8 @@ jobs:
           FLUTTER_OHOS_HOME: ${{ runner.temp }}/flutter-ohos
           # pubspec.lock records this hosted source; `pub get --enforce-lockfile` rejects any other.
           PUB_HOSTED_URL: https://pub.flutter-io.cn
+          # dart pub get needs FLUTTER_ROOT to locate Flutter SDK packages like sky_engine
+          FLUTTER_ROOT: ${{ runner.temp }}/flutter-ohos
         run: ./tool/check_project.ps1 -LogDirectory "$env:RUNNER_TEMP/haven-project-checks"
       - name: Preserve check evidence
         if: always()
