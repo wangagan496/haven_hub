@@ -45,12 +45,8 @@ try {
       # Populate sky_engine and host test artifacts without regenerating platform tooling
       # (flutter pub get requires a HarmonyOS SDK when the project contains ohos/).
       Invoke-Check 'flutter-precache' { & pwsh -File $wrapper precache --universal }
-      $flutterSdk = if ($env:FLUTTER_OHOS_HOME) { $env:FLUTTER_OHOS_HOME } else { $env:FLUTTER_HOME }
-      if (-not $flutterSdk) { throw 'FLUTTER_OHOS_HOME or FLUTTER_HOME must be set' }
-      # The SDK launcher supplies its own FLUTTER_ROOT to pub.
-      $dartExe = Join-Path $flutterSdk 'bin/dart'
-      if ($IsWindows) { $dartExe += '.bat' }
-      Invoke-Check 'flutter-install' { & $dartExe pub get --enforce-lockfile }
+      # Reuse the wrapper's PUB_CACHE and process-local Git long-path configuration.
+      Invoke-Check 'flutter-install' { & pwsh -File $wrapper -UseDart pub get --enforce-lockfile }
     }
     Invoke-Check 'flutter-analyze' { & pwsh -File $wrapper analyze --no-pub lib test }
     Invoke-Check 'flutter-test' { & pwsh -File $wrapper test --no-pub --reporter expanded }
