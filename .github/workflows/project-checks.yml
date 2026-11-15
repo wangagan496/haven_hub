@@ -28,6 +28,13 @@ jobs:
       - name: Install pinned Flutter OH SDK
         shell: pwsh
         run: ./tool/setup_ci_flutter.ps1 -Destination "$env:RUNNER_TEMP/flutter-ohos"
+      - name: Debug Flutter SDK structure
+        shell: pwsh
+        run: |
+          Write-Output "Checking Flutter SDK at: $env:RUNNER_TEMP/flutter-ohos"
+          Test-Path "$env:RUNNER_TEMP/flutter-ohos/packages/sky_engine"
+          Test-Path "$env:RUNNER_TEMP/flutter-ohos/bin/cache/dart-sdk"
+          Get-ChildItem "$env:RUNNER_TEMP/flutter-ohos/packages" -Name | Select-Object -First 10
       - name: Audit dependencies, build, analyze and test
         shell: pwsh
         env:
