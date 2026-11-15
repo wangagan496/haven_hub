@@ -23,7 +23,7 @@
 | 已取消记录仍显示待处理并允许取消 | 真实服务端返回 status = 0，现显示已取消、排除待处理筛选、关闭再次取消入口 |
 | 状态缺失时误显示已取消，其他未知值猜成待处理 | 默认值和解析失败回退使用 unknownStatus = -1；未知状态显示“状态未知”，只在“全部”列表可见，不提供取消操作 |
 
-未新增附件上传界面或新依赖。实际 HTTP 调用继续复用 requestDio，提示继续复用 PromptAction。日志保护只处理日志副本，不改变实际请求。
+未新增附件上传界面或新依赖。实际 HTTP 调用继续复用 requestDio，提示继续复用 AppPrompt。日志保护只处理日志副本，不改变实际请求。
 
 ## 真实服务端证据
 
@@ -81,7 +81,7 @@
 
 修复分为三组：身份加载与草稿读取时序、报修接口契约与状态语义、通用失败日志及脱敏。repair_pages.dart 和 repair_flow_test.dart 同时涉及前两组，按改动区块拆分；models/repair.dart 的取消语义和未知状态兜底保留在同一组。README 和身份复审归入对应修复；跨组验收记录及本文随最后一组提交。
 
-收尾前共有 13 个已跟踪文件修改、4 个未跟踪文档和 1 个未跟踪测试。新增 test/repair_api_test.dart 随接口修复提交。既有 third_party/image_picker_ohos/ohos/BuildProfile.ets 的 Debug 构建改动保留在本地，不纳入修复提交；本地签名配置与 build/ 证据文件也不纳入提交。提交和远端发布状态以 Git 记录为准。
+收尾前共有 13 个已跟踪文件修改、4 个未跟踪文档和 1 个未跟踪测试。新增 test/repair/repair_api_test.dart 随接口修复提交。既有 third_party/image_picker_ohos/ohos/BuildProfile.ets 的 Debug 构建改动保留在本地，不纳入修复提交；本地签名配置与 build/ 证据文件也不纳入提交。提交和远端发布状态以 Git 记录为准。
 
 模拟器更新安装保留数据，没有卸载或清空账号。收尾仅整理文档与 Git 提交，不再创建或取消服务端记录。
 

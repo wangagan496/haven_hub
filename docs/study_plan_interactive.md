@@ -156,7 +156,7 @@ Set-Location D:\haven_hub
 **难点 2：日志脱敏**
 - [ ] 为什么要脱敏？
 - [ ] 哪些字段敏感？
-- [ ] 如何递归处理？
+- [ ] 如何只记录固定摘要，避免遍历嵌套数据？
 
 **验收标准**：对着镜子讲一遍，不看笔记
 
@@ -340,9 +340,9 @@ class _FeedbackListState extends State<FeedbackList>
 **任务：理解测试策略**（4 小时）
 
 #### 上午：阅读测试用例
-- [ ] [test/core_logic_test.dart](../test/core_logic_test.dart)
-- [ ] [test/session_lifecycle_test.dart](../test/session_lifecycle_test.dart)
-- [ ] [test/repair_flow_test.dart](../test/repair_flow_test.dart)
+- [ ] [test/shared/core_logic_test.dart](../test/shared/core_logic_test.dart)
+- [ ] [test/auth/session_lifecycle_test.dart](../test/auth/session_lifecycle_test.dart)
+- [ ] [test/repair/repair_flow_test.dart](../test/repair/repair_flow_test.dart)
 
 **关键学习点**：
 - 如何 Mock 异步请求
@@ -410,18 +410,13 @@ class RetryInterceptor extends Interceptor {
 ```
 
 #### 下午：日志脱敏深入
-理解递归脱敏算法：
-- 为什么要递归？
-- 如何处理嵌套对象？
-- 为什么响应顶层的 `code` 不脱敏？
+理解固定摘要日志：
+- 为什么仅截短输出不能限制遍历完整数据的开销？
+- 哪些固定字段足够定位请求、状态和耗时？
+- 为什么只读取响应外层的数字 `code`，不展开 `data`？
+- 省略业务正文后，怎样为单次请求选择少量非敏感诊断字段并限制开销？
 
-**练习**：实现一个简化版脱敏函数
-```dart
-dynamic redact(dynamic value, {int depth = 0}) {
-  // 递归处理 Map、List
-  // 脱敏敏感字段
-}
-```
+**练习**：让响应包含很大的嵌套数据，确认日志不遍历这些内容、实际返回值不变。
 
 ### Day 9：深入业务模块
 
@@ -465,7 +460,7 @@ dynamic redact(dynamic value, {int depth = 0}) {
 
 3. **日志脱敏**
    - 问题：敏感信息泄露
-   - 方案：递归脱敏 + 分层处理
+   - 方案：固定摘要 + 省略业务正文 + 短路径脱敏
    - 结果：保护用户隐私，合规
 
 4. **鸿蒙平台适配**

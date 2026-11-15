@@ -64,13 +64,13 @@ VisitorDetailPage._share
 .\tool\flutter_ohos.ps1 test --no-pub
 ```
 
-页面接口与图片预览可替换，测试不请求课程后端，不依赖设备登录。`test/share_download_test.dart` 验证请求边界；`test/visitor_share_test.dart` 的通道替身只证明 Dart 调用契约，原生面板另外通过模拟器检查。
+页面接口与图片预览可替换，测试不请求课程后端，不依赖设备登录。`test/visitor/share_download_test.dart` 验证请求边界；`test/visitor/visitor_share_test.dart` 的通道替身只证明 Dart 调用契约，原生面板另外通过模拟器检查。
 
 Windows 可选截图输出（使用本机微软雅黑与 Material 图标字体）：
 
 ```powershell
 $env:HAVEN_VISUAL_QA = '1'
-.\tool\flutter_ohos.ps1 test --no-pub test/visitor_share_layout_test.dart
+.\tool\flutter_ohos.ps1 test --no-pub test/visitor/visitor_share_layout_test.dart
 Remove-Item Env:HAVEN_VISUAL_QA
 ```
 

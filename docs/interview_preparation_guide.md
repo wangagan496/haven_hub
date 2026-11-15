@@ -235,14 +235,16 @@ class TokenManager {
 **BuildController**：保存用户在选房流程中的选择
 ```dart
 class BuildController extends GetxController {
-  BuildingInfo buildingInfo = const BuildingInfo();
-  
-  void updateLocation(String name) {...}
-  void updateBuilding(String building) {...}
-  void updateRoom(String room) {...}
-  void reset() {...}
+  BuildingInfo _info = const BuildingInfo();
+  BuildingInfo get buildingInfo => _info;
+
+  void selectCommunity(Map<String, dynamic> community) {...}
+  void selectBuilding(String building) {...}
+  void selectRoom(String room, {String? floor}) {...}
+  void clearSelection() {...}
 }
 ```
+这些方法只保存内存中的选择并通知页面刷新；表单提交服务器是另一个步骤。
 
 **数据模型**：
 ```dart
@@ -418,7 +420,7 @@ mixin LoadingStateMixin<T extends StatefulWidget> on State<T> {
       return true;
     } catch (error) {
       // 统一错误处理
-      if (showErrorToast) await PromptAction.showError(message);
+      if (showErrorToast) await AppPrompt.showError(message);
       return false;
     } finally {
       setState(() { _isLoading = false; });
@@ -513,34 +515,17 @@ testWidgets('上传照片失败显示错误', (tester) async {
 
 ### 4. 日志脱敏
 
-**敏感字段**：
-- `authorization`、`token`、`password`、`mobile`、`secret`
-- URL 查询参数中的 `key`、`appKey`、`apiKey`
-- 请求/响应体中的 `code`（验证码）
-
-**脱敏策略**：
-```dart
-static bool _isSensitiveLogKey(String key, {required bool requestSide, int depth = 0}) {
-  final normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
-  
-  // 固定黑名单
-  if (_sensitiveLogKeys.contains(normalized)) return true;
-  
-  // 子串匹配
-  for (final fragment in _sensitiveLogKeyFragments) {
-    if (normalized.contains(fragment)) return true;
-  }
-  
-  // 验证码特殊处理：请求侧全脱敏，响应侧只脱敏嵌套的
-  if (normalized == 'code' && (requestSide || depth > 1)) return true;
-  
-  return false;
-}
-```
+**当前策略（2026-10-28）**：只记录固定摘要，不遍历整份业务数据。
+- 保留请求方法、短路径、HTTP 状态、外层数字业务码、成功响应耗时和错误类型。
+- 默认省略查询参数、请求头、请求体、响应业务数据和原始错误说明。
+- 排错时可用 `RequestDio.logDetails` 为单次请求选择诊断字段，每侧最多 5 项，只读第一层、跳过嵌套值、整体省略超过 200 字符的文字；常见敏感字段仍被拦截。
+- 请求路径超过 512 个字符时整体省略；短路径中能识别的手机号、凭证仍被隐藏。
+- `privateResponse: true` 的请求继续完全不记网络日志；实际请求和返回数据不受影响。
 
 **面试重点**：
-- 为什么响应顶层的 `code` 不脱敏？（那是业务状态码 10000/10001，不是验证码）
-- 为什么要递归处理？（敏感字段可能嵌套在对象或数组中）
+- 为什么只取外层数字 `code`？（保留业务状态码，不读取 data 内的验证码）
+- 为什么不再递归？（旧实现先遍历和复制完整数据，再截短日志，数据多时仍有额外开销）
+- 代价是什么？（默认没有详细入参和原始说明；可对单次请求选少量非敏感字段，完整调查结合服务端证据）
 
 ---
 
@@ -681,7 +666,7 @@ final results = await Future.wait([
 #### 3. 安全性
 **Q：如何保护敏感信息？**
 - Token 存储：SharedPreferences（设备本地）
-- 日志脱敏：敏感字段替换为 `***`
+- 网络日志：固定摘要，省略业务数据，短路径中的可识别敏感值仍脱敏
 - HTTPS：所有接口使用加密传输
 
 **Q：如何防止 Token 泄露？**
@@ -835,7 +820,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - ✅ 阅读 [`TokenManager`](../lib/utils/token_manager.dart)
 - ✅ 阅读 [`RequestDio`](../lib/utils/request_dio.dart)
 - ✅ 理解 Token 刷新与重放机制
-- ✅ 阅读测试用例 [`session_lifecycle_test.dart`](../test/session_lifecycle_test.dart)
+- ✅ 阅读测试用例 [`session_lifecycle_test.dart`](../test/auth/session_lifecycle_test.dart)
 
 ### 第 5 天：房屋管理模块
 - ✅ 阅读 [`House` 模型](../lib/models/house.dart)
@@ -936,7 +921,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 ### 关键概念速查
 
 - **Token 自动刷新**：[`request_dio.dart:76-162`](../lib/utils/request_dio.dart:76-162)
-- **日志脱敏**：[`request_dio.dart:356-379`](../lib/utils/request_dio.dart:356-379)
+- **网络日志摘要**：[`request_dio.dart`](../lib/utils/request_dio.dart)
 - **异步状态管理**：[`loading_state_mixin.dart`](../lib/widgets/loading_state_mixin.dart)
 - **坐标转换**：[`location.dart`](../lib/utils/location.dart)
 - **表单校验**：[`house_form.dart:51-81`](../lib/pages/house/house_form.dart:51-81)
@@ -963,7 +948,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 
 本节对应业务提交 `01bd335`、`998074e`、`bea02bb`。此前章节保留作学习笔记；其中旧测试数、旧重放策略、旧平台和个人负责范围不能直接用于面试。以下事实在本轮重新读取源码、Git 提交或实际运行核对。路径行号按当前源码；文档历史排查记录只用于说明当时的问题，不能替代今天的验收。
 
-本轮 `server/ npm test`：253 通过、0 失败、0 跳过；根目录 `.\tool\flutter_ohos.ps1 test --no-pub`：402 通过、0 失败、1 跳过。跳过项是 `test/local_backend_integration_test.dart:21` 的 `RUN_LOCAL_BACKEND_TEST` 开关控制的集成测试，不应宣称 403 全通过。服务端编译、Web 构建和 x64 Debug HAP 构建通过；没有连接设备，因此本轮未复测 API 24 模拟器。临时数据库的急单到确认、星期模板变更已走通。
+本轮 `server/ npm test`：253 通过、0 失败、0 跳过；根目录 `.\tool\flutter_ohos.ps1 test --no-pub`：402 通过、0 失败、1 跳过。跳过项是 `test/integration/local_backend_integration_test.dart:21` 的 `RUN_LOCAL_BACKEND_TEST` 开关控制的集成测试，不应宣称 403 全通过。服务端编译、Web 构建和 x64 Debug HAP 构建通过；没有连接设备，因此本轮未复测 API 24 模拟器。临时数据库的急单到确认、星期模板变更已走通。
 
 ### 1. 项目介绍：1 分钟口头版
 
@@ -1027,7 +1012,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 
 **未采用的方案与原因**：没有依赖客户端显示的剩余量，也没有把“查余量”和“插入”拆成事务外两步；两人都读到 1 后会超卖。无需声称当时评估过 Redis 分布式锁。
 
-**追问**：证据是什么？——`server/test/repair-schedule.test.ts:76` 的 “last capacity under simultaneous requests succeeds exactly once”，本轮包含在 253 项通过中。它证明当前服务测试场景，不证明跨多实例吞吐能力。
+**追问**：证据是什么？——`server/test/repair/repair-schedule.test.ts:76` 的 “last capacity under simultaneous requests succeeds exactly once”，本轮包含在 253 项通过中。它证明当前服务测试场景，不证明跨多实例吞吐能力。
 
 #### 4.4 为什么只用 slot，不另建占用表？代价是什么？
 
@@ -1053,11 +1038,11 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 
 **口头要点**：物业按中国本地日期配置星期模板，服务器可能运行在 UTC 或其他时区。例如 UTC 周六 17 点已是北京周日凌晨 1 点，如果直接用宿主机 getDay，就可能取错周六容量。先由 UTC+8 生成业务日期，再把这个纯日期用 UTC 解析、getUTCDay 读星期，避免二次受宿主时区影响。日期口径和“连续 72 小时”的时长口径要分开。
 
-**代码**：`server/src/repair/schedule.ts:26`、`repository.ts:159`、`policy.ts:50`；测试 `server/test/repair-weekdays.test.ts` 中 “public today uses Beijing Sunday while UTC remains Saturday”。
+**代码**：`server/src/repair/schedule.ts:26`、`repository.ts:159`、`policy.ts:50`；测试 `server/test/repair/repair-weekdays.test.ts` 中 “public today uses Beijing Sunday while UTC remains Saturday”。
 
 **未采用的方案与原因**：不直接取宿主机 getDay，不按设备本地日期决定服务端容量。代码与测试证明采用了固定业务时区，不能据此说测过所有国际时区。
 
-**追问**：跨午夜预约范围会自动变化吗？——会，查询根据当前服务端时钟重算含今天的 7 天，不依赖午夜定时任务。`server/test/repair-schedule.test.ts:157` 有查询推进日期测试。
+**追问**：跨午夜预约范围会自动变化吗？——会，查询根据当前服务端时钟重算含今天的 7 天，不依赖午夜定时任务。`server/test/repair/repair-schedule.test.ts:157` 有查询推进日期测试。
 
 ### 5. 未采用或仍有差距的方案
 
@@ -1089,7 +1074,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - **排查**：查看请求拦截器和凭证写入顺序，用可控 Future 和假 adapter 复现。提交演进包含只比版本、要求版本恰好加一、拆分身份与版本，再到完全停止旧请求重放；这些历史策略不能混写成当前策略。
 - **根因**：一个递增版本既表达“换账号”又表达“刷新”，无法区分身份；持久化异步写入也存在交错窗口。
 - **修复**：`e88ac5e` 处理退出与刷新竞态；`079ddd5` 加强旧请求隔离；`c8d4def` 拆分 sessionId 与凭证代次；`68de27e` 当时串行凭证修改并停止原请求及外层重试；当前版本保持会话隔离，同会话白名单 GET 安全读取恢复一次，超时及 502/503/504 在请求层内按预算重试，写操作不重放。当前位置 `lib/utils/token_manager.dart:23`、`:92`、`:108`，`lib/utils/request_dio.dart:75`、`:103`、`:423`。
-- **验证入口**：`test/token_refresh_retry_test.dart:108`（`refresh keeps login and automatically restores the safe read once`）、`:311`（`does not replay a stale request when the new account then refreshes`）、`:437`（`concurrent 401 shares one refresh, only GET recovers and a second 401 stops`）、`:480`（`a late failed refresh cannot log out the new account`）；`test/request_recovery_test.dart:33` 检查超时预算，`:85` 检查短信 GET 和写操作不重试。
+- **验证入口**：`test/auth/token_refresh_retry_test.dart:108`（`refresh keeps login and automatically restores the safe read once`）、`:311`（`does not replay a stale request when the new account then refreshes`）、`:437`（`concurrent 401 shares one refresh, only GET recovers and a second 401 stops`）、`:480`（`a late failed refresh cannot log out the new account`）；`test/shared/request_recovery_test.dart:33` 检查超时预算，`:85` 检查短信 GET 和写操作不重试。
 - **收获**：异步结果先验证归属，再讨论是否重试；身份与数据版本要分开。
 
 **2 分钟口头版**：我遇到过一个不是单次请求能暴露的登录问题。用户 A 发请求后切到 B，如果只看 Token 有没有变，A 的迟到请求可能被当作正常刷新重试，用上 B 的凭证。最开始版本判断越来越复杂，后来我把“是谁的会话”和“凭证换到第几代”分开，并对落盘操作排队。当前策略是刷新成功保留登录，同会话白名单 GET 安全读取恢复一次，超时及 502/503/504 在请求层内按预算重试；写操作不重放，跨账号旧请求停止。测试用可控的返回顺序覆盖换号、B 再刷新、旧刷新迟到失败这些情况。我能证明这些竞态用例通过，但不会说它等于服务端的幂等保证。
@@ -1111,7 +1096,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - **排查**：分别构造资料未加载、返回空 ID、晚到资料、换账号、退出页面、磁盘读取失败，不把它们都归为网络慢；记录见 `docs/repair_draft_identity_review.md`。
 - **根因**：页面生命周期早于身份解析；草稿键要求稳定用户 ID，而空草稿与读失败不是一个状态。
 - **修复**：`a448149` 监听当前会话身份到达并绑定；`094e581` 冷启动按需获取身份，将读取失败单列。位置 `lib/pages/repair/repair_pages.dart:886`、`:912`、`:1061`；`lib/utils/repair_draft_store.dart:30`。有新输入时保留输入，同时保留旧的结果未确认提醒。
-- **验证**：本轮包含 `test/repair_identity_test.dart:84` 冷启动恢复、`:208` 晚到身份不能更新新账号、`:436` 读失败保护、`:476` 保留输入与未确认标记，均通过。
+- **验证**：本轮包含 `test/repair/repair_identity_test.dart:84` 冷启动恢复、`:208` 晚到身份不能更新新账号、`:436` 读失败保护、`:476` 保留输入与未确认标记，均通过。
 - **收获**：身份未知、数据为空、读取失败是三个状态，不能用一个 null 表示。
 
 **2 分钟口头版**：报修草稿必须跟账号走，但冷启动时登录凭证和用户资料不是同时准备好的。页面先打开，就可能找不到正确草稿键。我没有用匿名键凑合，因为换号会串数据，而是等待或主动获取当前会话身份。随后还有一个边界：资料回来前用户已经输入了内容，不能拿旧草稿把新输入盖掉；但旧草稿的“结果未确认”提醒又不能丢。最后我把身份、输入是否编辑、草稿读取是否成功分别管理，并用晚到返回和读失败测试验证。这个经验也能用在任何依赖账号加载本地状态的表单里。
@@ -1122,7 +1107,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - **排查**：查缓存组件到 path_provider 的依赖，区分网络下载失败与磁盘目录获取失败；不把所有图片错误都归因 URL。
 - **根因**：当前依赖组合没有可用的 OHOS 磁盘缓存路径实现。
 - **修复**：`6760e10`；`lib/widgets/cached_image.dart:45` 在鸿蒙使用 Image.network 内存缓存，其他平台保留原行为。
-- **验证**：该提交增加四个图片回归场景；本轮 `test/cached_image_test.dart` 随全量通过，HAP 构建通过；无本轮物理设备缓存验收。
+- **验证**：该提交增加四个图片回归场景；本轮 `test/shared/cached_image_test.dart` 随全量通过，HAP 构建通过；无本轮物理设备缓存验收。
 - **收获**：跨平台包的 Dart API 可用，不等于每个平台底层实现齐全。
 
 #### 7.5 外部图片 401 误触发业务登录处理
@@ -1131,7 +1116,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - **排查**：沿图片下载进入统一请求拦截器，比较业务请求与带 skipAuthorization 的外部请求；用返回 401 的假 adapter 检查刷新次数、退出事件和保留的 Token。来源 `docs/harmony_share_and_reliability.md:45`，没有记录额外排查弯路，不补造经历。
 - **根因**：原拦截器对所有 401 执行业务刷新/登出，没有区分资源所属的认证体系。
 - **修复**：`e88ac5e` 的 diff 为 401 分支增加 skipAuthorization 排除条件；后续会话重构保留边界。当前位置 `lib/utils/request_dio.dart:102` 和 `:577`，分别是认证错误分流和外部图片下载的跳过标记；`555d3b5` 补充测试。
-- **验证**：本轮 `test/share_download_test.dart:55` 的 “external image 401 never refreshes or clears the app login” 通过，验证不刷新、不发退出事件且 Token 保留；它证明请求边界，不代表外部图片一定能下载成功。
+- **验证**：本轮 `test/visitor/share_download_test.dart:55` 的 “external image 401 never refreshes or clears the app login” 通过，验证不刷新、不发退出事件且 Token 保留；它证明请求边界，不代表外部图片一定能下载成功。
 - **收获**：共用 HTTP 客户端不等于共用认证域，错误处理必须先判断请求归属。
 
 未采用长路径问题作为正式案例：`c9575fc` 可以证明子进程启用 core.longpaths，但提交未保留某一次长路径失败的完整现场；不能据此补造具体复现和错误码。
@@ -1151,7 +1136,7 @@ class _MyPageState extends State<MyPage> with LoadingStateMixin {
 - **排查**：模拟慢返回、离页、账号替换、再次进入与存储写入顺序；检查页面是否把“失败响应”和“结果未知”混成一种状态。
 - **根因**：客户端超时不能证明服务端未提交，且本地草稿与异步请求有不同生命周期。
 - **修复**：`add2fd1` 引入按用户串行保存、未确认结果标记和再次提交确认。当前 `lib/utils/repair_draft_store.dart:7`、`:23`，`lib/pages/repair/repair_pages.dart:975` 保存草稿，`:1215` 提交，`:1263` 再次提交确认。
-- **验证**：本轮 `test/repair_draft_store_test.dart:22` 的 “draft and unconfirmed result survive a new store instance” 和 `:64` 的 “successful cleanup cannot be undone by a pending draft save” 通过；`test/repair_flow_test.dart:359` 覆盖 HTTP 错误不能证明未创建，临时后端完成真实创建。没有幂等键，所以不能说“彻底解决重复订单”。
+- **验证**：本轮 `test/repair/repair_draft_store_test.dart:22` 的 “draft and unconfirmed result survive a new store instance” 和 `:64` 的 “successful cleanup cannot be undone by a pending draft save” 通过；`test/repair/repair_flow_test.dart:359` 覆盖 HTTP 错误不能证明未创建，临时后端完成真实创建。没有幂等键，所以不能说“彻底解决重复订单”。
 - **收获**：界面防重复点击、草稿恢复和服务端幂等是三件不同的事。
 
 #### 7.8 排单审核退回：权限、错误信息和状态边界
