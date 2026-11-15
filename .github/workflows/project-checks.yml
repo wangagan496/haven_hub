@@ -34,9 +34,6 @@ jobs:
           FLUTTER_OHOS_HOME: ${{ runner.temp }}/flutter-ohos
           # pubspec.lock records this hosted source; `pub get --enforce-lockfile` rejects any other.
           PUB_HOSTED_URL: https://pub.flutter-io.cn
-          # Flutter OH SDK checks this before running hvigor; unset it to skip that check since
-          # this project has no native OHOS code build and only needs the Dart pub command.
-          HOS_SDK_HOME: skip
         run: ./tool/check_project.ps1 -LogDirectory "$env:RUNNER_TEMP/haven-project-checks"
       - name: Preserve check evidence
         if: always()
