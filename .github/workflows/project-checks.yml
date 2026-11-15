@@ -32,6 +32,8 @@ jobs:
         shell: pwsh
         env:
           FLUTTER_OHOS_HOME: ${{ runner.temp }}/flutter-ohos
+          # pubspec.lock records this hosted source; `pub get --enforce-lockfile` rejects any other.
+          PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: ./tool/check_project.ps1 -LogDirectory "$env:RUNNER_TEMP/haven-project-checks"
       - name: Preserve check evidence
         if: always()
